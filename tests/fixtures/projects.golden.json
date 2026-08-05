@@ -1,0 +1,32 @@
+{
+  "schema_version": 1,
+  "updated_at": "2026-08-05T22:45:00Z",
+  "scan_duration_ms": 412,
+  "projects": [
+    {
+      "id": "a1b2c3d4e5f6",
+      "name": "project-radar",
+      "path": "/Users/jankrag/repos/JKrag/project-radar",
+      "category": "JKrag",
+      "is_foreign": false,
+      "git": {
+        "is_repo": true,
+        "branch": "master",
+        "is_dirty": true,
+        "uncommitted_files": 4,
+        "last_commit_at": "2026-08-04T14:10:00Z",
+        "mine_last_commit_at": "2026-08-04T14:10:00Z",
+        "github_url": "https://github.com/JKrag/project-radar"
+      },
+      "agent": {
+        "state": "working",
+        "active_agent": "claude-code",
+        "last_event": "PreToolUse",
+        "last_event_at": "2026-08-05T22:44:12Z",
+        "session_id": "6f4a8f6e-ae3c-4bf6-846b-d1fecb5742a6"
+      },
+      "last_activity_at": "2026-08-05T22:44:12Z",
+      "status_bucket": "active"
+    }
+  ]
+}
