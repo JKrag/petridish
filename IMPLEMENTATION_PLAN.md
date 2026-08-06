@@ -340,6 +340,11 @@ exception still produces a complete file.
 say so and point at `swab scan`.
 **Verify:** `pytest tests/test_cli.py -q`
 
+**Post-M9 addition:** `swab config` — prints the config file location, every `Config` field
+(sourced from `dataclasses.fields(Config)` so it can't drift from the code), and an example.
+Added once M9's installer made `~/.petridish/config.toml` a real, present file users would
+actually want to look up. The top-level `swab --help` description also names the config path.
+
 ### M9 — Install & launchd
 **Files:** `install.sh`, `src/petridish/installer.py`, `tests/test_installer.py`,
 `resources/com.petridish.daemon.plist`, `README.md`. All settings.json/plist logic lives in

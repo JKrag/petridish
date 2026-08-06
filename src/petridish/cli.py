@@ -10,6 +10,11 @@ Subcommands:
                                     Inspect the cached state file (never scans).
 - ``swab path <QUERY>``             Print the project path matching QUERY.
 - ``swab doctor``                   Check system health and report findings.
+- ``swab config``                   Print the config file location, every
+                                    field it accepts, and an example.
+
+Config file: ``~/.petridish/config.toml`` (TOML, entirely optional — every
+field has a default). See ``swab config`` for the full reference.
 
 Keep stdlib-only: the CLI is part of the "install-and-run" surface and must
 work on a brand-new machine with no extra pip packages.
@@ -18,6 +23,7 @@ work on a brand-new machine with no extra pip packages.
 from __future__ import annotations
 
 import argparse
+import dataclasses
 import json
 import os
 import sys
@@ -34,6 +40,7 @@ from petridish.schema import (
 
 CONFIG_DIR = os.path.join(os.path.expanduser("~"), ".petridish")
 _DEFAULT_STATE_PATH = os.path.join(CONFIG_DIR, "projects.json")
+_CONFIG_FILE_PATH = os.path.join(CONFIG_DIR, "config.toml")
 
 #: launchd (see M9's plist) redirects the daemon's stdout/stderr here on
 #: every 60s tick. launchd itself has no log-rotation facility, so ``scan``
@@ -309,6 +316,67 @@ def _cmd_doctor(args: argparse.Namespace) -> int:
     return 0 if not problems else 1
 
 
+#: One line of human explanation per :class:`Config` field, keyed by field
+#: name so it can't silently drift out of sync if a field is renamed —
+#: ``_cmd_config`` iterates ``dataclasses.fields(Config)`` and looks up the
+#: description, rather than hand-maintaining a parallel list of names.
+_CONFIG_FIELD_HELP: dict[str, str] = {
+    "roots": "Directories crawled for projects",
+    "extra_paths": "Individual extra project paths, for anything outside roots",
+    "author_patterns": 'Regex(es) matched against "git log --author=" to decide "did I write this"',
+    "author_since": "How far back git log looks when computing authorship",
+    "ignore_dirs": "Directory basenames hard-skipped during crawl",
+    "bucket_thresholds": "Hour cutoffs for the active/in_flight/stale/cold status buckets",
+    "category_overrides": "{path_glob_or_pattern: category_label} manual recategorisation",
+    "max_depth": "How deep the crawl descends into roots before giving up on a subtree",
+}
+
+
+def _format_default(value: object) -> str:
+    """Render a Config field's default as it would look written in TOML."""
+    if isinstance(value, (tuple, frozenset)):
+        items = sorted(str(v) for v in value) if isinstance(value, frozenset) else [str(v) for v in value]
+        return "[" + ", ".join(f'"{v}"' for v in items) + "]"
+    if isinstance(value, dict):
+        if not value:
+            return "{}"
+        return "{" + ", ".join(f"{k} = {v}" for k, v in value.items()) + "}"
+    if isinstance(value, str):
+        return f'"{value}"'
+    return str(value)
+
+
+def _cmd_config(args: argparse.Namespace) -> int:
+    """Print the config file location, its full field reference, and an
+    example. Sourced from :class:`Config`'s own defaults (via
+    ``dataclasses.fields``), so it can't drift out of sync with the code."""
+    defaults = Config()
+
+    print(f"Config file: {_CONFIG_FILE_PATH}")
+    print(
+        "Optional TOML file — every field below has a default, so a missing "
+        "file, or any field left out, is valid; only what you set overrides "
+        "the default.\n"
+    )
+
+    for f in dataclasses.fields(Config):
+        default = _format_default(getattr(defaults, f.name))
+        help_text = _CONFIG_FIELD_HELP.get(f.name, "")
+        print(f"  {f.name}")
+        print(f"      {help_text}")
+        print(f"      default: {default}")
+
+    print()
+    print("Example — only override what you care about:\n")
+    print('  roots = ["~/repos", "~/work"]')
+    print("  max_depth = 6")
+    print()
+    print("  [bucket_thresholds]")
+    print("  active = 24.0")
+
+    return 0
+
+
 # ---------------------------------------------------------------------------
 # Argument parsing and dispatch.
 # ---------------------------------------------------------------------------
@@ -316,7 +384,10 @@ def _cmd_doctor(args: argparse.Namespace) -> int:
 def _build_parser(state_default: str = _DEFAULT_STATE_PATH) -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="swab",
-        description="petridish CLI: scan, list, path, doctor.",
+        description=(
+            "petridish CLI: scan, list, path, doctor, config. "
+            f"Config file: {_CONFIG_FILE_PATH} (optional, see 'swab config')."
+        ),
     )
     parser.add_argument(
         "--state",
@@ -363,6 +434,12 @@ def _build_parser(state_default: str = _DEFAULT_STATE_PATH) -> argparse.Argument
 
     doc = sub.add_parser("doctor", help="Health-check the system.")
     doc.set_defaults(func=_cmd_doctor)
+
+    config_p = sub.add_parser(
+        "config",
+        help="Print the config file location, its fields, and an example.",
+    )
+    config_p.set_defaults(func=_cmd_config)
 
     return parser
 

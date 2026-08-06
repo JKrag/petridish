@@ -62,13 +62,15 @@ swab scan              # run a tick, write ~/.petridish/projects.json
 swab list [--bucket B] [--all] [--json]
 swab path <query>      # print the best-matching project's path
 swab doctor            # health-check config, roots, state freshness, hook wiring
+swab config            # print the config file location, its fields, and an example
 ```
 
 ## Config
 
-`~/.petridish/config.toml` — every field is optional; see `DEFAULT_CONFIG_TOML` in
-`src/petridish/installer.py` for the commented template written on first install, and
-`IMPLEMENTATION_PLAN.md` §5 M0 for the full field reference.
+`~/.petridish/config.toml` — entirely optional; every field has a default. Run
+`swab config` for the full field reference (sourced from `Config`'s own defaults, so it
+can't drift out of sync with the code) and an example. `install.sh` writes a commented-out
+template there on first install (see `DEFAULT_CONFIG_TOML` in `src/petridish/installer.py`).
 
 ## Docs
 

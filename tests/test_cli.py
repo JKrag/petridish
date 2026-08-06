@@ -10,6 +10,7 @@ temporary path through ``--state``.
 from __future__ import annotations
 
 import json
+import os
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
@@ -321,3 +322,60 @@ def test_rotate_daemon_log_leaves_small_file_untouched(tmp_path):
 
 def test_rotate_daemon_log_missing_file_is_a_noop(tmp_path):
     _rotate_daemon_log(path=str(tmp_path / "nope.log"), max_bytes=50)  # must not raise
+
+
+# ---------------------------------------------------------------------------
+# swab config — prints the config file location + field reference + example
+# ---------------------------------------------------------------------------
+
+def test_config_mentions_file_location(capsys):
+    rc = main(["--state", "/nope/projects.json", "config"])
+    out = capsys.readouterr().out
+
+    assert rc == 0
+    # CONFIG_DIR/_CONFIG_FILE_PATH are computed once at import time from the
+    # real HOME (same as CONFIG_DIR/_DEFAULT_STATE_PATH elsewhere in this
+    # module), so this can't be pinned to a per-test HOME override.
+    assert out.startswith("Config file: ")
+    assert out.splitlines()[0].endswith(os.path.join(".petridish", "config.toml"))
+
+
+def test_config_lists_every_field_with_a_default_and_help_text(capsys):
+    import dataclasses
+
+    from petridish.config import Config
+
+    main(["--state", "/nope/projects.json", "config"])
+    out = capsys.readouterr().out
+
+    for f in dataclasses.fields(Config):
+        assert f.name in out, f"field {f.name!r} missing from `swab config` output"
+    # A couple of concrete defaults, spot-checked rather than re-deriving the
+    # whole table — this is a regression guard, not a re-implementation.
+    assert '"~/repos"' in out
+    assert '"Jan.*Krag"' in out
+    assert "active = 48.0" in out
+
+
+def test_config_prints_an_example(capsys):
+    main(["--state", "/nope/projects.json", "config"])
+    out = capsys.readouterr().out
+
+    assert "Example" in out
+    assert "[bucket_thresholds]" in out
+
+
+def test_config_help_reaches_this_subcommand():
+    """`swab config --help` must exit 0 via argparse (not our own code)."""
+    with pytest.raises(SystemExit) as exc_info:
+        main(["config", "--help"])
+    assert exc_info.value.code == 0
+
+
+def test_top_level_help_mentions_config_file(capsys):
+    with pytest.raises(SystemExit):
+        main(["--help"])
+    out = capsys.readouterr().out
+
+    assert "config.toml" in out
+    assert "swab config" in out
