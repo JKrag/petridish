@@ -193,6 +193,35 @@ def backup_settings(settings_path: Path, backup_path: Path) -> None:
 # launchd plist
 # ---------------------------------------------------------------------------
 
+def _read_plist_template(label: str, resources_dir: Path | None) -> str:
+    """Read the plist template text.
+
+    `resources_dir`, when given, is a plain filesystem override (used by
+    tests). Otherwise this reads via :mod:`importlib.resources`, anchored on
+    the *installed* ``petridish`` package — this is what makes it work both
+    for an editable install (source tree intact) and a real wheel install
+    (``src/petridish/resources/`` is shipped as package data; see
+    ``[tool.setuptools.package-data]`` in pyproject.toml).
+    """
+    filename = f"{label}.plist"
+    if resources_dir is not None:
+        template_path = resources_dir / filename
+        if not template_path.is_file():
+            raise InstallError(f"plist template not found at {template_path}")
+        return template_path.read_text(encoding="utf-8")
+
+    import importlib.resources
+
+    traversable = importlib.resources.files("petridish").joinpath("resources", filename)
+    if not traversable.is_file():
+        raise InstallError(
+            f"plist template {filename!r} not found in the installed "
+            "petridish package's resources/ (expected it to ship as package "
+            "data — see [tool.setuptools.package-data] in pyproject.toml)."
+        )
+    return traversable.read_text(encoding="utf-8")
+
+
 def render_plist(
     *,
     swab_abspath: str,
@@ -202,17 +231,7 @@ def render_plist(
 ) -> str:
     from xml.sax.saxutils import escape
 
-    if resources_dir is None:
-        resources_dir = Path(__file__).resolve().parents[2] / "resources"
-    template_path = resources_dir / f"{PLIST_LABEL}.plist"
-    if not template_path.is_file():
-        raise InstallError(
-            f"plist template not found at {template_path} — expected it "
-            "alongside the repo root's resources/ directory (editable-install "
-            "layout only; a packaged wheel install needs M10 to ship this "
-            "via package data)."
-        )
-    text = template_path.read_text(encoding="utf-8")
+    text = _read_plist_template(label, resources_dir)
     return (
         text.replace("__LABEL__", escape(label))
         .replace("__SWAB_PATH__", escape(swab_abspath))

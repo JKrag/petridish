@@ -65,6 +65,16 @@ swab doctor            # health-check config, roots, state freshness, hook wirin
 swab config            # print the config file location, its fields, and an example
 ```
 
+`swab list` sample output:
+
+```
+bucket     name             agent                  branch  dirty
+---------  ---------------  ---------------------  ------  -----
+active     petridish        claude-code (working)  master  *
+in_flight  fastfood-filter  copilot (idle)         main
+cold       old-experiment   idle                   main
+```
+
 ## Config
 
 `~/.petridish/config.toml` — entirely optional; every field has a default. Run
@@ -78,3 +88,7 @@ template there on first install (see `DEFAULT_CONFIG_TOML` in `src/petridish/ins
 - `IMPLEMENTATION_PLAN.md` — authoritative build spec, module-by-module (supersedes DESIGN.md on
   conflict)
 - `CLAUDE.md` — non-negotiable invariants for anyone changing this code
+
+## License
+
+GPL-3.0-or-later — see `LICENSE`.

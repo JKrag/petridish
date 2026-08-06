@@ -1,13 +1,35 @@
 [build-system]
-requires = ["setuptools>=61.0"]
+requires = ["setuptools>=77.0"]
 build-backend = "setuptools.build_meta"
 
 [project]
 name = "petridish"
 version = "0.1.0"
 description = "Local monitoring daemon for macOS project activity."
+readme = "README.md"
 requires-python = ">=3.12"
 dependencies = []
+authors = [
+    { name = "Jan Krag", email = "jan.krag@eficode.com" },
+]
+keywords = ["macos", "launchd", "git", "claude-code", "productivity", "monitoring"]
+license = "GPL-3.0-or-later"
+license-files = ["LICENSE"]
+classifiers = [
+    "Operating System :: MacOS :: MacOS X",
+    "Programming Language :: Python :: 3.12",
+    "Environment :: Console",
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+]
+
+[project.optional-dependencies]
+dev = ["pytest"]
+
+[project.urls]
+Homepage = "https://github.com/JKrag/petridish"
+Repository = "https://github.com/JKrag/petridish"
+Issues = "https://github.com/JKrag/petridish/issues"
 
 # Entry points are declared now so the `swab` / `swab-hook` scripts are
 # resolvable once M6 and M8 land.  The modules they point at are created in
@@ -18,6 +40,9 @@ swab-hook = "petridish.hook:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]
+
+[tool.setuptools.package-data]
+petridish = ["resources/*.plist"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

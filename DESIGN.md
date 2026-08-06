@@ -290,7 +290,14 @@ Numbered so the installer (M9) can be checked against them:
   adds with a literal marker comment, and ship an `--uninstall` that removes only
   marked entries.
 - **D5 — Declare macOS-only.** Add the appropriate classifier and fail early with a
-  clear message on other platforms rather than half-installing.
+  clear message on other platforms rather than half-installing. **Implemented (M10):**
+  `Operating System :: MacOS :: MacOS X` classifier in `pyproject.toml`, plus
+  `installer.py`'s `check_platform()` (`sys.platform != "darwin"` raises before touching
+  anything) — that's where "half-installing" would actually happen, since launchd is the
+  macOS-only surface. The CLI itself (`swab scan`/`list`) is deliberately *not*
+  platform-gated: its sensors already degrade to `null`/empty per CLAUDE.md invariant 5
+  (e.g. the Copilot sensor finding no `workspaceStorage/` on Linux is that invariant
+  working, not a bug), so gating the whole CLI would reject strictly more than necessary.
 - **D6 — Respect user-data separation.** Code lives in the tool's venv; user state
   (`config.toml`, `projects.json`, `events.ndjson`) lives in `~/.petridish/` and
   must survive uninstall/reinstall untouched.
