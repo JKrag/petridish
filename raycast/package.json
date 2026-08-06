@@ -16,6 +16,16 @@
       "subtitle": "Petri",
       "description": "Browse projects grouped by activity status (active / in flight / stale / cold).",
       "mode": "view"
+    },
+    {
+      "name": "search-project",
+      "title": "Open Project",
+      "subtitle": "Petri",
+      "description": "Open the best-matching project directly, no list view.",
+      "mode": "no-view",
+      "arguments": [
+        { "name": "query", "placeholder": "project name", "type": "text", "required": true }
+      ]
     }
   ],
   "dependencies": {
