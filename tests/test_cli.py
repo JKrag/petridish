@@ -16,7 +16,7 @@ from pathlib import Path
 
 import pytest
 
-from petridish.cli import main
+from petridish.cli import _rotate_daemon_log, main
 from petridish.schema import (
     AgentState,
     GitState,
@@ -295,3 +295,29 @@ def test_list_shows_agent_name_even_when_idle(tmp_path, capsys, monkeypatch):
     assert rc == 0
     assert "claude-code" in out, "idle project dropped its agent name"
     assert "idle" in out
+
+
+# ---------------------------------------------------------------------------
+# _rotate_daemon_log — M9's log-rotation contract (launchd has none of its own)
+# ---------------------------------------------------------------------------
+
+def test_rotate_daemon_log_truncates_past_threshold(tmp_path):
+    log_path = tmp_path / "daemon.log"
+    log_path.write_bytes(b"x" * 100)
+
+    _rotate_daemon_log(path=str(log_path), max_bytes=50)
+
+    assert log_path.stat().st_size == 0
+
+
+def test_rotate_daemon_log_leaves_small_file_untouched(tmp_path):
+    log_path = tmp_path / "daemon.log"
+    log_path.write_bytes(b"x" * 10)
+
+    _rotate_daemon_log(path=str(log_path), max_bytes=50)
+
+    assert log_path.stat().st_size == 10
+
+
+def test_rotate_daemon_log_missing_file_is_a_noop(tmp_path):
+    _rotate_daemon_log(path=str(tmp_path / "nope.log"), max_bytes=50)  # must not raise

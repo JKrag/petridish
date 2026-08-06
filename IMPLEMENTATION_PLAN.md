@@ -341,16 +341,26 @@ say so and point at `swab scan`.
 **Verify:** `pytest tests/test_cli.py -q`
 
 ### M9 — Install & launchd
-**Files:** `install.sh`, `resources/com.petridish.daemon.plist`, `README.md`
+**Files:** `install.sh`, `src/petridish/installer.py`, `tests/test_installer.py`,
+`resources/com.petridish.daemon.plist`, `README.md`. All settings.json/plist logic lives in
+`installer.py` (unit-tested against tmpdir fixtures, no real system mutation from tests);
+`install.sh` is a thin wrapper that resolves the correct interpreter (the `uv tool` venv's,
+not the ambient `python3`) and execs `python3 -m petridish.installer`.
 **Contract:** `StartInterval` 60s, `RunAtLoad`, stdout/stderr to
 `~/.petridish/daemon.log`, `ProcessType: Background` so macOS deprioritises it.
 Installer: create `~/.petridish/`, write a default `config.toml` **only if absent**,
 **back up `~/.claude/settings.json` before touching it**, and append `swab-hook` to
 existing hook arrays without disturbing the three existing consumers (F4). Must be
-idempotent, and must ship an `--uninstall` that unloads the plist and removes only the
-hook entries it added.
-**Verify:** `./install.sh && swab doctor` exits 0; `./install.sh --uninstall` restores the
-settings backup byte-for-byte. Log rotation: truncate `daemon.log` past 5MB.
+idempotent, and must ship an `--uninstall` that unloads the plist and **structurally removes
+only the hook entries it added** — never a verbatim restore from the backup, which would
+silently discard any unrelated edit made to `settings.json` between install and uninstall (D4).
+**Verify:** `./install.sh && swab scan && swab doctor` exits 0 (`doctor` run right after `install.sh`
+races `RunAtLoad`'s async first tick — the state-file check needs a scan to have actually
+completed). On a `settings.json` untouched since install,
+`./install.sh --uninstall` reproduces the pre-install bytes exactly (tested directly against
+`add_hook_entries`/`remove_marker_entries` in `tests/test_installer.py`, not by reading the
+backup back). Log rotation: `swab scan` truncates `daemon.log` past 5MB (launchd itself has no
+rotation facility).
 
 ---
 

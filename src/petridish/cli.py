@@ -24,7 +24,7 @@ import sys
 from datetime import datetime, timezone
 from pathlib import Path
 
-from petridish.config import Config, load_config
+from petridish.config import Config, HOOK_MARKER, load_config
 from petridish.schema import (
     Radar,
     STATUS_BUCKETS,
@@ -35,7 +35,20 @@ from petridish.schema import (
 CONFIG_DIR = os.path.join(os.path.expanduser("~"), ".petridish")
 _DEFAULT_STATE_PATH = os.path.join(CONFIG_DIR, "projects.json")
 
-_HOOK_MARKER = "# petridish"
+#: launchd (see M9's plist) redirects the daemon's stdout/stderr here on
+#: every 60s tick. launchd itself has no log-rotation facility, so ``scan``
+#: truncates it in-process once it crosses this size; the append-mode fd
+#: launchd holds keeps writing correctly from offset 0 after truncation.
+_DAEMON_LOG_PATH = os.path.join(CONFIG_DIR, "daemon.log")
+_DAEMON_LOG_MAX_BYTES = 5 * 1024 * 1024
+
+
+def _rotate_daemon_log(path: str = _DAEMON_LOG_PATH, max_bytes: int = _DAEMON_LOG_MAX_BYTES) -> None:
+    try:
+        if os.path.getsize(path) > max_bytes:
+            os.truncate(path, 0)
+    except OSError:
+        pass  # no log file yet (e.g. not installed via launchd) — nothing to rotate
 
 
 # ---------------------------------------------------------------------------
@@ -45,6 +58,8 @@ _HOOK_MARKER = "# petridish"
 def _cmd_scan(args: argparse.Namespace) -> int:
     from petridish.config import load_config  # local to keep main module light
     from petridish.scan import write_scan
+
+    _rotate_daemon_log()
 
     try:
         config = load_config()
@@ -264,7 +279,7 @@ def _cmd_doctor(args: argparse.Namespace) -> int:
             return False
 
         # Detect the marker in any hook command value (walks lists and dicts).
-        needle = _HOOK_MARKER
+        needle = HOOK_MARKER
 
         def _walk(obj: object) -> bool:
             if isinstance(obj, str):

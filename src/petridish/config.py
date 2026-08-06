@@ -111,6 +111,12 @@ class Config:
 _CONFIG_DIR = os.path.join(os.path.expanduser("~"), ".petridish")
 _DEFAULT_PATH = os.path.join(_CONFIG_DIR, "config.toml")
 
+#: Literal marker appended to every hook command line the installer (M9)
+#: writes into ``~/.claude/settings.json``. Shared by ``cli.py`` (doctor's
+#: "hook installed" check) and ``installer.py`` (install/uninstall) so both
+#: always agree on what "our entry" means.
+HOOK_MARKER = "# petridish"
+
 # Fields that tomllib will parse as ``list[str]`` and we must expand to
 # absolute :class:`Path`s on load.  Storing them as tuples of Path matches the
 # frozen-dataclass contract: a Config instance stays hashable and immutable.
