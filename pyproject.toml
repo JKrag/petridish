@@ -35,6 +35,7 @@ Issues = "https://github.com/JKrag/petridish/issues"
 # resolvable once M6 and M8 land.  The modules they point at are created in
 # those later modules — declaring them in M0 is the only thing we need.
 [project.scripts]
+petri = "petridish.tui:main"
 swab = "petridish.cli:main"
 swab-hook = "petridish.hook:main"
 
