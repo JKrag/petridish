@@ -557,3 +557,94 @@ sections render, `/` filters live, arrow keys move selection without crashing,
 and `q` quits cleanly. This module's tests alone are not sufficient sign-off —
 say so explicitly in the round's summary rather than reporting green tests as
 "done."
+
+---
+
+## 9. Raycast extension (`raycast/`)
+
+A separate npm project at `raycast/`, outside `src/petridish/` — its own
+`package.json`/`node_modules`/toolchain, gitignored per the usual Node
+convention (`raycast/node_modules/`, `raycast/dist/`). It is a **read
+consumer** of `~/.petridish/projects.json`, same single-writer invariant as
+every other frontend (§1); nothing here writes that file.
+
+Built 2026-08-07, first pass, while the user was unavailable to grill —
+decisions below are the orchestrator's best judgment, flagged for review
+rather than treated as final.
+
+**Structure**, mirroring the `tui_state.py` / `tui.py` split (§8) so the
+untestable surface stays as small as possible:
+- `src/types.ts` — hand-maintained mirror of `schema.py`'s `to_dict()`
+  shapes. **Not generated.** If `schema.py` changes field names or nesting,
+  this drifts silently until something breaks at runtime — there is no CI
+  check tying the two together yet.
+- `src/lib/state.ts` — pure, `@raycast/api`-free: `groupByBucket`,
+  `filterProjects`, `isStale`, `agentLabel`, `bucketTitle`. Covered by
+  `tests/state.test.ts` (Node's built-in test runner, no dependency).
+- `src/lib/readProjects.ts` — the only I/O: reads the state file, throws
+  `StateFileMissingError` with the same wording `swab`/`petri` already use
+  ("no state file at ...; run 'swab scan' first"). Covered by
+  `tests/readProjects.test.ts` against tmp fixtures.
+- `src/list-projects.tsx` — the Raycast `List` command. Untested (React +
+  `@raycast/api` render tree; no headless harness for it here) — needs a
+  human running it in real Raycast before it counts as verified.
+
+**Toolchain quirks discovered getting this far (record these, they cost real
+time to work out and will bite again on the next file):**
+- Node's native TS support (`node --experimental-strip-types`) requires
+  **explicit `.ts` extensions on every relative import**
+  (`from "../types.ts"`, not `from "../types"`) — plain ESM resolution,
+  not TS's classic bundler-style extensionless imports. `tsconfig.json`
+  needs `"allowImportingTsExtensions": true` (requires `"noEmit": true`,
+  already set) or `tsc` rejects the same imports it needs to typecheck.
+- Interfaces/types must be imported with `import type { ... }`, separate
+  from value imports (`STATUS_BUCKETS` etc.) in the same module — Node's
+  type-stripping erases `interface`/`type` declarations entirely, so a
+  mixed `import { Project, STATUS_BUCKETS }` fails at runtime with "does
+  not provide an export named 'Project'" even though `tsc` is silent about
+  it without `isolatedModules` catching it first.
+- `@raycast/api` pins its own nested `react`/`@types/react`. If the
+  project's own `@types/react` devDependency doesn't resolve to the
+  *exact* same version, npm keeps two copies and `tsc` fails every JSX
+  element with a bizarre `FunctionComponent<...> is not assignable` error
+  (mismatched `ReactNode` identity between the two copies). Fix: pin
+  `@types/react` to the exact version `@raycast/api` depends on and
+  confirm with `npm ls @types/react` that it says `deduped`, not two
+  separate version lines.
+- `ray build` / `ray lint` / `ray develop` need to create
+  `~/.config/raycast` — outside this session's sandbox grant, so they
+  could not be run here at all. Verification for this module was
+  `tsc --noEmit` + `npm test` only. **The real Raycast toolchain, and the
+  extension actually running inside Raycast, still need to be exercised by
+  a human** — this is the same caveat §8 made for `petri`'s curses loop,
+  for the same reason (no headless way to drive it from here).
+
+**Decisions made without the user, flagged for review:**
+- **Actions included in v1**, unlike `petri`'s deliberately read-only v1
+  (§8). Reasoning: `Action.Open` / `Action.OpenInBrowser` /
+  `Action.CopyToClipboard` are declarative Raycast components — the
+  extension never spawns a subprocess itself — so the risk profile that
+  justified `petri`'s read-only scope (an AFK-built curses shell hand-rolling
+  process launches) doesn't apply the same way here. Actions: open in
+  default editor, open Terminal at the project path, open the GitHub URL
+  (when present), copy path, reload (Cmd+R).
+- **`license: "MIT"`** in `raycast/package.json` — Raycast Store submissions
+  require MIT specifically, but this repo is `GPL-3.0-or-later`
+  (`pyproject.toml`). Fine for local/private use (`ray develop`); **this
+  becomes a real decision, not a placeholder, the moment Store publishing
+  is on the table** — needs the user's call, not assumed here.
+- **`icon.png` is a solid-color placeholder**, generated with a throwaway
+  script (no PIL/ImageMagick available), not real artwork.
+- **`author: "jankrag"`** in the manifest is a placeholder GitHub-style
+  handle, not necessarily the user's actual Raycast Store username — only
+  matters for Store publishing, not local dev.
+- No refresh-on-file-change (unlike `petri`'s mtime-poll): Raycast commands
+  re-mount on every hotkey invocation, so re-opening the command already
+  gets fresh data; Cmd+R covers the "left it open, data changed underneath
+  me" case. Revisit if that turns out to feel stale in practice.
+
+**Deferred, not started:** a second command mirroring `swab path <query>`
+(open the best-matching project directly, no list view) — see whether an
+AFK round produced one; if not, it's a reasonable next increment. Store
+publishing (`ray publish`) — out of scope until the license question above
+is resolved and real icon artwork exists.
