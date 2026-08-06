@@ -120,6 +120,39 @@ def format_detail(project: Project) -> list[str]:
 
 
 # ---------------------------------------------------------------------------
+# Column layout (extracted so petri's rows align like swab list's do)
+# ---------------------------------------------------------------------------
+
+#: Column headers for the four :func:`format_row` fields. Deliberately
+#: excludes "bucket" — petri conveys that via bucket sections, not a column.
+ROW_HEADERS = ["name", "agent", "branch", "dirty"]
+
+
+def column_widths(rows: list[list[str]], headers: list[str] = ROW_HEADERS) -> list[int]:
+    """Per-column max width across ``headers`` and every row.
+
+    Compute this once over *all* rows to be displayed together (e.g. every
+    bucket section) so columns line up across sections, not just within one.
+    """
+    widths = [len(h) for h in headers]
+    for row in rows:
+        for i, cell in enumerate(row):
+            if i < len(widths):
+                widths[i] = max(widths[i], len(cell))
+    return widths
+
+
+def pad_row(row: list[str], widths: list[int]) -> str:
+    """Join ``row`` into one line, left-padding each cell to ``widths[i]``.
+
+    Mirrors ``cli.py``'s ``_print_table`` join style (two-space gutter)."""
+    return "  ".join(
+        cell.ljust(widths[i]) if i < len(widths) else cell
+        for i, cell in enumerate(row)
+    )
+
+
+# ---------------------------------------------------------------------------
 # Interaction cursor
 # ---------------------------------------------------------------------------
 
@@ -220,4 +253,7 @@ __all__ = [
     "move",
     "selected_project",
     "is_stale",
+    "ROW_HEADERS",
+    "column_widths",
+    "pad_row",
 ]

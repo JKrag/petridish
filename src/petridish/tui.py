@@ -21,13 +21,16 @@ from datetime import datetime, timezone
 from petridish.cli import _DEFAULT_STATE_PATH
 from petridish.schema import read_json
 from petridish.tui_state import (
+    ROW_HEADERS,
     SelectionState,
+    column_widths,
     filter_projects,
     format_detail,
     format_row,
     group_by_bucket,
     is_stale,
     move,
+    pad_row,
     selected_project,
 )
 
@@ -90,6 +93,14 @@ def _run(stdscr) -> int:
             stdscr.erase()
             h, w = stdscr.getmaxyx()
 
+            # Compute the detail panel's content *before* drawing the list,
+            # so its lines (plus one separator) can be reserved at the
+            # bottom of the screen rather than fighting the list for
+            # whatever's left over.
+            selected = selected_project(state, grouped)
+            detail_lines = format_detail(selected) if selected is not None else []
+            reserved = (1 + len(detail_lines)) if detail_lines else 0
+
             # Stale banner at row 0.
             banner_line = ""
             if is_stale(radar, now=datetime.now(timezone.utc)):
@@ -99,11 +110,29 @@ def _run(stdscr) -> int:
                 except curses.error:
                     pass
 
-            cursor_y = 1 if banner_line else 0
+            top_y = 1 if banner_line else 0
+            list_bottom = max(top_y, h - reserved)
+            cursor_y = top_y
 
-            # Bucket sections: header + rows.
+            # Column widths computed once, across every visible row, so
+            # columns line up across bucket sections the way swab list's do.
+            all_rows = [
+                format_row(p) for projects in grouped.values() for p in projects
+            ]
+            widths = column_widths(all_rows, ROW_HEADERS)
+
+            if cursor_y < list_bottom:
+                header_line = pad_row(ROW_HEADERS, widths)
+                try:
+                    stdscr.addnstr(cursor_y, 0, header_line.ljust(w - 1), w - 1,
+                                   curses.A_UNDERLINE)
+                except curses.error:
+                    pass
+                cursor_y += 1
+
+            # Bucket sections: header + aligned rows.
             for bucket_name, projects in grouped.items():
-                if cursor_y >= h - 1:
+                if cursor_y >= list_bottom:
                     break
 
                 header = f"[{bucket_name.title()}] ({len(projects)})"
@@ -115,10 +144,9 @@ def _run(stdscr) -> int:
                 cursor_y += 1
 
                 for i, proj in enumerate(projects):
-                    if cursor_y >= h - 1:
+                    if cursor_y >= list_bottom:
                         break
-                    row = format_row(proj)
-                    row_str = "  ".join(row).ljust(w - 1)
+                    row_str = pad_row(format_row(proj), widths).ljust(w - 1)
                     attrs = (
                         curses.A_REVERSE
                         if state.bucket == bucket_name and state.index == i
@@ -130,15 +158,17 @@ def _run(stdscr) -> int:
                         pass
                     cursor_y += 1
 
-            # Detail panel anchored to the bottom few lines.
-            selected = selected_project(state, grouped)
-            if selected is not None:
-                detail_lines = format_detail(selected)
-                detail_start = max(cursor_y, h - len(detail_lines) - 1)
+            # Separator + detail panel in the region reserved above.
+            if detail_lines:
+                sep_y = h - reserved
+                try:
+                    stdscr.addnstr(sep_y, 0, "-" * max(0, w - 1), w - 1, curses.A_DIM)
+                except curses.error:
+                    pass
                 for di, dline in enumerate(detail_lines):
-                    dy = detail_start + di
-                    if dy >= h:
-                        break
+                    dy = sep_y + 1 + di
+                    if dy < 0 or dy >= h:
+                        continue
                     try:
                         stdscr.addnstr(dy, 0, dline.ljust(w - 1), w - 1)
                     except curses.error:

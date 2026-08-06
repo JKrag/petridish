@@ -21,12 +21,14 @@ from petridish.schema import (
     Radar,
 )
 from petridish.tui_state import (
+    column_widths,
     filter_projects,
     format_detail,
     format_row,
     group_by_bucket,
     is_stale,
     move,
+    pad_row,
     selected_project,
     SelectionState,
 )
@@ -256,3 +258,27 @@ def test_is_stale_with_custom_threshold():
     now = _now()
     assert is_stale(Radar(updated_at=updated), now=now, threshold_hours=1.0) is True
     assert is_stale(Radar(updated_at=updated), now=now, threshold_hours=5.0) is False
+
+
+# ---------------------------------------------------------------------------
+# column_widths / pad_row
+# ---------------------------------------------------------------------------
+
+def test_column_widths_grows_to_fit_longest_cell_or_header():
+    rows = [["a", "claude-code (working)", "main", "*"], ["much-longer-name", "idle", "b", " "]]
+    widths = column_widths(rows, headers=["name", "agent", "branch", "dirty"])
+    assert widths == [len("much-longer-name"), len("claude-code (working)"), len("branch"), len("dirty")]
+
+
+def test_column_widths_empty_rows_falls_back_to_header_length():
+    widths = column_widths([], headers=["name", "agent", "branch", "dirty"])
+    assert widths == [len("name"), len("agent"), len("branch"), len("dirty")]
+
+
+def test_pad_row_aligns_columns_across_rows():
+    rows = [["a", "claude-code (working)", "main", "*"], ["much-longer-name", "idle", "b", " "]]
+    widths = column_widths(rows, headers=["name", "agent", "branch", "dirty"])
+    lines = [pad_row(r, widths) for r in rows]
+    # every line's second column must start at the same offset
+    col2_offsets = [line.index("claude-code") if "claude-code" in line else line.index("idle") for line in lines]
+    assert col2_offsets[0] == col2_offsets[1]
