@@ -424,6 +424,136 @@ Those follow once the name is settled.
 
 ## 7. Deferred (explicitly not in this plan)
 
-Raycast extension · Textual TUI · FastAPI web UI · `ps`/`lsof` process sensing for
+Raycast extension · FastAPI web UI · `ps`/`lsof` process sensing for
 non-Claude CLIs (F8) · Copilot CLI (`~/.copilot/`) if it ever appears (F5) ·
-multi-root VS Code workspaces · a `swab tui` resume-session action.
+multi-root VS Code workspaces · resume-session / open-in-editor / open-GitHub
+actions from any frontend (v1 of every frontend is read-only).
+
+The terminal dashboard itself is **no longer deferred** — see §8. It moved from
+"Textual TUI" (DESIGN.md's original choice) to a stdlib `curses` build: see
+CONTEXT.md's `swab` vs `petri` entry for the naming split, and D6 below for why
+Textual was dropped.
+
+### D6 — `petri` uses stdlib `curses`, not Textual
+
+**Context:** DESIGN.md §5 named Textual for the TUI. But §5 of *this* plan commits
+the whole package to zero runtime dependencies specifically so any module is
+verifiable with no environment setup (a delegated agent, or a fresh clone, needs
+no `pip install` to run the tests). Textual would be the first exception.
+
+**Decision:** `petri` is built on the stdlib `curses` module. No new dependency,
+optional or otherwise, for v1.
+
+**Why this is hard to reverse:** once real users depend on `petri`'s screen
+layout and keybindings, swapping the rendering engine (curses → Textual) is a
+rewrite of the entire I/O layer, not a refactor — worth writing down now rather
+than re-litigating later. Revisit only if curses's layout limitations become a
+real blocker (e.g. mouse support, richer styling); the pure render-logic split
+in M11 (§8) means most of the code would survive that swap unchanged.
+
+---
+
+## 8. `petri` — terminal dashboard (frontend milestone)
+
+Read-only consumer of `~/.petridish/projects.json`. Never writes it — same
+single-writer invariant as every other frontend (§1). New console script
+`petri`, distinct from `swab` (see CONTEXT.md). v1 has no launch/open actions;
+that's `swab`'s and a future `petri` version's job (§7 deferred list).
+
+**Why split into two modules:** curses I/O can't be driven headlessly without a
+fake terminal, so pytest can only cover code that never calls a `curses.*`
+function. M11 is deliberately 100% pure functions — no `curses` import anywhere
+in the file — so a delegated agent's test suite is the actual correctness
+gate. M12 is the thin, largely-untested glue; verify it by running `petri`
+against a real terminal, not by trusting green tests.
+
+### M11 — Dashboard state & rendering (pure, no curses)
+**Files:** `src/petridish/tui_state.py`, `tests/test_tui_state.py`
+**Contract:** Zero `curses` imports in this file — plain functions over `Radar`
+and `Project` (from `schema.py`) and plain Python data (dicts/dataclasses/lists
+of strings), so every function is callable and assertable from pytest with no
+terminal.
+
+- `group_by_bucket(projects: list[Project]) -> dict[str, list[Project]]` —
+  buckets in the fixed display order `("active", "in_flight", "stale", "cold")`
+  (use `STATUS_BUCKETS` from `schema.py`, don't hardcode a second copy).
+  Excludes `is_foreign` projects, same as `swab list` without `--all` (no
+  `--all` equivalent in `petri` v1 — see CONTEXT.md's "Foreign project" entry).
+- `filter_projects(projects: list[Project], query: str) -> list[Project]` —
+  case-insensitive substring match against `Project.name`. Empty query returns
+  the input unchanged (identity, not a copy requirement — but must not mutate).
+- `format_row(project: Project) -> list[str]` — same four columns and same
+  agent-label / dirty-marker logic as `cli.py`'s `_print_table` (name, agent,
+  branch, dirty marker `"*"`/`" "`). **Extract `cli.py`'s existing row-building
+  logic into this shared function and have `cli.py` call it too** — do not
+  duplicate the agent-label / dirty-marker rules in two places; `_print_table`
+  keeps its column-width/table-frame code, but the per-row cell logic moves
+  here.
+- `format_detail(project: Project) -> list[str]` — full detail lines for the
+  selected project: path, branch, dirty file count, last commit time (and
+  `mine_last_commit_at` if it differs), github url, agent state/active
+  agent/session_id, last_activity_at. One label: value string per line, plain
+  text, no curses formatting codes.
+- `SelectionState` (frozen dataclass or plain class, orchestrator's choice) —
+  tracks which bucket section and which row within it is selected, over a
+  *filtered* project list. Needs:
+  - `move(state, delta: int) -> SelectionState` — moves selection up/down by
+    `delta`, **crossing section boundaries** (moving past the last row of
+    `active` lands on the first row of `in_flight`, skipping any empty
+    sections), clamped (does not wrap) at the very top/bottom of the whole
+    list.
+  - `selected_project(state, grouped: dict[str, list[Project]]) -> Project |
+    None` — `None` when the filtered set is empty (e.g. a filter matching
+    nothing) — this is the "nothing selected" case M12 must handle without
+    crashing.
+  - Re-filtering (query changes) must not crash if the previously-selected
+    project has been filtered out — selection resets to the first available
+    row.
+- `is_stale(radar: Radar, *, now: datetime, threshold_hours: float = 24.0) ->
+  bool` — same threshold `swab doctor` already uses (`cli.py`'s
+  `_check_state`); reuse that constant/value rather than re-deriving it.
+
+**Verify:** `pytest tests/test_tui_state.py -q`. Must cover: empty project
+list, a filter query matching nothing, selection movement across an empty
+bucket section, selection movement at both list boundaries (no wraparound),
+`format_row` matching `cli.py`'s existing table output byte-for-byte for the
+same fixture `Project` (regression-proof the extraction), and `is_stale` at
+exactly the threshold boundary.
+
+### M12 — curses shell & entry point
+**Files:** `src/petridish/tui.py`, `pyproject.toml` (add `petri =
+"petridish.tui:main"` under `[project.scripts]`)
+**Contract:** `main() -> int`, wrapped by `curses.wrapper()`. Loads
+`~/.petridish/projects.json` via `schema.read_json` (same default path
+resolution as `cli.py`'s `_DEFAULT_STATE_PATH`).
+
+- **Missing state file:** before entering `curses.wrapper()`, check the file
+  exists; if not, print the identical message `cli.py`'s `_cmd_list` already
+  uses (`"no state file at {path}; run 'swab scan' first"`) to stderr and
+  return 1 — no curses screen at all, matching swab's existing behavior
+  (decided explicitly: match `swab`, don't invent new copy).
+- **Stale file:** if `is_stale(...)` (M11) is true, still render normally but
+  show a persistent banner line (e.g. `"stale: last scan Nh ago"`) — data
+  degrades visibly, the screen never lies about freshness.
+- **Auto-poll:** on a ~2–5s timer (curses `nodelay`/`timeout` on `getch`, no
+  threading needed), `os.stat().st_mtime` the state file; only re-`read_json`
+  and re-render when the mtime changed. A plain `stat()` poll, not a file
+  watcher — no new dependency.
+- **Layout:** bucket sections stacked top to bottom (`group_by_bucket` order),
+  each row from `format_row`; selected row highlighted (`curses.A_REVERSE`);
+  detail panel in the bottom N lines from `format_detail`; `/` opens a
+  type-ahead line at the bottom that live-filters via `filter_projects` as you
+  type, `Enter`/`Esc` closes it; arrow keys and `j`/`k` move selection via
+  `SelectionState.move`; `q` quits. No open/launch keybindings in v1.
+- Terminal too small to render / resized: must not crash — clip or show a
+  "resize terminal" message instead of raising `curses.error`.
+
+**Verify:** whatever unit tests are feasible without a real terminal (e.g.
+`main()` returns 1 and prints the right message for a missing state file, with
+`curses.wrapper` never invoked in that path) plus a **mandatory human smoke
+test** before this module is considered done: run `petri` against a real
+`projects.json` (or `swab scan` first) in an actual terminal, confirm
+sections render, `/` filters live, arrow keys move selection without crashing,
+and `q` quits cleanly. This module's tests alone are not sufficient sign-off —
+say so explicitly in the round's summary rather than reporting green tests as
+"done."
