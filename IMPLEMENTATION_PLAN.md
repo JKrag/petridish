@@ -369,6 +369,45 @@ settings backup byte-for-byte. Log rotation: truncate `daemon.log` past 5MB.
 - Per the engineering-integrity rules: if a module can't be built as specified, escalate
   with the reason — do not narrow the spec, skip the test, or stub the sensor silently.
 
+### M10 — Packaging & release prep
+**Files:** `pyproject.toml`, `LICENSE`, `README.md`, `.github/workflows/ci.yml`
+**Contract:** everything needed before a first public release. See `DESIGN.md` §7
+for the distribution plan and requirements D1–D6 that motivate this.
+
+`pyproject.toml` currently carries only the build minimum. Add:
+
+- `license` (+ a `LICENSE` file — MIT or Apache-2.0; **pick before publishing**,
+  since relicensing after contributors appear requires their agreement)
+- `authors`, `readme = "README.md"`
+- `[project.urls]` — Homepage / Repository / Issues
+- `classifiers` — including `Operating System :: MacOS :: MacOS X`,
+  `Programming Language :: Python :: 3.12`, `Environment :: Console`,
+  `Development Status :: 3 - Alpha`
+- `keywords`
+
+Also in scope:
+
+- **`README.md`** — install instructions using the §7.1 mechanism (`uv tool
+  install` / `pipx install`), a `radar list` sample, and the config reference.
+- **Platform guard** — per D5, fail with a clear message on non-macOS rather than
+  half-installing.
+- **CI** — run `pytest` on macOS against **Python 3.12 specifically**, not just the
+  latest. Two shipped bugs (`__replace__`, `url2pathname(require_scheme=)`) were
+  3.13+/3.14-only APIs that passed locally on 3.14 while violating the declared
+  `>=3.12` floor. `.afk/check_pyver.py` catches the known cases by tokenizing, but a
+  real 3.12 job is the only complete check.
+- **Naming decision** — resolve `DESIGN.md` §7.4 before the first publish. The hook
+  marker string is load-bearing for `doctor` and `--uninstall`; changing it after
+  release orphans existing installs.
+
+**Verify:** `python3 -m build` produces a wheel; `uv tool install --editable .`
+yields working `radar` / `radar-hook` shims on `PATH`; `pytest` green on 3.12.
+
+**Not in scope here:** publishing to PyPI, or authoring the Homebrew tap/formula.
+Those follow once the name is settled.
+
+---
+
 ## 7. Deferred (explicitly not in this plan)
 
 Raycast extension · Textual TUI · FastAPI web UI · `ps`/`lsof` process sensing for

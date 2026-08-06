@@ -219,4 +219,101 @@ Implement the Textual terminal frontend and refine project categorization thresh
 
 ---
 
+## 7. Distribution & Deployment Plan
+
+Intended for eventual public release. Nothing here is built yet; it is recorded now
+because it constrains the installer (M9) that *is* about to be built.
+
+### 7.1 Install model
+
+The tool ships as a **Python package with two console scripts** (`radar`,
+`radar-hook`), installed into an **isolated virtualenv** with shims placed on the
+user's `PATH`. It is deliberately *not* a `pip install` into the system or user
+site-packages: it is an application, not a library, so `uv tool` / `pipx` semantics
+are the right ones.
+
+**Development installs use the same mechanism as end-user installs:**
+
+```sh
+uv tool install --editable ~/repos/JKrag/project-radar   # dev
+uv tool install <package-name>                           # end user (post-PyPI)
+pipx install <package-name>                              # end user, equivalent
+```
+
+Both produce shims in `~/.local/bin`. This is not just convenience — it means the
+launchd plist, the Claude hook entry, and `radar doctor` are all exercised against
+the **real production layout** during development, rather than a dev-only
+arrangement that would need re-testing after release.
+
+Rejected alternatives:
+
+| Approach | Why rejected |
+| --- | --- |
+| Symlink into `/opt/homebrew/bin` | Homebrew-managed directory; `brew doctor` flags foreign files and brew operations can clobber them. |
+| Shell alias in `.zshrc` | **Actively broken.** `launchd` jobs and Claude Code hooks run non-interactively and never source shell rc files — the daemon and hook would silently fail while working in an interactive terminal. |
+| `pip install --user` | PEP 668 friction on managed Pythons; pollutes user site-packages; no isolation. |
+
+### 7.2 Release channels
+
+1. **PyPI — primary, source of truth.** Enables `uv tool install` / `pipx install`
+   immediately and is what any other channel wraps.
+2. **Homebrew tap — secondary, optional.** Because the tool is macOS-only by nature
+   (launchd, `~/Library` paths), brew is a natural fit for discoverability. Start
+   with a personal tap (`brew install <user>/tap/<name>`) rather than
+   `homebrew-core`, which imposes notability requirements (stars/forks, release
+   history) and ongoing maintenance obligations.
+
+**The zero-dependency rule is a distribution asset, not just a build constraint.**
+Homebrew Python formulae normally require a vendored `resource` block per
+transitive dependency — often dozens, each needing bumps. A stdlib-only package
+needs none, making the formula roughly fifteen lines. This is a strong reason to
+keep runtime dependencies at zero permanently, beyond the original testability
+rationale.
+
+### 7.3 Design requirements this imposes
+
+Numbered so the installer (M9) can be checked against them:
+
+- **D1 — Discover the binary path at install time; never hardcode it.** The
+  installer must resolve `command -v radar-hook` and write the **absolute** result
+  into both the launchd plist and `~/.claude/settings.json`. A `uv tool` user has
+  `~/.local/bin/radar-hook`; a Homebrew user has `/opt/homebrew/bin/radar-hook`.
+  Assuming either breaks the other.
+- **D2 — Assume no `PATH` in non-interactive contexts.** `launchd` does not inherit
+  the user's shell environment, and neither do Claude Code hooks. Every command
+  string written to disk must be absolute.
+- **D3 — Runtime dependencies stay at zero.** See 7.2. Adding one is a distribution
+  decision, not just an implementation one.
+- **D4 — The installer is idempotent, reversible, and marks its own work.** It must
+  back up `~/.claude/settings.json` before editing, *append* to existing hook arrays
+  (never replace them — real users have other hook consumers), tag every entry it
+  adds with a literal marker comment, and ship an `--uninstall` that removes only
+  marked entries.
+- **D5 — Declare macOS-only.** Add the appropriate classifier and fail early with a
+  clear message on other platforms rather than half-installing.
+- **D6 — Respect user-data separation.** Code lives in the tool's venv; user state
+  (`config.toml`, `projects.json`, `events.ndjson`) lives in `~/.project-radar/` and
+  must survive uninstall/reinstall untouched.
+
+### 7.4 Naming — unresolved
+
+`project-radar` is a working title (originally suggested by an assistant, not
+chosen). **No name has been reserved and availability has not been checked.**
+
+Worth deciding before first publish, because the name is embedded in more places
+than the package metadata:
+
+- the PyPI distribution name and the Homebrew formula name
+- the console script names (`radar`, `radar-hook`) — note `radar` is a short,
+  collision-prone command name and deserves its own thought
+- the user-data directory `~/.project-radar/`
+- the launchd label (`com.<user>.project-radar`)
+- **the hook marker string written into `settings.json`** — this one is
+  load-bearing: `radar doctor` and `--uninstall` both identify their own entries by
+  matching it, so changing it after release orphans existing installs' entries.
+
+A rename is cheap now and expensive after the first public install.
+
+---
+
 Would you like to start building Phase 1 (the Python background scanner and JSON generator) right away, or modify any specific path configurations first?
