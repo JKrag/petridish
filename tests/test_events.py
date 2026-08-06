@@ -1,4 +1,4 @@
-"""Tests for ``radar.hook`` and ``radar.events``.
+"""Tests for ``petridish.hook`` and ``petridish.events``.
 
 Coverage:
 
@@ -21,8 +21,8 @@ from pathlib import Path
 
 import pytest
 
-from radar.events import read_and_compact
-from radar.hook import main as hook_main
+from petridish.events import read_and_compact
+from petridish.hook import main as hook_main
 
 
 # ---------------------------------------------------------------------------
@@ -61,7 +61,7 @@ def _dt(year: int, month: int, day: int, hour: int, minute: int = 0) -> datetime
 def _rc(path, config=None, **kwargs):
     """Convenience wrapper around ``read_and_compact``."""
     if config is None:
-        from radar.config import Config
+        from petridish.config import Config
 
         config = Config()
     return read_and_compact(str(path), config, **kwargs)
@@ -69,7 +69,7 @@ def _rc(path, config=None, **kwargs):
 
 def _set_events_file(tmp_path: Path, monkeypatch) -> Path:
     p = tmp_path / "events.ndjson"
-    monkeypatch.setenv("RADAR_EVENTS_PATH", str(p))
+    monkeypatch.setenv("PETRIDISH_EVENTS_PATH", str(p))
     return p
 
 
@@ -270,10 +270,10 @@ def test_concurrency_no_loss_no_interleaving(tmp_path, monkeypatch):
 def _run_hook(monkeypatch, tmp_path, payload):
     import io
     import json as _json
-    from radar import hook
+    from petridish import hook
 
     target = tmp_path / "events.ndjson"
-    monkeypatch.setenv("RADAR_EVENTS_PATH", str(target))
+    monkeypatch.setenv("PETRIDISH_EVENTS_PATH", str(target))
     monkeypatch.setattr("sys.stdin", io.StringIO(_json.dumps(payload)))
     rc = hook.main()
     lines = target.read_text().splitlines() if target.exists() else []

@@ -1,9 +1,9 @@
-"""radar-hook console script — the hot path for tool-use events.
+"""swab-hook console script — the hot path for tool-use events.
 
 Runs on every tool use, alongside three other hook consumers. Must be tiny,
 silent, and never raise: a failure here would disrupt all hook consumers.
 
-Imports are kept to stdlib primitives — no heavy radar modules — so the
+Imports are kept to stdlib primitives — no heavy petridish modules — so the
 per-invocation overhead is near zero.
 """
 
@@ -18,8 +18,8 @@ def main() -> int:
 
     Reads the hook event JSON from stdin, extracts cwd / session_id and
     hook_event_name, and appends a single JSON line to
-    ``~/.project-radar/events.ndjson`` (or the path given by the
-    ``RADAR_EVENTS_PATH`` environment variable for tests).
+    ``~/.petridish/events.ndjson`` (or the path given by the
+    ``PETRIDISH_EVENTS_PATH`` environment variable for tests).
     """
     try:
         events_path = _events_path()
@@ -65,11 +65,11 @@ def main() -> int:
 def _events_path() -> str:
     """Resolve the target events file path.
 
-    Honours ``RADAR_EVENTS_PATH`` (used by tests); falls back to the user's
+    Honours ``PETRIDISH_EVENTS_PATH`` (used by tests); falls back to the user's
     home directory otherwise.
     """
-    override = os.environ.get("RADAR_EVENTS_PATH")
+    override = os.environ.get("PETRIDISH_EVENTS_PATH")
     if override:
         return override
     home = os.environ.get("HOME", os.path.expanduser("~"))
-    return os.path.join(home, ".project-radar", "events.ndjson")
+    return os.path.join(home, ".petridish", "events.ndjson")

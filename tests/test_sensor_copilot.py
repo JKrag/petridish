@@ -1,4 +1,4 @@
-"""Tests for ``radar.sensors.copilot``.
+"""Tests for ``petridish.sensors.copilot``.
 
 Every test builds fixtures on ``tmp_path``, never touching the real
 ``~/Library/Application Support/Code/...`` tree.  The sensor degrades when
@@ -18,9 +18,9 @@ from pathlib import Path
 
 import pytest
 
-from radar.config import Config
-from radar.schema import AgentSignal
-from radar.sensors.copilot import scan
+from petridish.config import Config
+from petridish.schema import AgentSignal
+from petridish.sensors.copilot import scan
 
 
 def _config() -> Config:

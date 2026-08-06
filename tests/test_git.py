@@ -1,4 +1,4 @@
-"""Tests for src/radar/git."""
+"""Tests for src/petridish/git."""
 
 from __future__ import annotations
 
@@ -8,8 +8,8 @@ from datetime import timezone
 
 import pytest
 
-from radar.git import scan
-from radar.schema import GitState
+from petridish.git import scan
+from petridish.schema import GitState
 
 
 # ---------------------------------------------------------------------------
@@ -219,5 +219,5 @@ def test_scan_uses_portable_dataclass_replace():
     ``requires-python = ">=3.12"``, so this would have failed only on the
     oldest supported interpreter — the one least likely to be tested here.
     """
-    source = (Path(__file__).parent.parent / "src" / "radar" / "git.py").read_text()
+    source = (Path(__file__).parent.parent / "src" / "petridish" / "git.py").read_text()
     assert "__replace__" not in source

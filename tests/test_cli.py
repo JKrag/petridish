@@ -1,9 +1,9 @@
-"""Tests for ``src/radar/cli.py``.
+"""Tests for ``src/petridish/cli.py``.
 
 All fixtures live in a temporary directory (via ``tmp_path`` +
 ``monkeypatch.setenv("HOME", ...)``) so the real ``~/.claude`` and
-``~/.project-radar`` are never touched by the tests.  Each test builds its
-fixture state file via :func:`radar.schema.write_atomic` and hands the
+``~/.petridish`` are never touched by the tests.  Each test builds its
+fixture state file via :func:`petridish.schema.write_atomic` and hands the
 temporary path through ``--state``.
 """
 
@@ -16,8 +16,8 @@ from pathlib import Path
 
 import pytest
 
-from radar.cli import main
-from radar.schema import (
+from petridish.cli import main
+from petridish.schema import (
     AgentState,
     GitState,
     Project,
@@ -198,8 +198,8 @@ def test_doctor_missing_state_returns_nonzero(capsys):
 
 def test_doctor_hook_present_and_absent(tmp_path, capsys):
     """doctor reports the hook as present when a fake settings.json contains
-    a command with the ``# project-radar`` marker, and absent when that file
-    contains a ``radar-hook`` command WITHOUT the marker."""
+    a command with the ``# petridish`` marker, and absent when that file
+    contains a ``swab-hook`` command WITHOUT the marker."""
     settings_dir = tmp_path / ".claude"
     settings_dir.mkdir(parents=True, exist_ok=True)
     settings_path = settings_dir / "settings.json"
@@ -209,7 +209,7 @@ def test_doctor_hook_present_and_absent(tmp_path, capsys):
         json.dumps({
             "hooks": {
                 "pre:commit": {
-                    "command": "radar-hook --state /tmp/s.json # project-radar",
+                    "command": "swab-hook --state /tmp/s.json # petridish",
                 },
             }
         })
@@ -222,12 +222,12 @@ def test_doctor_hook_present_and_absent(tmp_path, capsys):
         f"expected 'ok: hook' in {hook_lines!r}"
     )
 
-    # Case B: ``radar-hook`` string but no marker.
+    # Case B: ``swab-hook`` string but no marker.
     settings_path.write_text(
         json.dumps({
             "hooks": {
                 "pre:commit": {
-                    "command": "radar-hook --state /tmp/s.json",
+                    "command": "swab-hook --state /tmp/s.json",
                 },
             }
         })
@@ -271,7 +271,7 @@ def test_list_shows_agent_name_even_when_idle(tmp_path, capsys, monkeypatch):
     resume) for exactly the projects that are not currently live.
     """
     from datetime import datetime, timezone
-    from radar.schema import AgentState, Project, Radar, write_atomic
+    from petridish.schema import AgentState, Project, Radar, write_atomic
 
     monkeypatch.setenv("HOME", str(tmp_path))
     state = tmp_path / "p.json"

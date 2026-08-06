@@ -1,4 +1,4 @@
-"""Project-radar scan orchestration.
+"""petridish scan orchestration.
 
 Merges discovery results and agent-sensor observations into a single Radar
 snapshot, applying the bucketing rules described in IMPLEMENTATION_PLAN.md.
@@ -13,13 +13,13 @@ from pathlib import Path
 from datetime import datetime
 from typing import Optional
 
-from radar.config import Config
-from radar.discovery import discover as _discover, is_foreign, resolve_root
-from radar.events import read_and_compact as _read_events
-from radar.git import scan as _git_scan
-from radar.sensors.claude import scan as claude_scan
-from radar.sensors.copilot import scan as copilot_scan
-from radar.schema import (
+from petridish.config import Config
+from petridish.discovery import discover as _discover, is_foreign, resolve_root
+from petridish.events import read_and_compact as _read_events
+from petridish.git import scan as _git_scan
+from petridish.sensors.claude import scan as claude_scan
+from petridish.sensors.copilot import scan as copilot_scan
+from petridish.schema import (
     AgentSignal,
     AgentState,
     GitState,
@@ -206,7 +206,7 @@ def run_scan(
             / "User" / "workspaceStorage"
         )
     if events_path is None:
-        events_path = Path.home() / ".project-radar" / "events.ndjson"
+        events_path = Path.home() / ".petridish" / "events.ndjson"
 
     paths = _discover(config)
 

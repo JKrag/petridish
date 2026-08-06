@@ -6,8 +6,8 @@ from datetime import datetime
 from pathlib import Path
 from typing import Union
 
-from radar.discovery import resolve_root
-from radar.schema import AgentSignal
+from petridish.discovery import resolve_root
+from petridish.schema import AgentSignal
 
 
 def read_and_compact(

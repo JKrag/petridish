@@ -27,8 +27,8 @@ import urllib.request
 from datetime import datetime, timezone
 from pathlib import Path
 
-from radar.discovery import resolve_root
-from radar.schema import AgentSignal
+from petridish.discovery import resolve_root
+from petridish.schema import AgentSignal
 
 
 def _uri_to_path(uri: str) -> str:

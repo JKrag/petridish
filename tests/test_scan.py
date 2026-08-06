@@ -1,4 +1,4 @@
-"""Tests for src/radar/scan.
+"""Tests for src/petridish/scan.
 
 Each test is targeted at a specific behavior described in the scan algorithm.
 Sensors are exercised via monkey-patches where we need precise control over
@@ -19,9 +19,9 @@ from typing import Any
 
 import pytest
 
-from radar.config import Config
-from radar.schema import AgentSignal, Radar
-from radar.scan import run_scan, write_scan
+from petridish.config import Config
+from petridish.schema import AgentSignal, Radar
+from petridish.scan import run_scan, write_scan
 
 
 # ---------------------------------------------------------------------------
@@ -153,7 +153,7 @@ def test_round_trip_validates(tmp_path: Path):
             return None
         return to_utc(dt).replace(tzinfo=None)  # type: ignore[arg-type]
 
-    from radar.schema import to_utc  # reimport for the helper's scope
+    from petridish.schema import to_utc  # reimport for the helper's scope
 
     assert _naive_utc(back.updated_at) == _naive_utc(radar.updated_at)
     assert len(back.projects) == 1
@@ -189,8 +189,8 @@ def test_sensor_raise_does_not_abort(tmp_path: Path, monkeypatch):
 
     cfg = _config([str(repo)])
 
-    monkeypatch.setattr("radar.scan.claude_scan", _boom)
-    monkeypatch.setattr("radar.scan.copilot_scan", _boom)
+    monkeypatch.setattr("petridish.scan.claude_scan", _boom)
+    monkeypatch.setattr("petridish.scan.copilot_scan", _boom)
 
     radar = run_scan(cfg, now=datetime(2026, 1, 1))
 
@@ -216,8 +216,8 @@ def test_live_agent_is_working(tmp_path: Path, monkeypatch):
         session_id="s1", event="chat", raw_cwd=str(repo),
     )
 
-    monkeypatch.setattr("radar.scan.claude_scan", lambda *a, **k: {str(repo): signal})
-    monkeypatch.setattr("radar.scan.copilot_scan", lambda *a, **k: {})
+    monkeypatch.setattr("petridish.scan.claude_scan", lambda *a, **k: {str(repo): signal})
+    monkeypatch.setattr("petridish.scan.copilot_scan", lambda *a, **k: {})
 
     radar = run_scan(cfg, now=now)
     proj = radar.projects[0]
@@ -245,8 +245,8 @@ def test_signal_ten_min_old_is_recent(tmp_path: Path, monkeypatch):
         session_id="s2", event="chat", raw_cwd=str(repo),
     )
 
-    monkeypatch.setattr("radar.scan.claude_scan", lambda *a, **k: {})
-    monkeypatch.setattr("radar.scan.copilot_scan", lambda *a, **k: {str(repo): signal})
+    monkeypatch.setattr("petridish.scan.claude_scan", lambda *a, **k: {})
+    monkeypatch.setattr("petridish.scan.copilot_scan", lambda *a, **k: {str(repo): signal})
 
     radar = run_scan(cfg, now=now)
     proj = radar.projects[0]
@@ -272,8 +272,8 @@ def test_signal_two_hours_old_is_idle(tmp_path: Path, monkeypatch):
         session_id="s3", event="chat", raw_cwd=str(repo),
     )
 
-    monkeypatch.setattr("radar.scan.claude_scan", lambda *a, **k: {str(repo): signal})
-    monkeypatch.setattr("radar.scan.copilot_scan", lambda *a, **k: {})
+    monkeypatch.setattr("petridish.scan.claude_scan", lambda *a, **k: {str(repo): signal})
+    monkeypatch.setattr("petridish.scan.copilot_scan", lambda *a, **k: {})
 
     radar = run_scan(cfg, now=now)
     proj = radar.projects[0]
@@ -332,8 +332,8 @@ def test_working_overrides_cold_git(tmp_path: Path, monkeypatch):
         session_id="s1", event="chat", raw_cwd=str(repo),
     )
 
-    monkeypatch.setattr("radar.scan.claude_scan", lambda *a, **k: {str(repo): live_signal})
-    monkeypatch.setattr("radar.scan.copilot_scan", lambda *a, **k: {})
+    monkeypatch.setattr("petridish.scan.claude_scan", lambda *a, **k: {str(repo): live_signal})
+    monkeypatch.setattr("petridish.scan.copilot_scan", lambda *a, **k: {})
 
     radar = run_scan(cfg, now=now)
     assert radar.projects[0].status_bucket == "active"
@@ -360,7 +360,7 @@ def test_signal_outside_roots_still_appears(tmp_path: Path, monkeypatch):
         session_id="s9", event="chat", raw_cwd=str(outside),
     )
 
-    monkeypatch.setattr("radar.scan.copilot_scan", lambda *a, **k: {str(outside): live_signal})
+    monkeypatch.setattr("petridish.scan.copilot_scan", lambda *a, **k: {str(outside): live_signal})
 
     radar = run_scan(cfg, now=now)
     by_name = {p.name: p for p in radar.projects}
@@ -392,8 +392,8 @@ def test_merge_newest_at_wins(tmp_path: Path, monkeypatch):
         session_id="s2", event="e2", raw_cwd=str(repo),
     )
 
-    monkeypatch.setattr("radar.scan.claude_scan", lambda *a, **k: {str(repo): old_signal})
-    monkeypatch.setattr("radar.scan.copilot_scan", lambda *a, **k: {str(repo): new_signal})
+    monkeypatch.setattr("petridish.scan.claude_scan", lambda *a, **k: {str(repo): old_signal})
+    monkeypatch.setattr("petridish.scan.copilot_scan", lambda *a, **k: {str(repo): new_signal})
 
     radar = run_scan(cfg, now=now)
     assert len(radar.projects) == 1
@@ -434,11 +434,11 @@ def test_id_differs_between_paths(tmp_path: Path):
 
 
 # ---------------------------------------------------------------------------
-# Test 12 — write_scan produces a file loadable by radar.schema.read_json.
+# Test 12 — write_scan produces a file loadable by petridish.schema.read_json.
 # ---------------------------------------------------------------------------
 
 def test_write_scan_round_trip(tmp_path: Path, monkeypatch):
-    from radar import schema as radar_schema
+    from petridish import schema as radar_schema
 
     repo = tmp_path / "repo"
     repo.mkdir()
@@ -446,7 +446,7 @@ def test_write_scan_round_trip(tmp_path: Path, monkeypatch):
     _git_commit(repo)
 
     cfg = _config([str(repo)])
-    out_path = tmp_path / "radar.json"
+    out_path = tmp_path / "petridish.json"
 
     radar = write_scan(cfg, str(out_path), now=datetime(2026, 8, 6))
 
@@ -480,9 +480,9 @@ def test_sensors_receive_real_paths_when_not_injected(tmp_path, monkeypatch):
             return {}
         return _f
 
-    monkeypatch.setattr("radar.scan.claude_scan", _spy("claude"))
-    monkeypatch.setattr("radar.scan.copilot_scan", _spy("copilot"))
-    monkeypatch.setattr("radar.scan._read_events", _spy("events"))
+    monkeypatch.setattr("petridish.scan.claude_scan", _spy("claude"))
+    monkeypatch.setattr("petridish.scan.copilot_scan", _spy("copilot"))
+    monkeypatch.setattr("petridish.scan._read_events", _spy("events"))
 
     run_scan(_config([str(tmp_path)]))
 

@@ -3,18 +3,18 @@ requires = ["setuptools>=61.0"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "project-radar"
+name = "petridish"
 version = "0.1.0"
 description = "Local monitoring daemon for macOS project activity."
 requires-python = ">=3.12"
 dependencies = []
 
-# Entry points are declared now so the `radar` / `radar-hook` scripts are
+# Entry points are declared now so the `swab` / `swab-hook` scripts are
 # resolvable once M6 and M8 land.  The modules they point at are created in
 # those later modules — declaring them in M0 is the only thing we need.
 [project.scripts]
-radar = "radar.cli:main"
-radar-hook = "radar.hook:main"
+swab = "petridish.cli:main"
+swab-hook = "petridish.hook:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]

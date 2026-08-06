@@ -1,7 +1,7 @@
-"""Runtime configuration for the radar daemon.
+"""Runtime configuration for the petridish daemon.
 
 The config is a frozen dataclass whose fields mirror the sections of
-``~/.project-radar/config.toml`` documented in the implementation plan.  Every
+``~/.petridish/config.toml`` documented in the implementation plan.  Every
 field has a sensible default so a missing (or empty) config file is *valid* —
 the daemon should be install-and-run on a fresh machine.
 
@@ -88,7 +88,7 @@ class Config:
     )
 
     #: Activity-recency thresholds in hours.  Stored as float for easy comparison
-    #: against ``timedelta`` in seconds — consumers in ``radar.scan`` multiply by
+    #: against ``timedelta`` in seconds — consumers in ``petridish.scan`` multiply by
     #: 3600 before handing to the bucketing logic.
     bucket_thresholds: dict[str, float] = field(
         default_factory=lambda: dict(DEFAULT_BUCKETS)
@@ -108,7 +108,7 @@ class Config:
 # Loading
 # ---------------------------------------------------------------------------
 
-_CONFIG_DIR = os.path.join(os.path.expanduser("~"), ".project-radar")
+_CONFIG_DIR = os.path.join(os.path.expanduser("~"), ".petridish")
 _DEFAULT_PATH = os.path.join(_CONFIG_DIR, "config.toml")
 
 # Fields that tomllib will parse as ``list[str]`` and we must expand to
@@ -150,7 +150,7 @@ def load_config(path: str | Path | None = None) -> Config:
     Parameters
     ----------
     path:
-        Path to the TOML file.  Defaults to ``~/.project-radar/config.toml``.
+        Path to the TOML file.  Defaults to ``~/.petridish/config.toml``.
         If the path does not exist (or points at nothing readable) the
         function returns a :class:`Config` built entirely from defaults —
         *never* raises.
@@ -165,7 +165,7 @@ def load_config(path: str | Path | None = None) -> Config:
     >>> load_config("/nonexistent/path.toml").roots  # doctest: +SKIP
     (PosixPath('/Users/you/repos'), PosixPath('/Users/you/learning'))
 
-    >>> # with ~/.project-radar/config.toml containing `max_depth = 6`
+    >>> # with ~/.petridish/config.toml containing `max_depth = 6`
     >>> load_config().max_depth  # doctest: +SKIP
     6
     """

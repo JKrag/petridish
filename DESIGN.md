@@ -1,8 +1,8 @@
-# System Design Document: Local Project & Agent Radar (`project-radar`)
+# System Design Document: Local Project & Agent Radar (`petridish`)
 
 ## 1. System Overview & Objectives
 
-`project-radar` is a lightweight, zero-maintenance local monitoring daemon and frontend suite for macOS. It crawls configured root directories, automatically tracks Git state, senses real-time AI agent activity across scattered projects, and aggregates metadata into a local JSON store (`~/.project-radar/projects.json`).
+`petridish` is a lightweight, zero-maintenance local monitoring daemon and frontend suite for macOS. It crawls configured root directories, automatically tracks Git state, senses real-time AI agent activity across scattered projects, and aggregates metadata into a local JSON store (`~/.petridish/projects.json`).
 
 ### Core Goals
 
@@ -31,14 +31,14 @@
                                     │
                                     ▼
                      ┌─────────────────────────────┐
-                     │    radar-daemon (Python)    │
+                     │   petridish-daemon (Python) │
                      │  - Git state scanner        │
                      │  - Agent state aggregator   │
                      │  - Category classifier      │
                      └──────────────┬──────────────┘
                                     │
                                     ▼
-                      ~/.project-radar/projects.json
+                      ~/.petridish/projects.json
                                     │
      ┌──────────────────────────────┼──────────────────────────────┐
      ▼                              ▼                              ▼
@@ -75,7 +75,7 @@ The daemon combines **event-driven hooks**, **filesystem watching**, and **passi
 
 #### Claude Code Hook Protocol (Fast Path)
 
-The installer configures a lightweight executable (`radar-hook`) inside `~/.claude/settings.json`:
+The installer configures a lightweight executable (`swab-hook`) inside `~/.claude/settings.json`:
 
 ```json
 {
@@ -85,7 +85,7 @@ The installer configures a lightweight executable (`radar-hook`) inside `~/.clau
         "hooks": [
           {
             "type": "command",
-            "command": "radar-hook --agent claude-code --event PreToolUse",
+            "command": "swab-hook --agent claude-code --event PreToolUse",
             "async": true
           }
         ]
@@ -96,7 +96,7 @@ The installer configures a lightweight executable (`radar-hook`) inside `~/.clau
         "hooks": [
           {
             "type": "command",
-            "command": "radar-hook --agent claude-code --event Stop",
+            "command": "swab-hook --agent claude-code --event Stop",
             "async": true
           }
         ]
@@ -107,13 +107,13 @@ The installer configures a lightweight executable (`radar-hook`) inside `~/.clau
 
 ```
 
-*`radar-hook` reads event JSON from `stdin`, extracts `cwd` and `session_id`, updates `projects.json`, and exits in under 15ms.*
+*`swab-hook` reads event JSON from `stdin`, extracts `cwd` and `session_id`, updates `projects.json`, and exits in under 15ms.*
 
 ---
 
 ## 4. State Storage Schema (`projects.json`)
 
-The single source of truth lives in `~/.project-radar/projects.json`. No relational or document database binary is required.
+The single source of truth lives in `~/.petridish/projects.json`. No relational or document database binary is required.
 
 ```json
 {
@@ -202,7 +202,7 @@ Projects are bucketed automatically based on activity timestamps:
 ### Option C: Web Dashboard (On-Demand)
 
 * Ultra-lightweight local web app (FastAPI + single-page HTML/Tailwind).
-* Launched only when requested (`radar web`) to keep system memory entirely clear during heavy local LLM runs.
+* Launched only when requested (`petri web`) to keep system memory entirely clear during heavy local LLM runs.
 
 ---
 
@@ -211,7 +211,7 @@ Projects are bucketed automatically based on activity timestamps:
 1. **Phase 1: Core Daemon & Git Discovery**
 Create the Python scanner script that discovers project roots, parses Git metrics, and generates `projects.json`. Set up a background `launchd` service or `watchdog` process.
 2. **Phase 2: Agent Telemetry Pipeline**
-Implement `radar-hook` executable for Claude Code settings, add file watchers for VS Code / Copilot workspace log directories, and integrate PID/CWD scanning for active processes.
+Implement `swab-hook` executable for Claude Code settings, add file watchers for VS Code / Copilot workspace log directories, and integrate PID/CWD scanning for active processes.
 3. **Phase 3: Raycast Extension Build**
 Scaffold Raycast TypeScript extension, read `projects.json`, format items with status tags, and hook up execution actions (Open Code, Open Terminal, Open GitHub).
 4. **Phase 4: TUI & Refinement**
@@ -226,8 +226,8 @@ because it constrains the installer (M9) that *is* about to be built.
 
 ### 7.1 Install model
 
-The tool ships as a **Python package with two console scripts** (`radar`,
-`radar-hook`), installed into an **isolated virtualenv** with shims placed on the
+The tool ships as a **Python package with two console scripts** (`swab`,
+`swab-hook`), installed into an **isolated virtualenv** with shims placed on the
 user's `PATH`. It is deliberately *not* a `pip install` into the system or user
 site-packages: it is an application, not a library, so `uv tool` / `pipx` semantics
 are the right ones.
@@ -235,13 +235,13 @@ are the right ones.
 **Development installs use the same mechanism as end-user installs:**
 
 ```sh
-uv tool install --editable ~/repos/JKrag/project-radar   # dev
+uv tool install --editable ~/repos/JKrag/project-radar   # dev (repo dir name unchanged)
 uv tool install <package-name>                           # end user (post-PyPI)
 pipx install <package-name>                              # end user, equivalent
 ```
 
 Both produce shims in `~/.local/bin`. This is not just convenience — it means the
-launchd plist, the Claude hook entry, and `radar doctor` are all exercised against
+launchd plist, the Claude hook entry, and `swab doctor` are all exercised against
 the **real production layout** during development, rather than a dev-only
 arrangement that would need re-testing after release.
 
@@ -275,9 +275,9 @@ rationale.
 Numbered so the installer (M9) can be checked against them:
 
 - **D1 — Discover the binary path at install time; never hardcode it.** The
-  installer must resolve `command -v radar-hook` and write the **absolute** result
+  installer must resolve `command -v swab-hook` and write the **absolute** result
   into both the launchd plist and `~/.claude/settings.json`. A `uv tool` user has
-  `~/.local/bin/radar-hook`; a Homebrew user has `/opt/homebrew/bin/radar-hook`.
+  `~/.local/bin/swab-hook`; a Homebrew user has `/opt/homebrew/bin/swab-hook`.
   Assuming either breaks the other.
 - **D2 — Assume no `PATH` in non-interactive contexts.** `launchd` does not inherit
   the user's shell environment, and neither do Claude Code hooks. Every command
@@ -292,27 +292,31 @@ Numbered so the installer (M9) can be checked against them:
 - **D5 — Declare macOS-only.** Add the appropriate classifier and fail early with a
   clear message on other platforms rather than half-installing.
 - **D6 — Respect user-data separation.** Code lives in the tool's venv; user state
-  (`config.toml`, `projects.json`, `events.ndjson`) lives in `~/.project-radar/` and
+  (`config.toml`, `projects.json`, `events.ndjson`) lives in `~/.petridish/` and
   must survive uninstall/reinstall untouched.
 
-### 7.4 Naming — unresolved
+### 7.4 Naming — resolved
 
-`project-radar` is a working title (originally suggested by an assistant, not
-chosen). **No name has been reserved and availability has not been checked.**
+`project-radar` was a working title, replaced (2026-08-06) with **`petridish`** —
+the filesystem-as-Petri-dish metaphor for dozens of small AI-assisted experiments
+growing (or sitting dormant) across the machine. The bare name `petri` is already
+taken on PyPI; `petridish` was checked and is free, so it is the distribution
+name. `petri` is kept in reserve for a possible future dashboard (see below), not
+used for anything published. Final mapping:
 
-Worth deciding before first publish, because the name is embedded in more places
-than the package metadata:
+- PyPI distribution / import package: `petridish`
+- CLI console script (scan/list/path/doctor): `swab` — "swabbing" the filesystem
+  to see what's alive. Replaces `radar`.
+- Hook console script: `swab-hook`. Replaces `radar-hook`.
+- Reserved for the not-yet-built frontend/dashboard: `petri` (e.g. a future
+  `petri web` command — see §5 Option C, still just a name reservation, not built).
+- User-data directory: `~/.petridish/`
+- launchd label: `com.petridish.daemon`
+- Hook marker string written into `settings.json`: `# petridish` — load-bearing,
+  since `swab doctor` and `--uninstall` identify their own entries by matching it.
 
-- the PyPI distribution name and the Homebrew formula name
-- the console script names (`radar`, `radar-hook`) — note `radar` is a short,
-  collision-prone command name and deserves its own thought
-- the user-data directory `~/.project-radar/`
-- the launchd label (`com.<user>.project-radar`)
-- **the hook marker string written into `settings.json`** — this one is
-  load-bearing: `radar doctor` and `--uninstall` both identify their own entries by
-  matching it, so changing it after release orphans existing installs' entries.
-
-A rename is cheap now and expensive after the first public install.
+This lands before M9 (the installer) is written, so no released install exists
+yet to orphan.
 
 ---
 

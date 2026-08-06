@@ -1,15 +1,15 @@
-"""Command-line entry point for ``radar``.
+"""Command-line entry point for ``swab``.
 
 Public API: :func:`main` returns an exit code and never calls ``sys.exit``
 itself, so tests can drive it directly.
 
 Subcommands:
 
-- ``radar scan``                    Run a fresh scan and write the state file.
-- ``radar list [--bucket|--all|--json]``
+- ``swab scan``                     Run a fresh scan and write the state file.
+- ``swab list [--bucket|--all|--json]``
                                     Inspect the cached state file (never scans).
-- ``radar path <QUERY>``            Print the project path matching QUERY.
-- ``radar doctor``                  Check system health and report findings.
+- ``swab path <QUERY>``             Print the project path matching QUERY.
+- ``swab doctor``                   Check system health and report findings.
 
 Keep stdlib-only: the CLI is part of the "install-and-run" surface and must
 work on a brand-new machine with no extra pip packages.
@@ -24,18 +24,18 @@ import sys
 from datetime import datetime, timezone
 from pathlib import Path
 
-from radar.config import Config, load_config
-from radar.schema import (
+from petridish.config import Config, load_config
+from petridish.schema import (
     Radar,
     STATUS_BUCKETS,
     read_json,
     write_atomic,
 )
 
-CONFIG_DIR = os.path.join(os.path.expanduser("~"), ".project-radar")
+CONFIG_DIR = os.path.join(os.path.expanduser("~"), ".petridish")
 _DEFAULT_STATE_PATH = os.path.join(CONFIG_DIR, "projects.json")
 
-_HOOK_MARKER = "# project-radar"
+_HOOK_MARKER = "# petridish"
 
 
 # ---------------------------------------------------------------------------
@@ -43,8 +43,8 @@ _HOOK_MARKER = "# project-radar"
 # ---------------------------------------------------------------------------
 
 def _cmd_scan(args: argparse.Namespace) -> int:
-    from radar.config import load_config  # local to keep main module light
-    from radar.scan import write_scan
+    from petridish.config import load_config  # local to keep main module light
+    from petridish.scan import write_scan
 
     try:
         config = load_config()
@@ -65,7 +65,7 @@ def _cmd_list(args: argparse.Namespace) -> int:
     state_path = args.state
     if not os.path.isfile(state_path):
         print(
-            f"no state file at {state_path}; run 'radar scan' first",
+            f"no state file at {state_path}; run 'swab scan' first",
             file=sys.stderr,
         )
         return 1
@@ -135,7 +135,7 @@ def _cmd_path(args: argparse.Namespace) -> int:
     state_path = args.state
     if not os.path.isfile(state_path):
         print(
-            f"no state file at {state_path}; run 'radar scan' first",
+            f"no state file at {state_path}; run 'swab scan' first",
             file=sys.stderr,
         )
         return 1
@@ -280,8 +280,8 @@ def _cmd_doctor(args: argparse.Namespace) -> int:
             return False
 
         if not _walk(data):
-            problems.append("radar-hook marker not found in ~/.claude/settings.json")
-        return not any(p.startswith("radar-hook") for p in problems)
+            problems.append("swab-hook marker not found in ~/.claude/settings.json")
+        return not any(p.startswith("swab-hook") for p in problems)
 
     _check("config", _check_config)
     _check("roots", _check_roots)
@@ -300,8 +300,8 @@ def _cmd_doctor(args: argparse.Namespace) -> int:
 
 def _build_parser(state_default: str = _DEFAULT_STATE_PATH) -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        prog="radar",
-        description="Project-radar CLI: scan, list, path, doctor.",
+        prog="swab",
+        description="petridish CLI: scan, list, path, doctor.",
     )
     parser.add_argument(
         "--state",

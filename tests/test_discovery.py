@@ -1,4 +1,4 @@
-"""Tests for ``src/radar/discovery.py``.
+"""Tests for ``src/petridish/discovery.py``.
 
 Real fixture trees are constructed with ``tmp_path`` and ``git init``, not
 mocks — this module has to survive on a machine that has a working ``git``
@@ -14,8 +14,8 @@ from pathlib import Path
 
 import pytest
 
-from radar.config import Config
-from radar.discovery import discover, is_foreign, resolve_root
+from petridish.config import Config
+from petridish.discovery import discover, is_foreign, resolve_root
 
 
 # ---------------------------------------------------------------------------

@@ -13,7 +13,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Union
 
-from radar.schema import GitState
+from petridish.schema import GitState
 
 
 def _run(

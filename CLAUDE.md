@@ -1,7 +1,7 @@
-# project-radar
+# petridish
 
 Local monitoring daemon for macOS: crawls project roots, tracks git state, senses AI agent
-activity, and aggregates into `~/.project-radar/projects.json`.
+activity, and aggregates into `~/.petridish/projects.json`.
 
 **Read `IMPLEMENTATION_PLAN.md` before writing any code.** It is the authoritative spec and
 supersedes `DESIGN.md` wherever they disagree. Build only the module you were assigned.
@@ -11,8 +11,8 @@ supersedes `DESIGN.md` wherever they disagree. Build only the module you were as
 - **Python 3.12+, stdlib only** for all runtime code. `pytest` is the sole dev dependency.
   Do not add runtime dependencies — no `watchdog`, no `pydantic`, no `click`, no `rich`.
   Zero deps is a deliberate constraint so each module is verifiable with no env setup.
-- Source in `src/radar/`, sensors in `src/radar/sensors/`, tests in `tests/`.
-- Console scripts: `radar` (CLI) and `radar-hook` (fast hook path).
+- Source in `src/petridish/`, sensors in `src/petridish/sensors/`, tests in `tests/`.
+- Console scripts: `swab` (CLI) and `swab-hook` (fast hook path).
 
 ## Non-negotiable invariants
 
@@ -20,7 +20,7 @@ These encode findings verified on the real machine (see `IMPLEMENTATION_PLAN.md`
 Violating one produces code that passes tests and is still wrong.
 
 1. **Single writer.** Only the daemon writes `projects.json`, via temp-file + `os.replace()`.
-   `radar-hook` appends one line to `events.ndjson` and nothing else. Never make the hook
+   `swab-hook` appends one line to `events.ndjson` and nothing else. Never make the hook
    touch `projects.json` — three other hook consumers already share these events.
 2. **Never parse a path out of a `~/.claude/projects/` dirname.** The slug encodes `/` and
    `-` identically and is not reversible. Read `cwd` from the JSONL contents.

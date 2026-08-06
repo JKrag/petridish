@@ -1,11 +1,11 @@
-# project-radar — Implementation Plan
+# petridish — Implementation Plan
 
 Companion to `DESIGN.md`. This document is the authoritative build spec: it supersedes
 `DESIGN.md` where the two disagree, and records *why*. It is written to survive a session
 clear — a fresh agent (Sonnet/Haiku, or `/delegate-afk`) should be able to pick up any
 single module below without re-reading the conversation that produced it.
 
-**Scope of this plan:** daemon + Claude/Copilot sensing + `radar` CLI.
+**Scope of this plan:** daemon + Claude/Copilot sensing + `swab` CLI.
 Raycast extension, TUI, and Web UI are explicitly **out of scope** and get their own plan
 once `projects.json` exists with real data in it.
 
@@ -20,7 +20,7 @@ These were verified empirically on this machine (2026-08-05). They are not assum
 | F1 | `~/.claude/projects/<slug>/<session>.jsonl` already contains `cwd`, `sessionId`, `gitBranch`, `timestamp`, `version` on most lines. | Claude Code sensing needs **no hook to function**. Hooks become a latency optimisation, not the mechanism. |
 | F2 | The directory slug (`-Users-jankrag-repos-JKrag-project-radar`) is **not reversibly decodable** — `/` and `-` both map to `-`. | Never parse the dirname for a path. Read `cwd` from a JSONL line. |
 | F3 | The last line of a transcript does **not** reliably discriminate "agent working" from "session idle". Observed trailing types across live sessions: `user`, `system`, `last-prompt`. | No clean state machine from transcripts. Liveness = file mtime recency (+ hook events for precision). Documented limitation, not papered over. |
-| F4 | `~/.claude/settings.json` already has three hook consumers stacked on `Notification`/`PostToolUse` (pixtuoid, statusbar, notchbar). | `radar-hook` must be trivially fast and must **never** write `projects.json`. See §3. |
+| F4 | `~/.claude/settings.json` already has three hook consumers stacked on `Notification`/`PostToolUse` (pixtuoid, statusbar, notchbar). | `swab-hook` must be trivially fast and must **never** write `projects.json`. See §3. |
 | F5 | `~/.copilot/` **does not exist** on this machine. The DESIGN.md "Copilot CLI" row is unfounded. | Dropped. VS Code Copilot is the real target. |
 | F6 | VS Code Copilot **is** attributable: 78 of 91 `workspaceStorage/<hash>/` dirs contain `chatSessions/`, and the sibling `workspace.json` holds `{"folder": "file:///Users/jankrag/repos/JKrag/project-radar"}`. | This is the direct analogue of `~/.claude/projects` the user asked about. Module M5 is implementable, not a spike. |
 | F7 | `git log -1 --author=<re>` short-circuits (0.01s) and returns *when you last touched it*, strictly more useful than `shortlog -sn`'s count. | Authorship is used as a **recency signal**, not just a clone filter. See §2. |
@@ -34,18 +34,18 @@ These were verified empirically on this machine (2026-08-05). They are not assum
 ```text
   ~/.claude/projects/*/*.jsonl ──┐   (F1: cwd + session_id + mtime)
   VS Code workspaceStorage/* ────┤   (F6: workspace.json folder URI + chatSessions mtime)
-  ~/.project-radar/events.ndjson ┤   (append-only, written by radar-hook)
+  ~/.petridish/events.ndjson ────┤   (append-only, written by swab-hook)
   configured roots + git ────────┘
                                  │
                                  ▼
-                   radar scan  (launchd timer, ~60s)
+                   swab scan  (launchd timer, ~60s)
                    sole writer, atomic temp+rename
                                  │
                                  ▼
-              ~/.project-radar/projects.json  (read-only to all frontends)
+              ~/.petridish/projects.json  (read-only to all frontends)
 ```
 
-**Single-writer invariant.** `DESIGN.md` had `radar-hook` mutating `projects.json` directly.
+**Single-writer invariant.** `DESIGN.md` had `swab-hook` mutating `projects.json` directly.
 With three other hook consumers already installed (F4) and a launchd timer also writing,
 that is a concurrent read-modify-write on one JSON file with no locking — the corruption
 is silent and the failure mode is a wiped board. Revised: the hook only ever does one
@@ -88,7 +88,7 @@ an oversight — raise `author_since` if you want the deep back-catalogue attrib
 This value is used **two ways**:
 
 - **Filter:** repos with no authored commit *and* no agent history *and* a clean tree are
-  classified `foreign` and hidden by default (`radar list --all` shows them). They are not
+  classified `foreign` and hidden by default (`swab list --all` shows them). They are not
   deleted from the JSON — hiding is a frontend concern, and a wrong filter that silently
   eats a real project is worse than a slightly noisy list.
 - **Recency:** `mine_last_commit_at` is preferred over `last_commit_at` when bucketing
@@ -99,12 +99,12 @@ those are positive evidence of your involvement that predates or postdates any c
 
 ---
 
-## 3. `radar-hook` (latency path, optional)
+## 3. `swab-hook` (latency path, optional)
 
 The daemon works correctly without it (F1); the hook exists only to make the 🟢 badge
 sub-second instead of sub-minute. Constraints, given F4:
 
-- Single `O_APPEND` write of one JSON line to `~/.project-radar/events.ndjson`, then exit.
+- Single `O_APPEND` write of one JSON line to `~/.petridish/events.ndjson`, then exit.
 - **Never fails loudly.** Wrap everything in a bare `except: sys.exit(0)`. A crashing hook
   in a chain that also feeds the user's statusbar and Bartender notch is unacceptable.
 - No imports beyond `sys`, `os`, `json`, `time`. Target < 15ms wall.
@@ -114,11 +114,11 @@ sub-second instead of sub-minute. Constraints, given F4:
   must back up `~/.claude/settings.json` first.
 
 **Ownership marker.** Every hook entry the installer adds carries the literal trailing
-comment `# project-radar` in its `command` string (the same convention notchbar already
+comment `# petridish` in its `command` string (the same convention notchbar already
 uses in this settings file). That marker is the *shared definition of "our entry"* for
-three contracts: `radar doctor`'s "hook installed" check, the installer's idempotency
+three contracts: `swab doctor`'s "hook installed" check, the installer's idempotency
 check, and `--uninstall`'s "removes only what it added". Match on the marker, never on the
-mere presence of `radar-hook`, and never rewrite an entry that lacks it.
+mere presence of `swab-hook`, and never rewrite an entry that lacks it.
 
 Events are compacted by the daemon: on each tick, read `events.ndjson`, fold into state,
 truncate the file. Cap it at 5MB defensively in case the daemon is not running.
@@ -204,7 +204,7 @@ Stack: **Python 3.12+, stdlib only** for the daemon (no `watchdog` — the launc
 replaces it), `pytest` for tests. Keeping runtime deps at zero is deliberate: it makes each
 module independently verifiable by a delegated agent with no environment setup.
 
-Layout: `src/radar/`, tests in `tests/`, console scripts `radar` and `radar-hook`.
+Layout: `src/petridish/`, tests in `tests/`, console scripts `swab` and `swab-hook`.
 
 **Dependency graph.** M1 freezes both the JSON schema (§4) and `AgentSignal` (§4.1); M2
 owns `resolve_root()`, which M4 and M5 both call (F9). So the fan-out is two waves, not one:
@@ -226,16 +226,16 @@ edit another module's files, and must not weaken a test to make it pass.
 ---
 
 ### M0 — Scaffold
-**Files:** `pyproject.toml`, `src/radar/__init__.py`, `src/radar/config.py`, `tests/conftest.py`, `.gitignore`
+**Files:** `pyproject.toml`, `src/petridish/__init__.py`, `src/petridish/config.py`, `tests/conftest.py`, `.gitignore`
 **Contract:** `load_config(path=None) -> Config` (frozen dataclass). Reads
-`~/.project-radar/config.toml` via `tomllib`; every field has a default so a missing file
+`~/.petridish/config.toml` via `tomllib`; every field has a default so a missing file
 is valid. Fields: `roots`, `extra_paths`, `author_patterns`, `author_since`,
 `ignore_dirs`, `bucket_thresholds`, `category_overrides`, `max_depth`.
-`~` and env vars expanded on load. Console scripts `radar`/`radar-hook` declared here.
+`~` and env vars expanded on load. Console scripts `swab`/`swab-hook` declared here.
 **Verify:** `pytest tests/test_config.py -q`
 
 ### M1 — Schema (freeze first, then parallelise)
-**Files:** `src/radar/schema.py`, `tests/test_schema.py`, `tests/fixtures/projects.golden.json`
+**Files:** `src/petridish/schema.py`, `tests/test_schema.py`, `tests/fixtures/projects.golden.json`
 **Contract:** dataclasses `GitState`, `AgentState`, `Project`, `Radar` mirroring §4 exactly,
 plus `to_dict()`/`from_dict()` round-trip and `write_atomic(radar, path)` implementing the
 temp+`os.replace` contract. `schema_version = 1`.
@@ -243,7 +243,7 @@ temp+`os.replace` contract. `schema_version = 1`.
 golden fixture and that `write_atomic` leaves no `.tmp` behind.
 
 ### M2 — Discovery
-**Files:** `src/radar/discovery.py`, `tests/test_discovery.py`
+**Files:** `src/petridish/discovery.py`, `tests/test_discovery.py`
 **Contract:** three functions.
 - `discover(config) -> list[Path]` — §2 sources 1–3, deduped by `Path.resolve()`.
 - `is_foreign(path, config) -> bool` — the authorship filter, including the "never exclude
@@ -262,7 +262,7 @@ a `node_modules` decoy, a nested repo below a `.git`, and a clone authored only 
 against a path outside all roots.
 
 ### M3 — Git scanner
-**Files:** `src/radar/git.py`, `tests/test_git.py`
+**Files:** `src/petridish/git.py`, `tests/test_git.py`
 **Contract:** `scan(path) -> GitState`. Uses `subprocess.run` with a **5s timeout** and
 `check=False`; any git failure yields `GitState(is_repo=False)` rather than raising.
 Commands: `status --porcelain`, `rev-parse --abbrev-ref HEAD`, `log -1 --format=%cI`,
@@ -275,7 +275,7 @@ browser URL, and return `None` for non-GitHub remotes.
 that state at plan time), detached HEAD, no remote.
 
 ### M4 — Claude Code sensing
-**Files:** `src/radar/sensors/claude.py`, `tests/test_sensor_claude.py`
+**Files:** `src/petridish/sensors/claude.py`, `tests/test_sensor_claude.py`
 **Contract:** `scan(claude_dir, config) -> dict[str, AgentSignal]` keyed by resolved root.
 Walk `~/.claude/projects/*/*.jsonl`. For each file take mtime, then extract `cwd` and
 `sessionId` **from the file's contents, never the dirname** (F2).
@@ -296,7 +296,7 @@ a dash-containing project path (F2), a file whose `cwd` changes mid-session to a
 (F9), a half-written trailing line, and a file larger than the 64KB tail window.
 
 ### M5 — VS Code Copilot sensing
-**Files:** `src/radar/sensors/copilot.py`, `tests/test_sensor_copilot.py`
+**Files:** `src/petridish/sensors/copilot.py`, `tests/test_sensor_copilot.py`
 **Contract:** `scan(workspace_storage_dir, config) -> dict[str, AgentSignal]` keyed by
 resolved root (run the folder path through `resolve_root()` as M4 does). For each
 `<hash>/` read `workspace.json` → `folder` (a `file://` URI; parse with `urllib.parse` +
@@ -307,7 +307,7 @@ than `folder` (multi-root workspaces) may be skipped in v1 — log and continue.
 **Verify:** `pytest tests/test_sensor_copilot.py -q`
 
 ### M6 — Hook + event log
-**Files:** `src/radar/hook.py`, `src/radar/events.py`, `tests/test_events.py`
+**Files:** `src/petridish/hook.py`, `src/petridish/events.py`, `tests/test_events.py`
 **Contract:** `hook.main()` per §3 — stdin JSON in, one appended line out, never raises,
 never touches `projects.json`. `events.read_and_compact(path) -> dict[str, AgentSignal]`
 folds the log into per-cwd latest state and truncates; tolerates a corrupt/partial line by
@@ -316,7 +316,7 @@ skipping it; enforces the 5MB cap.
 from 8 processes and asserts no line interleaving/loss.
 
 ### M7 — Aggregator (the tick)
-**Files:** `src/radar/scan.py`, `tests/test_scan.py`
+**Files:** `src/petridish/scan.py`, `tests/test_scan.py`
 **Contract:** `run_scan(config) -> Radar`. Orchestrates M2–M6, merges agent signals
 (most-recent wins; `active_agent` = whichever source produced the winning timestamp),
 computes `last_activity_at`, `agent.state`, `status_bucket` per §4, writes atomically via
@@ -326,30 +326,30 @@ asserting the output validates against the M1 schema and that a sensor raising a
 exception still produces a complete file.
 
 ### M8 — CLI
-**Files:** `src/radar/cli.py`, `tests/test_cli.py`
+**Files:** `src/petridish/cli.py`, `tests/test_cli.py`
 **Contract:** `argparse`, no deps. Subcommands:
-- `radar scan` — run a tick, print a one-line summary
-- `radar list [--bucket B] [--all] [--json]` — read cached JSON, human table by default;
+- `swab scan` — run a tick, print a one-line summary
+- `swab list [--bucket B] [--all] [--json]` — read cached JSON, human table by default;
   `--all` includes `is_foreign`
-- `radar doctor` — verify config, roots exist, hook installed (match the `# project-radar`
-  marker per §3, not the bare `radar-hook` string), JSON freshness, launchd loaded;
+- `swab doctor` — verify config, roots exist, hook installed (match the `# petridish`
+  marker per §3, not the bare `swab-hook` string), JSON freshness, launchd loaded;
   exit non-zero on any problem
-- `radar path <query>` — print the best-matching project path (enables `cd $(radar path x)`)
+- `swab path <query>` — print the best-matching project path (enables `cd $(swab path x)`)
 
 `list` must **never** trigger a scan (it is the frontend hot path); if the JSON is missing,
-say so and point at `radar scan`.
+say so and point at `swab scan`.
 **Verify:** `pytest tests/test_cli.py -q`
 
 ### M9 — Install & launchd
-**Files:** `install.sh`, `resources/com.jkrag.project-radar.plist`, `README.md`
+**Files:** `install.sh`, `resources/com.petridish.daemon.plist`, `README.md`
 **Contract:** `StartInterval` 60s, `RunAtLoad`, stdout/stderr to
-`~/.project-radar/daemon.log`, `ProcessType: Background` so macOS deprioritises it.
-Installer: create `~/.project-radar/`, write a default `config.toml` **only if absent**,
-**back up `~/.claude/settings.json` before touching it**, and append `radar-hook` to
+`~/.petridish/daemon.log`, `ProcessType: Background` so macOS deprioritises it.
+Installer: create `~/.petridish/`, write a default `config.toml` **only if absent**,
+**back up `~/.claude/settings.json` before touching it**, and append `swab-hook` to
 existing hook arrays without disturbing the three existing consumers (F4). Must be
 idempotent, and must ship an `--uninstall` that unloads the plist and removes only the
 hook entries it added.
-**Verify:** `./install.sh && radar doctor` exits 0; `./install.sh --uninstall` restores the
+**Verify:** `./install.sh && swab doctor` exits 0; `./install.sh --uninstall` restores the
 settings backup byte-for-byte. Log rotation: truncate `daemon.log` past 5MB.
 
 ---
@@ -388,7 +388,7 @@ for the distribution plan and requirements D1–D6 that motivate this.
 Also in scope:
 
 - **`README.md`** — install instructions using the §7.1 mechanism (`uv tool
-  install` / `pipx install`), a `radar list` sample, and the config reference.
+  install` / `pipx install`), a `swab list` sample, and the config reference.
 - **Platform guard** — per D5, fail with a clear message on non-macOS rather than
   half-installing.
 - **CI** — run `pytest` on macOS against **Python 3.12 specifically**, not just the
@@ -396,12 +396,11 @@ Also in scope:
   3.13+/3.14-only APIs that passed locally on 3.14 while violating the declared
   `>=3.12` floor. `.afk/check_pyver.py` catches the known cases by tokenizing, but a
   real 3.12 job is the only complete check.
-- **Naming decision** — resolve `DESIGN.md` §7.4 before the first publish. The hook
-  marker string is load-bearing for `doctor` and `--uninstall`; changing it after
-  release orphans existing installs.
+- **Naming resolved (2026-08-06)** — see `DESIGN.md` §7.4: package `petridish`, CLI
+  `swab`, hook `swab-hook`, data dir `~/.petridish/`, marker `# petridish`.
 
 **Verify:** `python3 -m build` produces a wheel; `uv tool install --editable .`
-yields working `radar` / `radar-hook` shims on `PATH`; `pytest` green on 3.12.
+yields working `swab` / `swab-hook` shims on `PATH`; `pytest` green on 3.12.
 
 **Not in scope here:** publishing to PyPI, or authoring the Homebrew tap/formula.
 Those follow once the name is settled.
@@ -412,4 +411,4 @@ Those follow once the name is settled.
 
 Raycast extension · Textual TUI · FastAPI web UI · `ps`/`lsof` process sensing for
 non-Claude CLIs (F8) · Copilot CLI (`~/.copilot/`) if it ever appears (F5) ·
-multi-root VS Code workspaces · a `radar tui` resume-session action.
+multi-root VS Code workspaces · a `swab tui` resume-session action.

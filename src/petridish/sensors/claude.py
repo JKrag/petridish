@@ -2,7 +2,7 @@
 
 Scans the directory laid out like ``~/.claude/projects/`` — one subdirectory
 per project, each holding ``<session-id>.jsonl`` transcripts — and emits one
-:class:`~radar.schema.AgentSignal` per transcript. The sensor follows the
+:class:`~petridish.schema.AgentSignal` per transcript. The sensor follows the
 "degrade, never abort" rule: an unreadable file or a transcript that yields no
 usable fields is silently skipped, and the rest of the scan keeps running.
 
@@ -27,8 +27,8 @@ import os
 from datetime import datetime, timezone
 from pathlib import Path
 
-from radar.discovery import resolve_root
-from radar.schema import AgentSignal
+from petridish.discovery import resolve_root
+from petridish.schema import AgentSignal
 
 
 TAIL_BYTES = 65_536          # Read ~64KiB from the end of each transcript.
@@ -134,7 +134,7 @@ def scan(
         A directory laid out like ``~/.claude/projects/``: top-level subdirs
         each containing one or more ``<session-id>.jsonl`` transcript files.
     config:
-        A :class:`~radar.config.Config` used by :func:`resolve_root` to collapse
+        A :class:`~petridish.config.Config` used by :func:`resolve_root` to collapse
         monorepo subdirs (e.g. ``repo/packages/core`` → ``repo``).
     cold_cutoff_hours:
         Skip files whose mtime is older than this many hours.  Defaults to 60

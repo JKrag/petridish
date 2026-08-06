@@ -1,11 +1,11 @@
 """Discovery: walk configured roots and surface the user's own repos.
 
 This module contains three tightly coupled primitives that the daemon core
-(``radar.scan``) calls exactly once per tick:
+(``petridish.scan``) calls exactly once per tick:
 
 * :func:`resolve_root` — collapse a monorepo subdir onto its enclosing git
   root, stopping at the first ``.git`` found going upward.
-* :func:`discover` — crawl :class:`~radar.config.Config.roots` plus
+* :func:`discover` — crawl :class:`~petridish.config.Config.roots` plus
   ``extra_paths`` and return a de-duplicated list of project paths, applying
   the crawl rules from the implementation plan (§2).
 * :func:`is_foreign` — ask git whether the user has authored anything in a
@@ -22,7 +22,7 @@ import os
 import subprocess
 from pathlib import Path
 
-from radar.config import Config
+from petridish.config import Config
 
 
 # Manifest files that qualify a directory as a project even without ``.git``.
@@ -129,7 +129,7 @@ def discover(config: Config) -> list[Path]:
 
     # Return a stable-sorted list for deterministic output across runs.  Sort
     # by the resolved path — that keeps the crawl order predictable for tests
-    # and lets `radar scan` produce stable JSON even when ``os.scandir``'s
+    # and lets `swab scan` produce stable JSON even when ``os.scandir``'s
     # iteration order differs between runs.
     results.sort()
     return results

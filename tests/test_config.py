@@ -1,4 +1,4 @@
-"""Tests for ``src/radar/config.py`` — the M0 verify target."""
+"""Tests for ``src/petridish/config.py`` — the M0 verify target."""
 
 from __future__ import annotations
 
@@ -9,7 +9,7 @@ import pytest
 
 from pathlib import Path
 
-from radar.config import (
+from petridish.config import (
     Config,
     ConfigError,
     DEFAULT_AUTHOR_PATTERNS,

@@ -1,4 +1,4 @@
-"""The frozen state schema for ``~/.project-radar/projects.json``.
+"""The frozen state schema for ``~/.petridish/projects.json``.
 
 This module is the shared contract: the daemon writes it, every frontend reads
 it, and each sensor produces :class:`AgentSignal` values that the aggregator

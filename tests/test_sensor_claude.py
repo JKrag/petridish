@@ -1,10 +1,10 @@
-"""Tests for ``radar.sensors.claude`` — the transcript scanner.
+"""Tests for ``petridish.sensors.claude`` — the transcript scanner.
 
 Every test writes real fixture ``.jsonl`` files under ``tmp_path`` and, when it
 needs a specific mtime, calls :func:`os.utime`. We never touch the real
 ``~/.claude/`` directory.
 
-The test names map 1:1 to the contract in ``src/radar/sensors/claude.py``;
+The test names map 1:1 to the contract in ``src/petridish/sensors/claude.py``;
 see the module docstring there for the full invariants list.
 """
 
@@ -18,8 +18,8 @@ from pathlib import Path
 
 import pytest
 
-from radar.config import Config
-from radar.sensors.claude import scan
+from petridish.config import Config
+from petridish.sensors.claude import scan
 
 
 # ---------------------------------------------------------------------------

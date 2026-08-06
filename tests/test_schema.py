@@ -1,4 +1,4 @@
-"""Tests for ``src/radar/schema.py`` — the frozen contract (M1).
+"""Tests for ``src/petridish/schema.py`` — the frozen contract (M1).
 
 Everything downstream codes against this module, so these tests are
 deliberately strict about the round-trip and the atomic-write guarantee.
@@ -13,7 +13,7 @@ from pathlib import Path
 
 import pytest
 
-from radar.schema import (
+from petridish.schema import (
     SCHEMA_VERSION,
     AgentSignal,
     AgentState,
@@ -224,7 +224,7 @@ def test_write_atomic_cleans_up_tmp_on_failure(tmp_path, monkeypatch):
     def boom(*a, **kw):
         raise RuntimeError("disk on fire")
 
-    monkeypatch.setattr("radar.schema.os.replace", boom)
+    monkeypatch.setattr("petridish.schema.os.replace", boom)
 
     with pytest.raises(RuntimeError):
         write_atomic(_golden_radar(), target)
