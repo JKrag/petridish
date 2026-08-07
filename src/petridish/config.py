@@ -14,9 +14,11 @@ the correct expansion.
 from __future__ import annotations
 
 import os
+import sys
 import tomllib
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import cast
 
 #: Default project roots the discovery step crawls first.
 DEFAULT_ROOTS: tuple[str, ...] = ("~/repos", "~/learning")
@@ -132,22 +134,75 @@ def _expand_path(p: str) -> Path:
     return Path(expanded)
 
 
+def _warn(message: str) -> None:
+    """Report a rejected config value on stderr.
+
+    The daemon's stderr lands in the rotated daemon log, so a bad value stays
+    diagnosable.  Deliberately not silent: falling back to a default without
+    saying so is how a typo'd threshold becomes an unexplained behaviour change
+    six weeks later.
+    """
+    print(f"petridish: config: {message}", file=sys.stderr)
+
+
 def _coerce_durations(
-    user: dict[str, object] | None, defaults: dict[str, float]
+    user: object, defaults: dict[str, float]
 ) -> dict[str, float]:
     """Merge user-supplied bucket thresholds on top of defaults.
 
     tomllib returns ints for ``48`` and floats for ``48.0``; normalise
     everything to float so later comparison with ``timedelta`` is trivial.
     Missing keys fall back to ``defaults`` rather than raising.
+
+    A user value that isn't a real number (``active_hours = "soon"``, or a
+    list) falls back to that key's default too.  It must not raise: this
+    runs inside ``load_config``, which the daemon calls before every tick, so
+    an exception here doesn't degrade one field — it aborts the whole tick and
+    ``projects.json`` silently stops being written (invariant 5).
     """
+    user_map: dict[str, object] = (
+        cast("dict[str, object]", user) if isinstance(user, dict) else {}
+    )
+    if user is not None and not isinstance(user, dict):
+        _warn(f"bucket_thresholds must be a table, got {type(user).__name__}; using defaults")
+
     out: dict[str, float] = {}
     for key, default_value in defaults.items():
-        if user is None or key not in user:
+        if key not in user_map:
+            out[key] = float(default_value)
+            continue
+        raw = user_map[key]
+        # bool is an int subclass — `active_hours = true` is a mistake, not 1.0.
+        if isinstance(raw, bool) or not isinstance(raw, (int, float)):
+            _warn(
+                f"bucket_thresholds.{key} must be a number, got "
+                f"{type(raw).__name__}; using default {default_value}"
+            )
             out[key] = float(default_value)
         else:
-            out[key] = float(user[key])
+            out[key] = float(raw)
     return out
+
+
+def _coerce_str_list(value: object, default: list[str], key: str) -> list[str]:
+    """Return a list of strings, falling back to ``default`` on any bad shape.
+
+    Guards a specific silent-corruption trap: ``list("~/repos")`` does not
+    raise, it yields ``['~', '/', 'r', ...]``.  A user who writes
+    ``roots = "~/repos"`` (string instead of array) would otherwise get eight
+    single-character project roots rather than an error or a sane fallback.
+    """
+    if not isinstance(value, (list, tuple)):
+        _warn(f"{key} must be an array, got {type(value).__name__}; using default")
+        return list(default)
+    items: list[object] = list(cast("list[object] | tuple[object, ...]", value))
+    bad: list[object] = [x for x in items if not isinstance(x, str)]
+    if bad:
+        _warn(
+            f"{key} must contain only strings; ignoring "
+            f"{len(bad)} non-string entr{'y' if len(bad) == 1 else 'ies'}"
+        )
+    return [x for x in items if isinstance(x, str)]
 
 
 def load_config(path: str | Path | None = None) -> Config:
@@ -203,11 +258,18 @@ def load_config(path: str | Path | None = None) -> Config:
         "max_depth": 4,
     }
 
-    for key, default_value in cfg.items():
+    # Keep the pristine defaults: every coercion below falls back to these
+    # per-key rather than raising, so one bad value costs that field and not
+    # the whole tick.
+    defaults: dict[str, object] = {k: v for k, v in cfg.items()}
+
+    for key, default_value in list(cfg.items()):
         if key in user_overrides:
             uval = user_overrides[key]
             if isinstance(default_value, list):
-                cfg[key] = list(uval)
+                cfg[key] = _coerce_str_list(
+                    uval, cast("list[str]", default_value), key
+                )
             elif isinstance(default_value, dict):
                 # Only thresholds and category_overrides land here; treat them
                 # uniformly — any non-dict user value is dropped.
@@ -222,25 +284,49 @@ def load_config(path: str | Path | None = None) -> Config:
 
     # Expand path fields to absolute Path objects *after* user overrides are
     # applied — same code path for defaults and user-provided values.
+    # ``_coerce_str_list`` above guarantees these are ``list[str]`` by now.
     for pf in _PATH_FIELDS:
-        cfg[pf] = tuple(_expand_path(p) for p in cfg[pf])
+        raw_paths = cast("list[str]", cfg[pf])
+        cfg[pf] = tuple(_expand_path(p) for p in raw_paths)
 
     # Coerce ``ignore_dirs`` back to a frozenset.
-    cfg["ignore_dirs"] = frozenset(cfg["ignore_dirs"])
+    cfg["ignore_dirs"] = frozenset(cast("list[str]", cfg["ignore_dirs"]))
 
     # Coerce bucket thresholds to float and normalise.
     cfg["bucket_thresholds"] = _coerce_durations(
         cfg.get("bucket_thresholds"), DEFAULT_BUCKETS
     )
 
-    # Category overrides: empty dict if the file supplied an unexpected type.
-    if not isinstance(cfg["category_overrides"], dict):
+    # Category overrides: keys and values must both be strings — this maps a
+    # project path to a category name and is handed straight to ``dict.get``
+    # against a path key, so a non-string value would surface as a bogus
+    # category in every frontend.
+    raw_overrides = cfg["category_overrides"]
+    if isinstance(raw_overrides, dict):
+        cfg["category_overrides"] = {
+            str(k): v
+            for k, v in cast("dict[object, object]", raw_overrides).items()
+            if isinstance(v, str)
+        }
+    else:
         cfg["category_overrides"] = {}
 
-    # ``max_depth`` must be a non-negative integer.
+    # ``max_depth`` must be a non-negative integer.  ``bool`` is an ``int``
+    # subclass, so ``max_depth = true`` would otherwise sail through as depth 1.
     depth = cfg["max_depth"]
-    if not isinstance(depth, int) or depth < 0:
+    if isinstance(depth, bool) or not isinstance(depth, int) or depth < 0:
+        if "max_depth" in user_overrides:
+            _warn(f"max_depth must be a non-negative integer, got {depth!r}; using 4")
         cfg["max_depth"] = 4
+
+    # ``author_since`` is passed to ``git log --since=``; a non-string would
+    # make every git call fail rather than just this one field.
+    if not isinstance(cfg["author_since"], str):
+        _warn(
+            f"author_since must be a string, got "
+            f"{type(cfg['author_since']).__name__}; using {defaults['author_since']!r}"
+        )
+        cfg["author_since"] = defaults["author_since"]
 
     # ``author_patterns`` from TOML comes as a list; promote to tuple to match
     # the frozen-dataclass contract.
