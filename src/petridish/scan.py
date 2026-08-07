@@ -135,10 +135,21 @@ def _build_project(
     root: str, config: Config, signal: Optional[AgentSignal], now: datetime
 ) -> Project:
     abs_path = os.path.abspath(root)
+    # ``resolve_root`` requires ``config``. The old fallback here called it with
+    # one argument inside ``except TypeError``, so it could only ever raise a
+    # second TypeError from the arity error — masking whatever real TypeError
+    # came out of the function body. Degrade to the literal path instead: a
+    # monorepo subdir that fails to collapse to its parent is wrong, but far
+    # better than losing the whole tick (invariant 5).
+    #
+    # Keep ``resolved`` a ``str``. ``resolve_root`` returns a ``Path``, and
+    # ``category_overrides`` is a ``dict[str, str]`` keyed by path strings — a
+    # ``Path`` key hashes differently, so the lookup below silently missed
+    # *every* time and the whole category-override feature was inert.
     try:
-        resolved = resolve_root(abs_path, config)
-    except TypeError:
-        resolved = resolve_root(abs_path)
+        resolved = str(resolve_root(abs_path, config))
+    except Exception:
+        resolved = abs_path
 
     parent_name = os.path.basename(os.path.dirname(resolved))
     category = config.category_overrides.get(resolved, parent_name)
@@ -162,8 +173,8 @@ def _build_project(
     return Project(
         id=_sha1_id(resolved),
         name=os.path.basename(resolved),
-        # Schema declares path: str — a Path here breaks JSON serialisation.
-        path=str(resolved),
+        # Schema declares path: str; ``resolved`` is already normalised above.
+        path=resolved,
         category=category,
         is_foreign=foreign,
         git=git_state,

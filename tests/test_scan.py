@@ -493,3 +493,46 @@ def test_sensors_receive_real_paths_when_not_injected(tmp_path, monkeypatch):
     assert "projects" in str(seen["claude"])
     assert "workspaceStorage" in str(seen["copilot"])
     assert "events.ndjson" in str(seen["events"])
+
+
+# ---------------------------------------------------------------------------
+# Test 13 — category_overrides actually applies.
+#
+# Regression: _build_project looked the override up with a Path key while
+# Config.category_overrides is a dict[str, str] keyed by path strings. Path
+# and str hash differently, so the lookup missed every single time and the
+# whole feature was inert — with no test covering it either way.
+# ---------------------------------------------------------------------------
+
+def test_category_override_applies_to_matching_root(tmp_path: Path):
+    home = _make_fake_home(tmp_path)
+    repo = tmp_path / "projects" / "myrepo"
+    repo.mkdir(parents=True)
+    _git_init(repo)
+    _git_commit(repo, "initial")
+
+    resolved = str(repo.resolve())
+    cfg = _config(
+        [str(tmp_path / "projects")],
+        category_overrides={resolved: "special"},
+    )
+
+    radar = run_scan(cfg, claude_dir=str(home / ".claude" / "projects"))
+    proj = next(p for p in radar.projects if p.path == resolved)
+
+    # Without the fix this is the parent directory name ("projects").
+    assert proj.category == "special"
+
+
+def test_category_falls_back_to_parent_dir_name(tmp_path: Path):
+    home = _make_fake_home(tmp_path)
+    repo = tmp_path / "projects" / "plainrepo"
+    repo.mkdir(parents=True)
+    _git_init(repo)
+    _git_commit(repo, "initial")
+
+    cfg = _config([str(tmp_path / "projects")])
+    radar = run_scan(cfg, claude_dir=str(home / ".claude" / "projects"))
+    proj = next(p for p in radar.projects if p.path == str(repo.resolve()))
+
+    assert proj.category == "projects"
