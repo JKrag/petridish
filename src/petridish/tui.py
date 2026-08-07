@@ -23,6 +23,7 @@ from petridish.schema import read_json
 from petridish.tui_state import (
     ROW_HEADERS,
     SelectionState,
+    agent_bulb,
     column_widths,
     filter_projects,
     format_detail,
@@ -33,6 +34,39 @@ from petridish.tui_state import (
     pad_row,
     selected_project,
 )
+
+#: Width reserved at the start of every project row for the agent-state
+#: bulb (glyph + one space). Column headers and rows both shift right by
+#: this much so "name" lines up under the first real name column.
+_BULB_WIDTH = 2
+
+#: How often getch() gives up and returns -1, in milliseconds. This is what
+#: makes the mtime-poll auto-refresh actually run without a keypress — a
+#: blocking getch() (the default) never returns, so the reload check at the
+#: top of the loop only ran when the user happened to press a key.
+_POLL_MS = 2000
+
+
+def _init_color_attrs() -> dict[str, int]:
+    """Best-effort color pairs for the agent-state bulb.
+
+    Returns an empty dict (all glyphs render in the terminal's default
+    color) if the terminal doesn't support color — this is cosmetic, never
+    a reason to fail the whole TUI.
+    """
+    try:
+        curses.start_color()
+        curses.use_default_colors()
+        curses.init_pair(1, curses.COLOR_GREEN, -1)
+        curses.init_pair(2, curses.COLOR_YELLOW, -1)
+        curses.init_pair(3, curses.COLOR_WHITE, -1)
+        return {
+            "green": curses.color_pair(1) | curses.A_BOLD,
+            "yellow": curses.color_pair(2) | curses.A_BOLD,
+            "dim": curses.color_pair(3) | curses.A_DIM,
+        }
+    except curses.error:
+        return {}
 
 
 # ---------------------------------------------------------------------------
@@ -60,6 +94,8 @@ def _format_stale_banner(radar, *, now: datetime | None = None) -> str:
 def _run(stdscr) -> int:
     """The curses render loop. Called inside ``curses.wrapper``."""
     curses.curs_set(0)  # hide the text cursor
+    stdscr.timeout(_POLL_MS)  # getch() returns -1 after this many ms of no input
+    color_attrs = _init_color_attrs()
 
     state_path = _DEFAULT_STATE_PATH
     radar = read_json(state_path)
@@ -124,7 +160,7 @@ def _run(stdscr) -> int:
             if cursor_y < list_bottom:
                 header_line = pad_row(ROW_HEADERS, widths)
                 try:
-                    stdscr.addnstr(cursor_y, 0, header_line.ljust(w - 1), w - 1,
+                    stdscr.addnstr(cursor_y, _BULB_WIDTH, header_line.ljust(w - 1), w - 1,
                                    curses.A_UNDERLINE)
                 except curses.error:
                     pass
@@ -147,13 +183,17 @@ def _run(stdscr) -> int:
                     if cursor_y >= list_bottom:
                         break
                     row_str = pad_row(format_row(proj), widths).ljust(w - 1)
-                    attrs = (
+                    selected_attr = (
                         curses.A_REVERSE
                         if state.bucket == bucket_name and state.index == i
                         else 0
                     )
+                    glyph, color_name = agent_bulb(proj.agent.state)
+                    bulb_attr = color_attrs.get(color_name, 0) | selected_attr
                     try:
-                        stdscr.addnstr(cursor_y, 0, row_str, w - 1, attrs)
+                        stdscr.addnstr(cursor_y, 0, glyph, 1, bulb_attr)
+                        stdscr.addnstr(cursor_y, _BULB_WIDTH, row_str,
+                                       max(0, w - 1 - _BULB_WIDTH), selected_attr)
                     except curses.error:
                         pass
                     cursor_y += 1

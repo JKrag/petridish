@@ -21,6 +21,7 @@ from petridish.schema import (
     Radar,
 )
 from petridish.tui_state import (
+    agent_bulb,
     column_widths,
     filter_projects,
     format_detail,
@@ -273,6 +274,16 @@ def test_column_widths_grows_to_fit_longest_cell_or_header():
 def test_column_widths_empty_rows_falls_back_to_header_length():
     widths = column_widths([], headers=["name", "agent", "branch", "dirty"])
     assert widths == [len("name"), len("agent"), len("branch"), len("dirty")]
+
+
+def test_agent_bulb_maps_known_states():
+    assert agent_bulb("working") == ("●", "green")
+    assert agent_bulb("recent") == ("●", "yellow")
+    assert agent_bulb("idle") == ("○", "dim")
+
+
+def test_agent_bulb_falls_back_to_dim_hollow_circle_for_unknown_state():
+    assert agent_bulb("some-future-state") == ("○", "dim")
 
 
 def test_pad_row_aligns_columns_across_rows():

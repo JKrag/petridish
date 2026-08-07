@@ -153,6 +153,33 @@ def pad_row(row: list[str], widths: list[int]) -> str:
 
 
 # ---------------------------------------------------------------------------
+# Agent-state indicator (glyph + named color; tui.py maps the name to an
+# actual curses color pair — kept out of this file so it stays curses-free)
+# ---------------------------------------------------------------------------
+
+#: schema.py's AGENT_STATES is ("working", "recent", "idle") — that's the
+#: full granularity the sensors currently produce (see IMPLEMENTATION_PLAN.md
+#: F3: liveness is mtime-recency based, no finer state machine from
+#: transcripts alone). A tool like pixtuoid showing reading/editing/thinking
+#: is reading richer hook events this project doesn't sense yet.
+AGENT_STATE_GLYPHS: dict[str, tuple[str, str]] = {
+    "working": ("●", "green"),   # ●
+    "recent": ("●", "yellow"),   # ●
+    "idle": ("○", "dim"),        # ○
+}
+
+
+def agent_bulb(state: str) -> tuple[str, str]:
+    """Return ``(glyph, color_name)`` for an agent state.
+
+    Unknown states (schema drift, a bug upstream) fall back to the same
+    hollow/dim glyph as ``idle`` rather than raising — this is cosmetic,
+    not load-bearing, and should never crash the renderer.
+    """
+    return AGENT_STATE_GLYPHS.get(state, ("○", "dim"))
+
+
+# ---------------------------------------------------------------------------
 # Interaction cursor
 # ---------------------------------------------------------------------------
 
@@ -256,4 +283,6 @@ __all__ = [
     "ROW_HEADERS",
     "column_widths",
     "pad_row",
+    "AGENT_STATE_GLYPHS",
+    "agent_bulb",
 ]
