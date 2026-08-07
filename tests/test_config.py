@@ -220,3 +220,149 @@ def test_missing_file_does_not_raise_config_error(tmp_path):
 
     assert cfg.max_depth == 4
     assert cfg.author_since == "3 years"
+
+
+# ---------------------------------------------------------------------------
+# Validation: bad values fall back silently to defaults, never raise
+# ---------------------------------------------------------------------------
+
+def test_bad_threshold_type_falls_back_to_default(tmp_path):
+    """A string in ``bucket_thresholds`` must be dropped, not crash the tick.
+
+    Users reach for TOML first; a typo like ``active = "soon"`` should not
+    make the whole daemon stop — just that threshold reverts to default.
+    """
+    toml = tmp_path / "bad_threshold.toml"
+    _write_toml(
+        toml,
+        """\
+[bucket_thresholds]
+active = "soon"
+stale = 99
+""",
+    )
+
+    cfg = load_config(toml)
+
+    # "active" fell back to its default; stale stayed as the user wrote it.
+    assert cfg.bucket_thresholds["active"] == 48.0
+    assert cfg.bucket_thresholds["in_flight"] == 336.0
+    assert cfg.bucket_thresholds["stale"] == 99.0
+
+
+def test_bool_threshold_rejected(tmp_path):
+    """``bool`` is a subclass of ``int`` in Python — the loader must explicitly
+    reject it so ``active = true`` can't masquerade as depth 1."""
+    toml = tmp_path / "bool_threshold.toml"
+    _write_toml(toml, '[bucket_thresholds]\nactive = true\n')
+
+    cfg = load_config(toml)
+
+    assert cfg.bucket_thresholds["active"] == 48.0
+    # Sanity: in_flight is untouched because the user didn't set it.
+    assert cfg.bucket_thresholds["in_flight"] == 336.0
+    assert cfg.bucket_thresholds["stale"] == 1440.0
+
+
+def test_roots_as_string_falls_back(tmp_path):
+    """A bare ``~/repos`` (string instead of array) must not collapse to
+    eight single-character roots — ``list("~/repos")`` would do that."""
+    toml = tmp_path / "string_roots.toml"
+    _write_toml(toml, 'roots = "~/repos"\n')
+
+    cfg = load_config(toml)
+
+    # The defaults expand ``~/repos`` and ``~/learning`` to two absolute paths.
+    assert len(cfg.roots) == 2
+
+
+def test_non_string_entries_dropped_from_list(tmp_path):
+    """A mixed list in ``ignore_dirs`` must drop non-string entries rather
+    than letting an int slip through to a basename comparison."""
+    toml = tmp_path / "mixed_list.toml"
+    _write_toml(toml, 'ignore_dirs = ["ok", 5]\n')
+
+    cfg = load_config(toml)
+
+    assert "ok" in cfg.ignore_dirs
+    assert 5 not in cfg.ignore_dirs
+
+
+def test_max_depth_true_rejected(tmp_path):
+    """``max_depth = true`` would otherwise be parsed as depth 1 — explicit
+    bool rejection is required."""
+    toml = tmp_path / "bool_depth.toml"
+    _write_toml(toml, 'max_depth = true\n')
+
+    cfg = load_config(toml)
+
+    assert cfg.max_depth == 4
+
+
+def test_max_depth_negative_rejected(tmp_path):
+    """Negative max_depth has no meaning — fall back to the default."""
+    toml = tmp_path / "neg_depth.toml"
+    _write_toml(toml, 'max_depth = -1\n')
+
+    cfg = load_config(toml)
+
+    assert cfg.max_depth == 4
+
+
+def test_author_since_non_string_rejected(tmp_path):
+    """``author_since = 42`` would turn into a non-string passed to ``git
+    log --since=`` — must fall back to the default string."""
+    toml = tmp_path / "int_since.toml"
+    _write_toml(toml, 'author_since = 42\n')
+
+    cfg = load_config(toml)
+
+    assert cfg.author_since == "3 years"
+
+
+def test_category_overrides_non_string_value_dropped(tmp_path):
+    """A non-string value in ``[category_overrides]`` must be dropped — the
+    map is keyed by path and handed to ``dict.get``, so any bogus value would
+    poison every frontend lookup."""
+    toml = tmp_path / "bad_cats.toml"
+    _write_toml(
+        toml,
+        """\
+[category_overrides]
+"/a" = 7
+""",
+    )
+
+    cfg = load_config(toml)
+
+    assert cfg.category_overrides == {}
+
+
+def test_warnings_go_to_stderr(tmp_path, capsys):
+    """Rejected values must be logged to stderr so operators can diagnose why
+    their config didn't have the effect they expected."""
+    toml = tmp_path / "stderr_warn.toml"
+    _write_toml(toml, 'max_depth = true\n')
+
+    load_config(toml)
+
+    _, err = capsys.readouterr()
+    assert "max_depth" in err
+
+
+def test_valid_config_still_loads(tmp_path):
+    """Sanity: after exercising all the rejection paths above, a perfectly
+    valid config still round-trips through cleanly."""
+    toml = tmp_path / "good.toml"
+    _write_toml(
+        toml,
+        """\
+max_depth = 6
+roots = ["~/x"]
+""",
+    )
+
+    cfg = load_config(toml)
+
+    assert cfg.max_depth == 6
+    assert len(cfg.roots) == 1
