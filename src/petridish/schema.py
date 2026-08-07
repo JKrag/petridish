@@ -20,8 +20,36 @@ import os
 from dataclasses import dataclass, field, replace
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import Any, Mapping, TypedDict
 
 SCHEMA_VERSION = 1
+
+# ---------------------------------------------------------------------------
+# Serialised shapes.
+#
+# These TypedDicts are the wire contract for ``~/.petridish/projects.json`` —
+# the same shape Raycast's `raycast/src/types.ts` mirrors by hand. Declaring
+# them here makes that contract machine-checked: add a field to a dataclass and
+# forget it in ``to_dict``, and pyright fails instead of a frontend silently
+# reading ``undefined``.
+#
+# Note the deliberate asymmetry with ``from_dict``. ``to_dict`` returns a
+# TypedDict because *we* produce that shape and guarantee it. ``from_dict``
+# takes a permissive ``Mapping[str, Any]`` because it parses whatever is
+# actually on disk — a hand-edited, truncated, or older-version file is
+# expected input, not a type error. Typing the input strictly would be a lie
+# that pushes real parsing failures to runtime.
+# ---------------------------------------------------------------------------
+
+
+class GitStateDict(TypedDict):
+    is_repo: bool
+    branch: str | None
+    is_dirty: bool
+    uncommitted_files: int
+    last_commit_at: str | None
+    mine_last_commit_at: str | None
+    github_url: str | None
 
 # Allowed enum-ish values. Kept as plain tuples rather than Enums so the JSON
 # stays trivially readable from TypeScript/jq without a mapping layer.
@@ -84,7 +112,7 @@ class GitState:
     mine_last_commit_at: datetime | None = None
     github_url: str | None = None
 
-    def to_dict(self) -> dict:
+    def to_dict(self) -> GitStateDict:
         return {
             "is_repo": self.is_repo,
             "branch": self.branch,
@@ -96,7 +124,7 @@ class GitState:
         }
 
     @classmethod
-    def from_dict(cls, d: dict) -> GitState:
+    def from_dict(cls, d: Mapping[str, Any]) -> GitState:
         return cls(
             is_repo=d.get("is_repo", False),
             branch=d.get("branch"),
