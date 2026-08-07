@@ -158,7 +158,7 @@ def scan(
     # then parse them.  Separating discovery from parsing keeps the two in step:
     # if a file disappears between stat() and open(), we degrade silently rather
     # than crashing.
-    transcript_files: list[Path] = []
+    transcript_files: list[tuple[Path, float]] = []
     try:
         project_dirs = sorted(claude_dir.iterdir())
     except (OSError, PermissionError):

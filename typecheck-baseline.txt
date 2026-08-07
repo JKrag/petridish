@@ -1,4 +1,4 @@
-228
+221
 # pyright error-severity diagnostics under src/. Lower is better; this
 # gate fails if the number RISES. Improve a file, then run
 #   python3 scripts/typecheck_ratchet.py --update
