@@ -9,11 +9,12 @@
 import { STATUS_BUCKETS } from "../types.ts";
 import type { Project, Radar, StatusBucket } from "../types.ts";
 
-export function groupByBucket(projects: Project[]): Record<StatusBucket, Project[]> {
-  const buckets = Object.fromEntries(STATUS_BUCKETS.map((b) => [b, [] as Project[]])) as Record<
-    StatusBucket,
-    Project[]
-  >;
+export function groupByBucket(
+  projects: Project[],
+): Record<StatusBucket, Project[]> {
+  const buckets = Object.fromEntries(
+    STATUS_BUCKETS.map((b) => [b, [] as Project[]]),
+  ) as Record<StatusBucket, Project[]>;
   for (const p of projects) {
     if (p.is_foreign) continue;
     buckets[p.status_bucket].push(p);
@@ -36,7 +37,9 @@ export function isStale(radar: Radar, now: Date, thresholdHours = 24): boolean {
 
 /** Same rule as cli.py's _print_table / tui_state.py's format_row. */
 export function agentLabel(p: Project): string {
-  return p.agent.active_agent ? `${p.agent.active_agent} (${p.agent.state})` : p.agent.state;
+  return p.agent.active_agent
+    ? `${p.agent.active_agent} (${p.agent.state})`
+    : p.agent.state;
 }
 
 const BUCKET_TITLES: Record<StatusBucket, string> = {

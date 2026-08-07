@@ -16,9 +16,7 @@ export default async function Command(
     await open(path);
   } catch (err) {
     const message =
-      err instanceof StateFileMissingError
-        ? err.message
-        : String(err);
+      err instanceof StateFileMissingError ? err.message : String(err);
     await showToast({ style: Toast.Style.Failure, title: "petri", message });
   }
 }

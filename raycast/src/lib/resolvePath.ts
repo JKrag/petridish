@@ -17,7 +17,10 @@
 
 import type { Project } from "../types.ts";
 
-export function resolveProjectPath(projects: Project[], query: string): string | null {
+export function resolveProjectPath(
+  projects: Project[],
+  query: string,
+): string | null {
   // Priority 1: exact case-sensitive match on name.
   const exact = projects.filter((p) => p.name === query);
   if (exact.length === 1) return exact[0].path;
@@ -26,10 +29,14 @@ export function resolveProjectPath(projects: Project[], query: string): string |
   const needle = query.toLowerCase();
 
   // Priority 2: case-insensitive substring on name.
-  const nameMatches = projects.filter((p) => p.name.toLowerCase().includes(needle));
+  const nameMatches = projects.filter((p) =>
+    p.name.toLowerCase().includes(needle),
+  );
 
   // Priority 3: case-insensitive substring on path.
-  const pathMatches = projects.filter((p) => p.path.toLowerCase().includes(needle));
+  const pathMatches = projects.filter((p) =>
+    p.path.toLowerCase().includes(needle),
+  );
 
   // Deduplicate: a project already placed at rank 0 never gets rank 1.
   const seen = new Map<string, boolean>();
