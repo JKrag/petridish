@@ -51,6 +51,15 @@ class GitStateDict(TypedDict):
     mine_last_commit_at: str | None
     github_url: str | None
 
+
+class AgentStateDict(TypedDict):
+    state: str
+    active_agent: str | None
+    last_event: str | None
+    last_event_at: str | None
+    session_id: str | None
+
+
 # Allowed enum-ish values. Kept as plain tuples rather than Enums so the JSON
 # stays trivially readable from TypeScript/jq without a mapping layer.
 AGENT_STATES = ("working", "recent", "idle")
@@ -146,7 +155,7 @@ class AgentState:
     last_event_at: datetime | None = None
     session_id: str | None = None
 
-    def to_dict(self) -> dict:
+    def to_dict(self) -> AgentStateDict:
         return {
             "state": self.state,
             "active_agent": self.active_agent,
@@ -156,7 +165,7 @@ class AgentState:
         }
 
     @classmethod
-    def from_dict(cls, d: dict) -> AgentState:
+    def from_dict(cls, d: Mapping[str, Any]) -> AgentState:
         return cls(
             state=d.get("state", "idle"),
             active_agent=d.get("active_agent"),
@@ -190,6 +199,18 @@ class AgentSignal:
     raw_cwd: str | None = None
 
 
+class ProjectDict(TypedDict):
+    id: str
+    name: str
+    path: str
+    category: str
+    is_foreign: bool
+    git: GitStateDict
+    agent: AgentStateDict
+    last_activity_at: str | None
+    status_bucket: str
+
+
 @dataclass(frozen=True)
 class Project:
     """One tracked project."""
@@ -204,7 +225,7 @@ class Project:
     last_activity_at: datetime | None = None
     status_bucket: str = "cold"
 
-    def to_dict(self) -> dict:
+    def to_dict(self) -> ProjectDict:
         return {
             "id": self.id,
             "name": self.name,
@@ -218,7 +239,7 @@ class Project:
         }
 
     @classmethod
-    def from_dict(cls, d: dict) -> Project:
+    def from_dict(cls, d: Mapping[str, Any]) -> Project:
         return cls(
             id=d["id"],
             name=d["name"],
@@ -232,6 +253,13 @@ class Project:
         )
 
 
+class RadarDict(TypedDict):
+    schema_version: int
+    updated_at: str | None
+    scan_duration_ms: int
+    projects: list[ProjectDict]
+
+
 @dataclass(frozen=True)
 class Radar:
     """The whole ``projects.json`` document."""
@@ -241,7 +269,7 @@ class Radar:
     scan_duration_ms: int = 0
     schema_version: int = SCHEMA_VERSION
 
-    def to_dict(self) -> dict:
+    def to_dict(self) -> RadarDict:
         return {
             "schema_version": self.schema_version,
             "updated_at": _iso(self.updated_at),
@@ -250,7 +278,7 @@ class Radar:
         }
 
     @classmethod
-    def from_dict(cls, d: dict) -> Radar:
+    def from_dict(cls, d: Mapping[str, Any]) -> Radar:
         updated = _parse(d.get("updated_at"))
         if updated is None:
             raise ValueError("projects.json is missing required 'updated_at'")
