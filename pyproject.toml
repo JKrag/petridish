@@ -24,7 +24,7 @@ classifiers = [
 ]
 
 [project.optional-dependencies]
-dev = ["pytest"]
+dev = ["pytest", "pyright"]
 
 [project.urls]
 Homepage = "https://github.com/JKrag/petridish"
@@ -44,6 +44,33 @@ where = ["src"]
 
 [tool.setuptools.package-data]
 petridish = ["resources/*.plist"]
+
+# Type checking is a dev-only gate — it adds no runtime dependency, so the
+# stdlib-only rule for `src/petridish/` is untouched. The annotations were
+# always there; this is what finally checks them.
+[tool.pyright]
+include = ["src", "tests"]
+pythonVersion = "3.12"
+typeCheckingMode = "strict"
+
+# pytest's fixtures (`tmp_path`, `monkeypatch`, `capsys`) are untyped at the
+# call site, so strict mode reports every fixture parameter and everything
+# derived from one. That was 1098 of the first run's 1417 errors and none of
+# it is signal. Tests keep the substantive checks (argument/return/assignment
+# types); only the "I can't infer this" family is off.
+[[tool.pyright.executionEnvironments]]
+root = "tests"
+reportUnknownParameterType = false
+reportUnknownMemberType = false
+reportUnknownVariableType = false
+reportUnknownArgumentType = false
+reportUnknownLambdaType = false
+reportMissingParameterType = false
+reportMissingTypeArgument = false
+reportPrivateUsage = false
+
+[[tool.pyright.executionEnvironments]]
+root = "src"
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

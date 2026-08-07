@@ -12,3 +12,4 @@ raycast/node_modules/
 raycast/dist/
 raycast/raycast-env.d.ts
 .claude/settings.local.json
+docs/
