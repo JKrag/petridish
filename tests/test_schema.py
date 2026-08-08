@@ -14,8 +14,12 @@ from pathlib import Path
 import pytest
 
 from petridish.schema import (
+    AGENT_RECENT_MAX_S,
+    AGENT_STATES,
+    AGENT_WORKING_MAX_S,
     SCHEMA_VERSION,
     AgentSignal,
+    agent_state_for_silence,
     AgentState,
     GitState,
     Project,
@@ -268,3 +272,46 @@ def test_agent_signal_carries_resolved_root_and_raw_cwd():
 def test_agent_signal_is_not_serialised_into_radar():
     """AgentSignal is internal — it must not leak into projects.json."""
     assert "raw_cwd" not in json.dumps(_golden_radar().to_dict())
+
+
+# ---------------------------------------------------------------------------
+# agent_state_for_silence — the single definition of the three agent states.
+#
+# Frontends re-derive state at render time from ``last_event_at`` so a live
+# silence counter cannot disagree with the ``state`` field the daemon stamped
+# at scan time. That makes these boundaries a published contract, not an
+# implementation detail of scan.py.
+# ---------------------------------------------------------------------------
+
+@pytest.mark.parametrize(
+    ("silence_s", "expected"),
+    [
+        (0, "working"),
+        (89, "working"),
+        (AGENT_WORKING_MAX_S - 0.001, "working"),
+        (AGENT_WORKING_MAX_S, "recent"),          # boundary is exclusive-below
+        (600, "recent"),
+        (AGENT_RECENT_MAX_S - 0.001, "recent"),
+        (AGENT_RECENT_MAX_S, "idle"),             # boundary is exclusive-below
+        (7200, "idle"),
+    ],
+)
+def test_agent_state_for_silence_boundaries(silence_s, expected):
+    assert agent_state_for_silence(silence_s) == expected
+
+
+def test_agent_state_for_silence_clamps_negative_input():
+    """Clock skew between writer and reader must not crash a frontend.
+
+    ``projects.json`` is written by the daemon and read by a separate process;
+    a future-dated ``last_event_at`` is a real possibility (NTP step, an edited
+    file) and must degrade to "working", not raise.
+    """
+    assert agent_state_for_silence(-1) == "working"
+    assert agent_state_for_silence(-10_000) == "working"
+
+
+def test_agent_state_for_silence_covers_every_declared_state():
+    """No AGENT_STATES value is unreachable from the function that defines them."""
+    produced = {agent_state_for_silence(s) for s in (0, 120, 99_999)}
+    assert produced == set(AGENT_STATES)

@@ -65,6 +65,33 @@ class AgentStateDict(TypedDict):
 AGENT_STATES = ("working", "recent", "idle")
 STATUS_BUCKETS = ("active", "in_flight", "stale", "cold")
 
+#: Silence thresholds, in seconds, that define :data:`AGENT_STATES`.
+#:
+#: These live here rather than in ``scan.py`` because two clocks read them. The
+#: daemon stamps ``agent.state`` at *scan* time, but a frontend showing a live
+#: "silent 4m 12s" counter must re-derive the state at *render* time — a
+#: ``projects.json`` that is 90 seconds old already has a stale ``state`` field.
+#: With the numbers duplicated, the traffic light and the clock beside it would
+#: eventually disagree.
+AGENT_WORKING_MAX_S = 90
+AGENT_RECENT_MAX_S = 30 * 60
+
+
+def agent_state_for_silence(silence_s: float) -> str:
+    """Map seconds-since-last-event onto one of :data:`AGENT_STATES`.
+
+    The sole definition of what the three states *mean*. Negative input (a
+    clock skew between the writer and the reader) is treated as zero rather
+    than raising — a frontend must never crash on a timestamp from the future.
+    """
+    if silence_s < 0:
+        silence_s = 0.0
+    if silence_s < AGENT_WORKING_MAX_S:
+        return "working"
+    if silence_s < AGENT_RECENT_MAX_S:
+        return "recent"
+    return "idle"
+
 
 # ---------------------------------------------------------------------------
 # datetime helpers
@@ -337,6 +364,9 @@ __all__ = [
     "SCHEMA_VERSION",
     "AGENT_STATES",
     "STATUS_BUCKETS",
+    "AGENT_WORKING_MAX_S",
+    "AGENT_RECENT_MAX_S",
+    "agent_state_for_silence",
     "GitState",
     "AgentState",
     "AgentSignal",

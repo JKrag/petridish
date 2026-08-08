@@ -28,6 +28,7 @@ from petridish.schema import (
     write_atomic,
     utcnow,
     to_utc,
+    agent_state_for_silence,
 )
 
 
@@ -46,12 +47,10 @@ def _agent_state_for(signal: Optional[AgentSignal], now: datetime) -> AgentState
         )
     now_t = to_utc(now)
     age_s = (now_t - to_utc(signal.at)).total_seconds()
-    if age_s < 90:
-        state = "working"
-    elif age_s < 30 * 60:
-        state = "recent"
-    else:
-        state = "idle"
+    # Thresholds live in schema.py: frontends re-derive this at render time from
+    # ``last_event_at`` so a live silence counter can't disagree with the state
+    # stamped here. See ``agent_state_for_silence``.
+    state = agent_state_for_silence(age_s)
     # An old signal still carries useful facts: WHICH agent last touched this
     # project, WHEN, and the session id needed to resume it
     # (`claude --resume <session_id>`). Only ``state`` reflects recency —
