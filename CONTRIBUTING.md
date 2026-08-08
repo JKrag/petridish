@@ -144,12 +144,37 @@ src/petridish/          core daemon — stdlib only
   config.py             TOML loading with per-key fallback
   sensors/              claude.py, copilot.py
   tui_state.py          pure logic for petri — testable without a terminal
-  tui.py                curses rendering — not unit-testable, keep it thin
+  screens.py            the two petri screens (Radar -> list[str])
+  tui.py                curses blitter + key handling — keep it thin
   menubar.py            pure xbar/SwiftBar renderer (str in, str out)
 scripts/                check_pyver.py, typecheck_ratchet.py
 raycast/                separate MIT-licensed extension (core stays GPL)
 ```
 
-The `tui_state.py` / `tui.py` split and `menubar.py` follow the same rule: **push
-logic into a pure function so it can be tested without a display.** If you add a
-frontend, do the same.
+The `tui_state.py` / `screens.py` / `tui.py` split and `menubar.py` follow the
+same rule: **push logic into a pure function so it can be tested without a
+display.** If you add a frontend, do the same.
+
+`screens.py` returns `list[str]` already clipped to width and height, so
+`tui.py` owns no layout arithmetic at all. That is what makes `swab dash` — the
+same dashboard, printed once, non-interactively — a three-line function rather
+than a second renderer.
+
+## Two things about the petri screens that look wrong and aren't
+
+- **`glyph_for()` ignores `project.agent.state`.** It re-derives the state from
+  `last_event_at` at render time instead. The stored field was stamped when the
+  daemon last scanned; the glyph sits next to a live silence counter, so reading
+  the stale field would let the two disagree on screen. The thresholds that
+  define both live in `schema.py` (`agent_state_for_silence`) precisely so they
+  cannot drift apart.
+- **The dashboard sorts by *longest* silence first.** Not most-recent-first.
+  It is a triage order: the run that has stopped moving is the one you need, and
+  freshest-first would bury it under the healthy ones.
+
+Also worth knowing: `agent.state` is a pure recency clock, not a liveness
+signal. `working` means "emitted an event in the last 90 seconds", so a local
+model mid-inference for four minutes reads `recent` — indistinguishable from a
+run that wedged four minutes ago. Telling *finished* from *wedged* needs a
+sensor this project does not have yet; the `⚠` glyph means "hasn't moved", not
+"broken".
