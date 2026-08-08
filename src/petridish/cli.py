@@ -39,7 +39,7 @@ from petridish.schema import (
     read_json,
     write_atomic,
 )
-from petridish.screens import render_dashboard
+from petridish.screens import browser_groups, render_dashboard
 from petridish.tui_state import dashboard_density
 
 CONFIG_DIR = os.path.join(os.path.expanduser("~"), ".petridish")
@@ -143,13 +143,12 @@ def _cmd_dash(args: argparse.Namespace) -> int:
 
     radar = read_json(state_path)
     now = datetime.now(timezone.utc)
-    running = len(
-        [
-            p
-            for p in radar.projects
-            if not p.is_foreign and p.status_bucket == "active"
-        ]
-    )
+    # Count via the same path the renderer uses to build the rows. Counting
+    # `status_bucket == "active"` off radar.projects here agreed by coincidence
+    # today, but it is a second definition of "how many rows the top section
+    # holds" — and a change to bucketing or foreign handling would break one of
+    # the two silently. tui.py's _running_count() exists for the same reason.
+    running = len(browser_groups(radar)["active"])
     lines = render_dashboard(
         radar,
         now=now,

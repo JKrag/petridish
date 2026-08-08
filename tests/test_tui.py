@@ -181,3 +181,17 @@ def test_find_glyph_ignores_a_glyph_further_along_the_line():
     """
     line = "   petri-notes    main    commit: fix ● bullet rendering"
     assert tui.find_glyph(line) is None
+
+
+def test_find_glyph_ignores_the_browsers_right_hand_detail_pane():
+    """Two-column rows carry a second half past the vertical rule.
+
+    A glyph over there belongs to the detail text, not to the row's state, and
+    it is far past column 4 — but pin it, because the right pane is the one
+    place a second glyph can legitimately appear on the same line.
+    """
+    line = (
+        "  ○ old-blog          main       0   -    "
+        "│ agent state: idle ● was here"
+    )
+    assert tui.find_glyph(line) == (2, "dim")  # the row's own glyph, not the pane's

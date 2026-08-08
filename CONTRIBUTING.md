@@ -112,6 +112,19 @@ This is not hypothetical. Real examples from this codebase:
 A quick way to check a whole module: mutate an operator (`max`→`min`, flip a
 comparison, add an off-by-one) and confirm the suite goes red.
 
+Two mutations that survived while building the petri screens, both because the
+fixtures never separated two fields that are usually set together:
+
+- `is_dirty` was always derived from `uncommitted_files > 0`, so a renderer that
+  checked only one of them passed. `has_agent` had the same problem with
+  `last_event_at` and `session_id`.
+- A sort key with an explicit group rank *plus* a negated second element:
+  the sign silently did the partitioning, so removing the rank changed nothing
+  and no test could tell. Two partitions concatenated is both clearer and
+  actually testable.
+
+If a mutation survives, the fix is a test, not a shrug.
+
 **If you script that, clear `__pycache__` between iterations.** Python's
 bytecode staleness check compares the source mtime at 1-second granularity, so
 writing a mutation and restoring it inside the same second leaves the *mutated*
@@ -123,6 +136,27 @@ minutes.
 ```sh
 find . -name __pycache__ -type d -not -path "./.venv/*" -exec rm -rf {} +
 ```
+
+## The pty test
+
+`tests/test_tui_pty.py` spawns the real `petri` in a pseudo-terminal and sends
+keystrokes. It is the only coverage of `curses.wrapper`, the key dispatch, the
+blitter, and whether `q` gives you your shell back — and it costs ~30s of the
+suite's runtime. Worth it; don't delete it.
+
+Three things it will teach you the hard way if you extend it:
+
+- **Keep draining the pty while waiting for the child to exit.** The TUI
+  repaints every 2s; stop reading and the buffer fills, the child blocks in
+  `write()`, and it never reads the `q` you sent. That looks exactly like a TUI
+  bug and is not.
+- **Set the window size.** A forked pty starts at 0x0, where the renderers
+  correctly emit nothing.
+- **Never assert on an arbitrary literal string.** curses repaints only changed
+  cells, so `compact` really is on screen while the byte stream reads
+  `...quietest first · compacmain   ✎3...`. Assert on whole rows that are new to
+  the frame. Exact output belongs in `test_screens.py`, where the renderer is
+  called directly.
 
 ## Things that look like bugs and aren't
 

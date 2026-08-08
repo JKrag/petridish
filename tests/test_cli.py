@@ -453,6 +453,34 @@ def test_dash_density_flag_forces_the_layout(tmp_path, capsys):
     assert len(roomy.splitlines()) > len(compact.splitlines())
 
 
+def test_dash_automatic_density_counts_the_rows_the_renderer_emits(tmp_path, capsys):
+    """The density input must come from the same path that builds the rows.
+
+    Computing it separately (e.g. ``status_bucket == "active"`` off
+    ``radar.projects``) is a second definition of "how many rows the top section
+    holds". Five running projects must select compact; four must not — and a
+    foreign fifth must not tip it over.
+    """
+    four = [_make_project(f"p{i}", f"/tmp/p{i}") for i in range(4)]
+    main(["--state", str(_write_fixture(tmp_path, four)), "dash", "--width", "78"])
+    assert "compact" not in capsys.readouterr().out
+
+    five = [_make_project(f"p{i}", f"/tmp/p{i}") for i in range(5)]
+    main(["--state", str(_write_fixture(tmp_path, five)), "dash", "--width", "78"])
+    assert "compact" in capsys.readouterr().out
+
+    # A foreign fifth is not a row, so it must not flip the density.
+    four_plus_foreign = [
+        *four,
+        _make_project("hidden", "/tmp/hidden", is_foreign=True),
+    ]
+    main([
+        "--state", str(_write_fixture(tmp_path, four_plus_foreign)),
+        "dash", "--width", "78",
+    ])
+    assert "compact" not in capsys.readouterr().out
+
+
 def test_dash_excludes_foreign_projects(tmp_path, capsys):
     state = _write_fixture(
         tmp_path,
