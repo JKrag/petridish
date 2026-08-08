@@ -22,6 +22,7 @@ from petridish.schema import (
 )
 from petridish.tui_state import (
     STALL_AFTER_S,
+    STALL_CEILING_S,
     agent_bulb,
     dashboard_density,
     detail_layout,
@@ -627,3 +628,60 @@ def test_dashboard_sort_groups_by_timestamp_not_session_id():
     no_event = _agent_project("quiet", silence_s=None, last_activity_s=5)
     ordered = sort_for_dashboard([no_event, sessionless_live], now=NOW)
     assert [p.name for p in ordered] == ["live", "quiet"]
+
+
+# ---------------------------------------------------------------------------
+# The stall ceiling. Found by running against a real projects.json, where five
+# of eight "running" rows carried agent metadata 14-29 hours old and every one
+# of them warned.
+# ---------------------------------------------------------------------------
+
+def test_glyph_stops_warning_once_the_session_is_simply_over():
+    """A run that ended last night is not an alarm.
+
+    ``_bucket()`` calls anything touched within 48h "active", so the top
+    section fills with yesterday's finished sessions. Without a ceiling the
+    warning fires on almost every row, which makes it mean nothing.
+    """
+    yesterday = _agent_project("finished", silence_s=15 * 3600)
+    assert glyph_for(yesterday, now=NOW) == ("○", "dim")
+
+
+def test_glyph_still_warns_across_an_overnight_run():
+    """The ceiling must span a night, or it defeats the dashboard's purpose.
+
+    A job that starts at 23:00 and dies at midnight has been silent 8 hours by
+    the time you look at 08:00. That must still warn.
+    """
+    assert glyph_for(_agent_project("died-at-midnight", silence_s=8 * 3600),
+                     now=NOW) == ("⚠", "warn")
+
+
+def test_glyph_stall_ceiling_boundary():
+    below = _agent_project("below", silence_s=STALL_CEILING_S - 1)
+    at = _agent_project("at", silence_s=STALL_CEILING_S)
+    assert glyph_for(below, now=NOW) == ("⚠", "warn")
+    assert glyph_for(at, now=NOW) == ("○", "dim")
+
+
+def test_the_three_glyph_windows_are_ordered_and_exhaustive():
+    """One pass over the whole silence range: ● then ⚠ then ○, no gaps."""
+    seen = [
+        glyph_for(_agent_project("p", silence_s=s), now=NOW)[0]
+        for s in (0, 60, 89, 91, 600, 1799, 1801, 3600, 43_199, 43_201, 200_000)
+    ]
+    assert seen == ["●"] * 6 + ["⚠"] * 3 + ["○"] * 2
+
+
+def test_a_long_silent_project_still_sorts_above_one_with_no_agent():
+    """Dimming the glyph must not change the ordering.
+
+    An ended session is still more interesting than a project no agent has ever
+    touched — it just is not an alarm.
+    """
+    ended = _agent_project("ended", silence_s=20 * 3600)
+    never = _agent_project("never", silence_s=None, last_activity_s=60)
+    assert [p.name for p in sort_for_dashboard([never, ended], now=NOW)] == [
+        "ended",
+        "never",
+    ]

@@ -197,6 +197,25 @@ def agent_bulb(state: str) -> tuple[str, str]:
 #: event in half an hour is the thing you opened the dashboard to find.
 STALL_AFTER_S = AGENT_RECENT_MAX_S
 
+#: ...but only up to here. Past this, the session is *over*, not stalled.
+#:
+#: This ceiling exists because real data proved the warning useless without it.
+#: ``_bucket()`` calls anything touched within 48h "active", so the dashboard's
+#: top section is full of yesterday's finished sessions — on a real
+#: ``projects.json`` five of eight rows carried agent metadata 14-29 hours old.
+#: With no ceiling every one of them warned, and a warning on most rows is not
+#: a warning.
+#:
+#: 12 hours is chosen to span an overnight run: a job that starts at 23:00 and
+#: dies at midnight still warns when you look at 08:00, while last night's
+#: completed sessions have gone quiet. It is the number to tune if that is the
+#: wrong shape for how you work.
+#:
+#: The honest caveat: *finished* and *died long ago* are genuinely
+#: indistinguishable from the fields the sensors emit today, so this threshold
+#: is a heuristic standing in for a signal that does not exist yet.
+STALL_CEILING_S = 12 * 3600
+
 
 def format_silence(
     at: datetime | None,
@@ -271,12 +290,16 @@ def glyph_for(project: Project, *, now: datetime) -> tuple[str, str]:
     A three-way split, and deliberately **not** a function of
     ``project.agent.state``:
 
-    * ``⚠ warn`` — an agent has been here but has been silent past
-      :data:`STALL_AFTER_S`. Needs attention.
     * ``● green``/``● yellow`` — an agent is moving; the colour comes from
       re-deriving the state at *render* time, so it stays honest even when
       ``projects.json`` is a couple of minutes stale.
-    * ``○ dim`` — no agent has ever been seen here.
+    * ``⚠ warn`` — silent between :data:`STALL_AFTER_S` and
+      :data:`STALL_CEILING_S`. Recent enough that the run could still be alive,
+      quiet enough that something is probably wrong. This is the row you opened
+      the dashboard to find.
+    * ``○ dim`` — either no agent has ever been seen here, *or* the last one
+      spoke so long ago that the session is simply over. A finished run is not
+      an alarm.
 
     The stored ``state`` field is bypassed on purpose. It was stamped when the
     daemon last scanned, and this glyph sits next to a live silence counter;
@@ -285,6 +308,10 @@ def glyph_for(project: Project, *, now: datetime) -> tuple[str, str]:
     if not has_agent(project):
         return ("○", "dim")
     silence = silence_seconds(project, now=now)
+    if silence >= STALL_CEILING_S:
+        # Session over, not stuck. Without this the "active" bucket's 48h window
+        # made almost every row warn — see STALL_CEILING_S.
+        return ("○", "dim")
     if silence >= STALL_AFTER_S:
         return ("⚠", "warn")
     return agent_bulb(agent_state_for_silence(silence))

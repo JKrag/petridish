@@ -142,7 +142,31 @@ def _agent_label(project: Project) -> str:
 
 
 def _event_label(project: Project) -> str:
-    return project.agent.last_event or ""
+    """The last tool call, falling back to commit age when unavailable.
+
+    ``last_event`` is only ever set by the hook path (``events.py``); both
+    filesystem sensors construct their signal with ``event=None``. On a real
+    ``projects.json`` it was populated **zero** times out of 76 projects, which
+    made this column permanently blank — dead space in the compact row and an
+    empty right-hand side on every roomy card.
+
+    So it degrades to something the scanner does produce. Blank is only
+    correct when there is genuinely nothing to say.
+    """
+    if project.agent.last_event:
+        return project.agent.last_event
+    if project.git.last_commit_at is not None:
+        return ""  # caller supplies commit age; see _commit_label
+    return ""
+
+
+def _commit_label(project: Project, *, now: datetime) -> str:
+    """``commit 3h ago`` (plus ``(you)`` when it is yours), or empty."""
+    if project.git.last_commit_at is None:
+        return ""
+    age = format_silence(project.git.last_commit_at, now=now)
+    mine = project.git.mine_last_commit_at == project.git.last_commit_at
+    return f"commit {age} ago" + (" (you)" if mine else "")
 
 
 # ---------------------------------------------------------------------------
@@ -178,16 +202,12 @@ def format_card(
         right1 = f"silent {silence}" + (f" · {agent}" if agent else "")
         session = project.agent.session_id
         right3 = f"sess {session[:18]}" if session else ""
-        right2 = _event_label(project)
+        # No event to show is the common case, not the exception — fall back to
+        # git rather than leaving half the card blank.
+        right2 = _event_label(project) or _commit_label(project, now=now)
     else:
         right1 = "no agent"
-        commit = format_silence(project.git.last_commit_at, now=now)
-        mine = project.git.mine_last_commit_at == project.git.last_commit_at
-        right2 = (
-            ""
-            if project.git.last_commit_at is None
-            else f"commit {commit} ago" + (" (you)" if mine else "")
-        )
+        right2 = _commit_label(project, now=now)
         right3 = ""
 
     branch = project.git.branch or "-"
@@ -235,7 +255,8 @@ def format_compact_row(
     # The event is left-aligned in whatever is left rather than flushed right:
     # a ragged right edge on the one free-text column reads as noise next to
     # five aligned ones.
-    event = _fit(_event_label(project), max(0, width - len(prefix) - 3))
+    detail = _event_label(project) or _commit_label(project, now=now)
+    event = _fit(detail, max(0, width - len(prefix) - 3))
     return f"{prefix}  {event}".rstrip()
 
 
