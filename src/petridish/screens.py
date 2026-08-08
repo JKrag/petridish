@@ -53,6 +53,13 @@ _BUCKET_LABELS = {
 #: Lines a roomy card occupies, including its trailing blank separator.
 ROOMY_CARD_HEIGHT = 4
 
+#: Keymap footers. These advertise **only keys tui.py actually binds** — a
+#: footer promising "⏎ open" or "r resume" when nothing is wired to them is
+#: worse than a shorter footer, because the user learns to distrust the whole
+#: line. Extend these in the same commit that binds the key.
+DASHBOARD_KEYS = " tab browser   z density   q quit"
+BROWSER_KEYS = " tab dashboard   j/k move   / search   esc clear   q quit"
+
 #: Column headers for the browser's project table. Extends the shared
 #: ``ROW_HEADERS`` with the silence column, which only the new screens show.
 BROWSER_HEADERS = [*ROW_HEADERS[:-1], "✎", "silent"]
@@ -269,6 +276,17 @@ def _section(
     return lines
 
 
+def browser_groups(radar: Radar, query: str = "") -> dict[str, list[Project]]:
+    """The browser's projects, filtered and bucketed.
+
+    Public because ``tui.py`` needs the *same* grouping to resolve its cursor
+    into a ``Project``. If it rebuilt the grouping itself, a change to the
+    filter here would silently desync the highlighted row from the selected
+    project.
+    """
+    return group_by_bucket(filter_projects(_visible(radar), query))
+
+
 def _visible(radar: Radar) -> list[Project]:
     """Non-foreign projects.
 
@@ -354,7 +372,7 @@ def render_dashboard(
             lines.append(_fit(f"   {names}", width))
 
     lines.append("─" * width)
-    lines.append(" tab browser   z density   r rescan   q quit")
+    lines.append(DASHBOARD_KEYS)
     return _clip(lines, width=width, height=height)
 
 
@@ -462,7 +480,7 @@ def render_browser(
         layout = detail_layout(width)
 
     visible = filter_projects(_visible(radar), query)
-    buckets = group_by_bucket(visible)
+    buckets = browser_groups(radar, query)
 
     if layout == "right":
         left_w = max(20, min(52, width - 46))
@@ -508,7 +526,7 @@ def render_browser(
         lines.append("─" * width)
         lines += detail_lines
     lines.append("─" * width)
-    lines.append(" tab dashboard   j/k move   / search   ⏎ open   r resume   q quit")
+    lines.append(BROWSER_KEYS)
     return _clip(lines, width=width, height=height)
 
 
@@ -627,13 +645,15 @@ def _join_columns(
         lines.append(f"{_fit(left, left_w).ljust(left_w)}│ {_fit(right, max(0, width - left_w - 2))}".rstrip())
 
     lines.append("─" * left_w + "┴" + "─" * max(0, width - left_w - 1))
-    keys = " tab dashboard   j/k move   / search   ⏎ open   r resume   q quit"
-    lines.append(f" /{query}" if query else keys)
+    lines.append(f" /{query}" if query else BROWSER_KEYS)
     return _clip(lines, width=width, height=height)
 
 
 __all__ = [
     "render_dashboard",
+    "browser_groups",
+    "DASHBOARD_KEYS",
+    "BROWSER_KEYS",
     "render_browser",
     "format_card",
     "format_compact_row",

@@ -100,3 +100,84 @@ def test_format_stale_banner_returns_short_string():
     banner = tui._format_stale_banner(radar, now=now)
     assert "\n" not in banner, "banner must be a single line"
     assert len(banner) < 80
+
+
+# ---------------------------------------------------------------------------
+# Two-screen state machine.
+#
+# The pure key-handling helpers, so the screen toggle and the density toggle
+# can be pinned without a terminal. The render loop itself still needs a human
+# running ``petri`` — see the module docstring.
+# ---------------------------------------------------------------------------
+
+def test_next_screen_toggles_and_wraps():
+    assert tui.next_screen("dashboard") == "browser"
+    assert tui.next_screen("browser") == "dashboard"
+
+
+def test_next_screen_round_trips():
+    """tab twice must return you to where you started."""
+    for start in ("dashboard", "browser"):
+        assert tui.next_screen(tui.next_screen(start)) == start
+
+
+def test_toggle_density_flips_what_is_currently_on_screen():
+    """The first press must always change something visible.
+
+    From the automatic default: 2 rows shows roomy, so z goes compact; 8 rows
+    shows compact, so z goes roomy. A fixed cycle would make the first press a
+    no-op whenever the automatic choice already matched the cycle's head.
+    """
+    assert tui.toggle_density(None, 2) == "compact"
+    assert tui.toggle_density(None, 8) == "roomy"
+
+
+def test_toggle_density_flips_an_existing_override_too():
+    assert tui.toggle_density("roomy", 2) == "compact"
+    assert tui.toggle_density("compact", 8) == "roomy"
+
+
+def test_toggle_density_is_its_own_inverse():
+    for n in (1, 4, 5, 20):
+        first = tui.toggle_density(None, n)
+        assert tui.toggle_density(first, n) != first
+
+
+# ---------------------------------------------------------------------------
+# Glyph colouring — the only presentation logic left in the blitter.
+# ---------------------------------------------------------------------------
+
+@pytest.mark.parametrize(
+    ("line", "expected"),
+    [
+        (" ⚠ rtk               feat/token-map", (1, "warn")),
+        (" ● nono", (1, "green")),
+        (" ○ old-blog", (1, "dim")),
+        ("> ● project-radar", (2, "green")),
+        ("  ⚠ rtk", (2, "warn")),
+    ],
+)
+def test_find_glyph_locates_the_state_cell(line, expected):
+    assert tui.find_glyph(line) == expected
+
+
+def test_find_glyph_returns_none_for_chrome_and_plain_rows():
+    for line in (
+        "petri · dashboard",
+        "──────────────────",
+        " RUNNING",
+        "",
+        "   petri-notes          main       commit 6d",
+    ):
+        assert tui.find_glyph(line) is None
+
+
+def test_find_glyph_ignores_a_glyph_further_along_the_line():
+    """A ● inside a commit message or branch name must not be repainted.
+
+    Only the first few columns are searched, because that is where a row's own
+    state glyph lives. Repainting a match mid-line would colour an arbitrary
+    character green.
+    """
+    line = "   petri-notes    main    commit: fix ● bullet rendering"
+    assert tui.find_glyph(line) is None

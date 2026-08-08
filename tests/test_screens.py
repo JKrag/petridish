@@ -13,12 +13,14 @@ obvious in a diff.
 from __future__ import annotations
 
 import sys
+from dataclasses import replace as dc_replace
 from datetime import datetime, timedelta, timezone
 
 import pytest
 
 from petridish.schema import AgentState, GitState, Project, Radar
 from petridish.screens import (
+    DASHBOARD_KEYS,
     format_browser_row,
     format_card,
     format_detail_compact,
@@ -128,7 +130,7 @@ def test_dashboard_roomy_exact_string():
             "──────────────────────────────────────────────────────────────────────────────",
             "   old-blog",
             "──────────────────────────────────────────────────────────────────────────────",
-            " tab browser   z density   r rescan   q quit",
+            " tab browser   z density   q quit",
         ]
     )
     got = render_dashboard(radar, now=NOW, width=78, height=40, home=HOME)
@@ -225,7 +227,7 @@ def test_dashboard_compact_exact_string():
             " ● kata-2025         main                    4s  Edit  src/day07.py",
             "",
             "──────────────────────────────────────────────────────────────────────────────",
-            " tab browser   z density   r rescan   q quit",
+            " tab browser   z density   q quit",
         ]
     )
     got = render_dashboard(
@@ -261,13 +263,13 @@ def test_compact_fits_eight_runs_where_roomy_would_not():
     assert len(roomy) == 40
     assert not any("STALE" in ln for ln in roomy)
     assert not any("dusty" in ln for ln in roomy)
-    assert not any("tab browser" in ln for ln in roomy)
+    assert not any(DASHBOARD_KEYS in ln for ln in roomy)
 
     # Compact: everything fits, with rows to spare.
     assert len(compact) == 24
     assert any("STALE" in ln for ln in compact)
     assert any("dusty" in ln for ln in compact)
-    assert any("tab browser" in ln for ln in compact)
+    assert any(DASHBOARD_KEYS in ln for ln in compact)
 
 
 # ---------------------------------------------------------------------------
@@ -447,19 +449,15 @@ def test_card_for_a_no_agent_project_spends_its_lines_on_git():
 
 
 def test_card_omits_the_you_marker_when_the_last_commit_is_not_yours():
-    project = _p("shared", commit_h=3)
-    project = Project(
-        **{
-            **project.to_dict(),
-            "git": GitState(
-                is_repo=True,
-                branch="main",
-                last_commit_at=NOW - timedelta(hours=3),
-                mine_last_commit_at=NOW - timedelta(hours=99),
-            ),
-            "agent": AgentState(),
-            "last_activity_at": None,
-        }
+    project = dc_replace(
+        _p("shared"),
+        git=GitState(
+            is_repo=True,
+            branch="main",
+            last_commit_at=NOW - timedelta(hours=3),
+            # Someone else's commit: the two timestamps differ.
+            mine_last_commit_at=NOW - timedelta(hours=99),
+        ),
     )
     card = format_card(project, now=NOW, width=78, home=HOME)
     assert "commit 3h ago" in card[1]

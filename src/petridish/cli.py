@@ -8,6 +8,8 @@ Subcommands:
 - ``swab scan``                     Run a fresh scan and write the state file.
 - ``swab list [--bucket|--all|--json]``
                                     Inspect the cached state file (never scans).
+- ``swab dash [--width|--height|--density]``
+                                    Print the petri dashboard once and exit.
 - ``swab path <QUERY>``             Print the project path matching QUERY.
 - ``swab doctor``                   Check system health and report findings.
 - ``swab config``                   Print the config file location, every
@@ -37,6 +39,8 @@ from petridish.schema import (
     read_json,
     write_atomic,
 )
+from petridish.screens import render_dashboard
+from petridish.tui_state import dashboard_density
 
 CONFIG_DIR = os.path.join(os.path.expanduser("~"), ".petridish")
 _DEFAULT_STATE_PATH = os.path.join(CONFIG_DIR, "projects.json")
@@ -108,6 +112,54 @@ def _cmd_list(args: argparse.Namespace) -> int:
         return 0
 
     return _print_table(projects)
+
+
+def _cmd_dash(args: argparse.Namespace) -> int:
+    """Print the petri dashboard once and exit.
+
+    Exists because :func:`petridish.screens.render_dashboard` is pure: no
+    cursor, no input, no clock of its own. That makes the ambient screen usable
+    outside a curses session — pipe it into a tmux status pane, a cron mail, or
+    just glance at it without launching ``petri``.
+
+    Width comes from ``--width``, then the real terminal, then 80. The terminal
+    lookup is guarded: ``os.get_terminal_size()`` raises when stdout is a pipe,
+    which is the main way this command gets used.
+    """
+    state_path = args.state
+    if not os.path.isfile(state_path):
+        print(
+            f"no state file at {state_path}; run 'swab scan' first",
+            file=sys.stderr,
+        )
+        return 1
+
+    width = args.width
+    if width is None:
+        try:
+            width = os.get_terminal_size().columns
+        except OSError:
+            width = 80
+
+    radar = read_json(state_path)
+    now = datetime.now(timezone.utc)
+    running = len(
+        [
+            p
+            for p in radar.projects
+            if not p.is_foreign and p.status_bucket == "active"
+        ]
+    )
+    lines = render_dashboard(
+        radar,
+        now=now,
+        width=width,
+        height=args.height,
+        density=dashboard_density(running, override=args.density),
+        home=os.path.expanduser("~"),
+    )
+    print("\n".join(lines))
+    return 0
 
 
 def _header_columns() -> list[str]:
@@ -431,6 +483,33 @@ def _build_parser(state_default: str = _DEFAULT_STATE_PATH) -> argparse.Argument
     )
     path_p.add_argument("query", help="Project name or substring to match.")
     path_p.set_defaults(func=_cmd_path)
+
+    dash_p = sub.add_parser(
+        "dash",
+        help="Print the petri dashboard once and exit (non-interactive).",
+    )
+    dash_p.add_argument(
+        "--width",
+        type=int,
+        default=None,
+        help="Output width. Default: the terminal's, or 80 when piped.",
+    )
+    dash_p.add_argument(
+        "--height",
+        type=int,
+        default=200,
+        help=(
+            "Maximum lines. Default 200 — effectively unlimited, since a piped "
+            "dashboard has no screen to overflow."
+        ),
+    )
+    dash_p.add_argument(
+        "--density",
+        choices=["roomy", "compact"],
+        default=None,
+        help="Force card density. Default: roomy up to 4 running, else compact.",
+    )
+    dash_p.set_defaults(func=_cmd_dash)
 
     doc = sub.add_parser("doctor", help="Health-check the system.")
     doc.set_defaults(func=_cmd_doctor)

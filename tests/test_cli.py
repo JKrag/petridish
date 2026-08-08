@@ -379,3 +379,89 @@ def test_top_level_help_mentions_config_file(capsys):
 
     assert "config.toml" in out
     assert "swab config" in out
+
+
+# ---------------------------------------------------------------------------
+# ``swab dash`` — the non-interactive dashboard.
+#
+# Exists because render_dashboard is pure, so the ambient screen works outside
+# curses. These tests drive it the way a pipe would.
+# ---------------------------------------------------------------------------
+
+def test_dash_prints_the_dashboard(tmp_path, capsys):
+    state = _write_fixture(
+        tmp_path, [_make_project("project-radar", "/tmp/project-radar")]
+    )
+    rc = main(["--state", str(state), "dash", "--width", "78"])
+    assert rc == 0
+    out = capsys.readouterr().out
+    assert "petri · dashboard" in out
+    assert "project-radar" in out
+    assert "tab browser" in out
+
+
+def test_dash_missing_state_returns_one(capsys):
+    rc = main(["--state", "/nonexistent/projects.json", "dash"])
+    assert rc == 1
+    assert "run 'swab scan' first" in capsys.readouterr().err
+
+
+def test_dash_respects_an_explicit_width(tmp_path, capsys):
+    state = _write_fixture(
+        tmp_path, [_make_project("project-radar", "/tmp/project-radar")]
+    )
+    for width in (40, 78, 120):
+        main(["--state", str(state), "dash", "--width", str(width)])
+        out = capsys.readouterr().out
+        assert all(len(ln) <= width for ln in out.splitlines()), width
+
+
+def test_dash_defaults_to_eighty_columns_when_stdout_is_not_a_tty(
+    tmp_path, capsys, monkeypatch
+):
+    """``os.get_terminal_size()`` raises OSError on a pipe.
+
+    That is the main way this command gets used, so the fallback is not an edge
+    case — an unguarded call would make ``swab dash | less`` a traceback.
+    """
+    def _no_terminal(*_args, **_kwargs):
+        raise OSError("not a tty")
+
+    monkeypatch.setattr("os.get_terminal_size", _no_terminal)
+    state = _write_fixture(
+        tmp_path, [_make_project("project-radar", "/tmp/project-radar")]
+    )
+    rc = main(["--state", str(state), "dash"])
+    assert rc == 0
+    lines = capsys.readouterr().out.splitlines()
+    assert lines, "dash produced no output"
+    assert max(len(ln) for ln in lines) == 80
+
+
+def test_dash_density_flag_forces_the_layout(tmp_path, capsys):
+    """One running project would default to roomy; --density compact overrides."""
+    state = _write_fixture(
+        tmp_path, [_make_project("project-radar", "/tmp/project-radar")]
+    )
+    main(["--state", str(state), "dash", "--width", "78", "--density", "compact"])
+    compact = capsys.readouterr().out
+    main(["--state", str(state), "dash", "--width", "78", "--density", "roomy"])
+    roomy = capsys.readouterr().out
+
+    assert "compact" in compact
+    assert "compact" not in roomy
+    assert len(roomy.splitlines()) > len(compact.splitlines())
+
+
+def test_dash_excludes_foreign_projects(tmp_path, capsys):
+    state = _write_fixture(
+        tmp_path,
+        [
+            _make_project("mine", "/tmp/mine"),
+            _make_project("theirs", "/tmp/theirs", is_foreign=True),
+        ],
+    )
+    main(["--state", str(state), "dash", "--width", "78"])
+    out = capsys.readouterr().out
+    assert "mine" in out
+    assert "theirs" not in out

@@ -1,11 +1,17 @@
 """Interactive TUI for the petridish project radar.
 
-Renders :class:`~petridish.schema.Radar` as a bucketed table inside a curses
-terminal, with selection, search, refresh-on-disk-change, and a detail panel.
+Two screens, toggled with ``tab``:
 
-State management — grouping, filtering, row formatting, cursor movement — is
-delegated to :mod:`petridish.tui_state`.  This module owns only the curses
-render loop and the process entrypoint.
+* **dashboard** — the ambient monitor. Which unattended runs are moving, which
+  has gone quiet, what is merely in flight. No cursor, no selection.
+* **browser** — the driveable list, with a detail pane and search.
+
+All layout lives in :mod:`petridish.screens`, which returns ``list[str]``
+already clipped to the terminal's width and height. This module therefore does
+three things and nothing else: read the file, translate keys into state, and
+blit lines. Every piece of arithmetic that used to live here — reserved rows for
+the detail panel, column widths, section budgets — moved into a pure function
+that can be tested with the display closed.
 
 The entry point :func:`main` never calls ``sys.exit`` itself; tests call it
 directly and assert on the returned exit code.
@@ -19,36 +25,38 @@ import sys
 from datetime import datetime, timezone
 
 from petridish.cli import _DEFAULT_STATE_PATH
-from petridish.schema import read_json
+from petridish.schema import Radar, read_json
+from petridish.screens import browser_groups, render_browser, render_dashboard
 from petridish.tui_state import (
-    ROW_HEADERS,
     SelectionState,
-    agent_bulb,
-    column_widths,
-    filter_projects,
-    format_detail,
-    format_row,
-    group_by_bucket,
+    dashboard_density,
     is_stale,
     move,
-    pad_row,
     selected_project,
 )
-
-#: Width reserved at the start of every project row for the agent-state
-#: bulb (glyph + one space). Column headers and rows both shift right by
-#: this much so "name" lines up under the first real name column.
-_BULB_WIDTH = 2
 
 #: How often getch() gives up and returns -1, in milliseconds. This is what
 #: makes the mtime-poll auto-refresh actually run without a keypress — a
 #: blocking getch() (the default) never returns, so the reload check at the
 #: top of the loop only ran when the user happened to press a key.
+#:
+#: It is also what makes the dashboard's silence counters tick: the loop body
+#: re-renders unconditionally on every timeout, and the ages are derived at
+#: render time from ``last_event_at``. No extra mechanism, no extra scan.
 _POLL_MS = 2000
+
+#: The two screens, in ``tab`` order.
+_SCREENS = ("dashboard", "browser")
+
+#: Glyphs that carry agent state, mapped to the colour names
+#: :func:`_init_color_attrs` provides. Kept here rather than imported so the
+#: blitter's concern (which cell to paint) stays separate from the renderer's
+#: (what the glyph means).
+_GLYPH_COLORS = {"⚠": "warn", "●": "green", "○": "dim"}
 
 
 def _init_color_attrs() -> dict[str, int]:
-    """Best-effort color pairs for the agent-state bulb.
+    """Best-effort color pairs for the agent-state glyphs.
 
     Returns an empty dict (all glyphs render in the terminal's default
     color) if the terminal doesn't support color — this is cosmetic, never
@@ -60,10 +68,12 @@ def _init_color_attrs() -> dict[str, int]:
         curses.init_pair(1, curses.COLOR_GREEN, -1)
         curses.init_pair(2, curses.COLOR_YELLOW, -1)
         curses.init_pair(3, curses.COLOR_WHITE, -1)
+        curses.init_pair(4, curses.COLOR_RED, -1)
         return {
             "green": curses.color_pair(1) | curses.A_BOLD,
             "yellow": curses.color_pair(2) | curses.A_BOLD,
             "dim": curses.color_pair(3) | curses.A_DIM,
+            "warn": curses.color_pair(4) | curses.A_BOLD,
         }
     except curses.error:
         return {}
@@ -73,7 +83,7 @@ def _init_color_attrs() -> dict[str, int]:
 # Pure helpers (no curses, testable without a terminal)
 # ---------------------------------------------------------------------------
 
-def _format_stale_banner(radar, *, now: datetime | None = None) -> str:
+def _format_stale_banner(radar: Radar, *, now: datetime | None = None) -> str:
     """Return a banner string describing how old ``radar``'s data is.
 
     The TUI renders this banner at the top of the screen when
@@ -87,6 +97,37 @@ def _format_stale_banner(radar, *, now: datetime | None = None) -> str:
     return f"[data is {age_hours:.1f}h old, run 'swab scan' to refresh]"
 
 
+def find_glyph(line: str) -> tuple[int, str] | None:
+    """Locate the agent-state glyph in ``line``, if it has one.
+
+    Returns ``(column, color_name)``. Only the first few columns are searched:
+    the glyph is always at the start of a project row (after an optional
+    selection marker), and a ``●`` appearing inside a commit message or branch
+    name further along the line must not be repainted.
+    """
+    for i, ch in enumerate(line[:4]):
+        color = _GLYPH_COLORS.get(ch)
+        if color is not None:
+            return (i, color)
+    return None
+
+
+def next_screen(current: str) -> str:
+    """The screen ``tab`` moves to. Wraps, so ``tab`` alone cycles both ways."""
+    return _SCREENS[(_SCREENS.index(current) + 1) % len(_SCREENS)]
+
+
+def toggle_density(current_override: str | None, n_rows: int) -> str:
+    """What ``z`` should set the density override to.
+
+    Returns the *opposite* of what is currently on screen rather than cycling a
+    fixed list, so the first press always visibly changes something — whether
+    the current density came from the automatic rule or from a previous press.
+    """
+    showing = dashboard_density(n_rows, override=current_override)
+    return "roomy" if showing == "compact" else "compact"
+
+
 # ---------------------------------------------------------------------------
 # Curses render loop
 # ---------------------------------------------------------------------------
@@ -96,19 +137,18 @@ def _run(stdscr) -> int:
     curses.curs_set(0)  # hide the text cursor
     stdscr.timeout(_POLL_MS)  # getch() returns -1 after this many ms of no input
     color_attrs = _init_color_attrs()
+    home = os.path.expanduser("~")
 
     state_path = _DEFAULT_STATE_PATH
     radar = read_json(state_path)
     last_mtime = os.stat(state_path).st_mtime
 
-    query: str = ""
-    state = SelectionState()
+    screen = "dashboard"
+    density_override: str | None = None
+    query = ""
+    selection = SelectionState()
     search_mode = False
-    search_buffer: str = ""
-
-    # Compute flat-then-grouped views up front.
-    filtered = filter_projects(list(radar.projects), query)
-    grouped = group_by_bucket(filtered)
+    search_buffer = ""
 
     while True:
         try:
@@ -120,100 +160,45 @@ def _run(stdscr) -> int:
                 return 1
             if current_mtime != last_mtime:
                 radar = read_json(state_path)
-                filtered = filter_projects(list(radar.projects), query)
-                grouped = group_by_bucket(filtered)
-                state = SelectionState()
+                selection = SelectionState()
                 last_mtime = current_mtime
 
-            # ---- render one frame ----
+            now = datetime.now(timezone.utc)
             stdscr.erase()
             h, w = stdscr.getmaxyx()
 
-            # Compute the detail panel's content *before* drawing the list,
-            # so its lines (plus one separator) can be reserved at the
-            # bottom of the screen rather than fighting the list for
-            # whatever's left over.
-            selected = selected_project(state, grouped)
-            detail_lines = format_detail(selected) if selected is not None else []
-            reserved = (1 + len(detail_lines)) if detail_lines else 0
+            # The stale banner costs one row off the top; the renderers are told
+            # the reduced height so they budget against what is actually left.
+            banner = _format_stale_banner(radar, now=now) if is_stale(radar, now=now) else ""
+            top = 0
+            if banner:
+                _put(stdscr, 0, 0, banner, w, curses.A_BOLD)
+                top = 1
 
-            # Stale banner at row 0.
-            banner_line = ""
-            if is_stale(radar, now=datetime.now(timezone.utc)):
-                banner_line = _format_stale_banner(radar)
-                try:
-                    stdscr.addnstr(0, 0, banner_line, w - 1, curses.A_BOLD)
-                except curses.error:
-                    pass
+            if screen == "dashboard":
+                lines = render_dashboard(
+                    radar,
+                    now=now,
+                    width=w - 1,
+                    height=h - top,
+                    density=dashboard_density(
+                        _running_count(radar), override=density_override
+                    ),
+                    home=home,
+                )
+            else:
+                groups = browser_groups(radar, query)
+                lines = render_browser(
+                    radar,
+                    now=now,
+                    width=w - 1,
+                    height=h - top,
+                    selected=selected_project(selection, groups),
+                    query=search_buffer if search_mode else query,
+                    home=home,
+                )
 
-            top_y = 1 if banner_line else 0
-            list_bottom = max(top_y, h - reserved)
-            cursor_y = top_y
-
-            # Column widths computed once, across every visible row, so
-            # columns line up across bucket sections the way swab list's do.
-            all_rows = [
-                format_row(p) for projects in grouped.values() for p in projects
-            ]
-            widths = column_widths(all_rows, ROW_HEADERS)
-
-            if cursor_y < list_bottom:
-                header_line = pad_row(ROW_HEADERS, widths)
-                try:
-                    stdscr.addnstr(cursor_y, _BULB_WIDTH, header_line.ljust(w - 1), w - 1,
-                                   curses.A_UNDERLINE)
-                except curses.error:
-                    pass
-                cursor_y += 1
-
-            # Bucket sections: header + aligned rows.
-            for bucket_name, projects in grouped.items():
-                if cursor_y >= list_bottom:
-                    break
-
-                header = f"[{bucket_name.title()}] ({len(projects)})"
-                try:
-                    stdscr.addnstr(cursor_y, 0, header.ljust(w - 1), w - 1,
-                                   curses.A_BOLD)
-                except curses.error:
-                    pass
-                cursor_y += 1
-
-                for i, proj in enumerate(projects):
-                    if cursor_y >= list_bottom:
-                        break
-                    row_str = pad_row(format_row(proj), widths).ljust(w - 1)
-                    selected_attr = (
-                        curses.A_REVERSE
-                        if state.bucket == bucket_name and state.index == i
-                        else 0
-                    )
-                    glyph, color_name = agent_bulb(proj.agent.state)
-                    bulb_attr = color_attrs.get(color_name, 0) | selected_attr
-                    try:
-                        stdscr.addnstr(cursor_y, 0, glyph, 1, bulb_attr)
-                        stdscr.addnstr(cursor_y, _BULB_WIDTH, row_str,
-                                       max(0, w - 1 - _BULB_WIDTH), selected_attr)
-                    except curses.error:
-                        pass
-                    cursor_y += 1
-
-            # Separator + detail panel in the region reserved above.
-            if detail_lines:
-                sep_y = h - reserved
-                try:
-                    stdscr.addnstr(sep_y, 0, "-" * max(0, w - 1), w - 1, curses.A_DIM)
-                except curses.error:
-                    pass
-                for di, dline in enumerate(detail_lines):
-                    dy = sep_y + 1 + di
-                    if dy < 0 or dy >= h:
-                        continue
-                    try:
-                        stdscr.addnstr(dy, 0, dline.ljust(w - 1), w - 1)
-                    except curses.error:
-                        pass
-
+            _blit(stdscr, lines, top=top, width=w, color_attrs=color_attrs)
             stdscr.refresh()
 
         except curses.error:
@@ -231,31 +216,84 @@ def _run(stdscr) -> int:
                 query = search_buffer
                 search_mode = False
                 search_buffer = ""
-                filtered = filter_projects(list(radar.projects), query)
-                grouped = group_by_bucket(filtered)
-                state = SelectionState()
+                selection = SelectionState()
             elif ch == 27:  # Esc
                 search_mode = False
                 search_buffer = ""
             elif ch in (curses.KEY_BACKSPACE, 127, 8):
-                search_buffer = search_buffer[:-1] if search_buffer else ""
+                search_buffer = search_buffer[:-1]
             elif 32 <= ch < 127:
                 search_buffer += chr(ch)
             continue
 
         if ch == -1:
             continue
-        if ch in (ord('q'), ord('Q')):
+        if ch in (ord("q"), ord("Q")):
             return 0
-        elif ch in (curses.KEY_UP, ord('k')):
-            state = move(state, -1, grouped)
-        elif ch in (curses.KEY_DOWN, ord('j')):
-            state = move(state, 1, grouped)
-        elif ch == ord('/'):
-            search_mode = True
-            search_buffer = ""
+        if ch == ord("\t"):
+            screen = next_screen(screen)
+        elif screen == "dashboard":
+            if ch in (ord("z"), ord("Z")):
+                density_override = toggle_density(
+                    density_override, _running_count(radar)
+                )
+        else:
+            if ch in (curses.KEY_UP, ord("k")):
+                selection = move(selection, -1, browser_groups(radar, query))
+            elif ch in (curses.KEY_DOWN, ord("j")):
+                selection = move(selection, 1, browser_groups(radar, query))
+            elif ch == ord("/"):
+                search_mode = True
+                search_buffer = ""
+            elif ch == 27:  # Esc clears an active filter
+                query = ""
+                selection = SelectionState()
 
-    return 0
+
+def _running_count(radar: Radar) -> int:
+    """How many rows the dashboard's top section will hold.
+
+    The density rule keys on this, and it must match what the renderer will
+    actually emit — hence the same ``browser_groups`` filtering rather than a
+    count off ``radar.projects``.
+    """
+    return len(browser_groups(radar)["active"])
+
+
+def _put(stdscr, y: int, x: int, text: str, width: int, attr: int = 0) -> None:
+    """Write one clipped string, swallowing the edge-of-window error.
+
+    ``addnstr`` raises when asked to write to the last cell of the last line,
+    which is a normal consequence of filling the screen — not a failure worth
+    losing a frame over.
+    """
+    if y < 0 or x < 0 or width - x <= 0:
+        return
+    try:
+        stdscr.addnstr(y, x, text, width - x - 1, attr)
+    except curses.error:
+        pass
+
+
+def _blit(
+    stdscr, lines: list[str], *, top: int, width: int, color_attrs: dict[str, int]
+) -> None:
+    """Paint pre-laid-out ``lines``, colouring each row's agent glyph.
+
+    The renderers return plain strings — they have no business knowing about
+    curses colour pairs — so the one piece of presentation left here is finding
+    the glyph cell and repainting it. Everything else is a straight copy.
+    """
+    for i, line in enumerate(lines):
+        y = top + i
+        _put(stdscr, y, 0, line, width)
+        found = find_glyph(line)
+        if found is None:
+            continue
+        col, color_name = found
+        attr = color_attrs.get(color_name)
+        if attr:
+            _put(stdscr, y, col, line[col], width, attr)
 
 
 # ---------------------------------------------------------------------------
