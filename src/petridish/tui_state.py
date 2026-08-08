@@ -15,9 +15,12 @@ from dataclasses import dataclass
 from datetime import datetime
 
 from petridish.schema import (
+    AGENT_RECENT_MAX_S,
     Project,
     Radar,
     STATUS_BUCKETS,
+    agent_state_for_silence,
+    to_utc,
 )
 
 
@@ -180,6 +183,198 @@ def agent_bulb(state: str) -> tuple[str, str]:
 
 
 # ---------------------------------------------------------------------------
+# Silence clock
+#
+# The load-bearing signal for watching unattended runs. ``agent.state`` cannot
+# carry it: a delegate-to-local round where the local model thinks for four
+# minutes reads "recent", which is indistinguishable from a run that wedged
+# four minutes ago. The elapsed time since ``last_event_at``, recomputed at
+# render time, is what actually separates them.
+# ---------------------------------------------------------------------------
+
+#: Silence beyond this is drawn as a warning rather than a state bulb. Same
+#: boundary as ``idle`` — an agent that has a session but has not emitted an
+#: event in half an hour is the thing you opened the dashboard to find.
+STALL_AFTER_S = AGENT_RECENT_MAX_S
+
+
+def format_silence(
+    at: datetime | None,
+    *,
+    now: datetime,
+    precise: bool = False,
+) -> str:
+    """Elapsed time since ``at`` as a compact human string.
+
+    Two call sites want two densities, so this takes a flag rather than being
+    two near-identical functions:
+
+    * ``precise=False`` — one unit, for the narrow list column: ``12s``,
+      ``47m``, ``3h``, ``41d``.
+    * ``precise=True`` — two units, for the detail pane: ``4m 12s``,
+      ``3h 04m``, ``41d 02h``. Sub-minute stays one unit; there is no
+      meaningful second unit below it.
+
+    ``at=None`` renders ``-`` (no agent has ever touched this project).
+    Negative elapsed time — clock skew between the daemon that wrote the
+    timestamp and the frontend reading it — clamps to zero rather than
+    rendering a nonsensical negative age.
+    """
+    if at is None:
+        return "-"
+    elapsed = (to_utc(now) - to_utc(at)).total_seconds()
+    if elapsed < 0:
+        elapsed = 0.0
+
+    secs = int(elapsed)
+    if secs < 60:
+        return f"{secs}s"
+
+    minutes, s = divmod(secs, 60)
+    if minutes < 60:
+        return f"{minutes}m {s:02d}s" if precise else f"{minutes}m"
+
+    hours, m = divmod(minutes, 60)
+    if hours < 24:
+        return f"{hours}h {m:02d}m" if precise else f"{hours}h"
+
+    days, h = divmod(hours, 24)
+    return f"{days}d {h:02d}h" if precise else f"{days}d"
+
+
+def has_agent(project: Project) -> bool:
+    """Whether an agent has ever been seen in this project.
+
+    Keyed on ``last_event_at``, not ``session_id``: the silence clock and the
+    stall glyph both need the timestamp, so its presence — not the id's — is
+    what makes the richer rendering possible. ``scan.py`` deliberately keeps
+    this metadata populated for idle projects.
+    """
+    return project.agent.last_event_at is not None
+
+
+def silence_seconds(project: Project, *, now: datetime) -> float:
+    """Seconds since this project's last agent event; ``inf`` if never.
+
+    ``inf`` rather than ``None`` so it sorts as "quietest of all" without the
+    caller needing a null branch in every comparison.
+    """
+    at = project.agent.last_event_at
+    if at is None:
+        return float("inf")
+    return max(0.0, (to_utc(now) - to_utc(at)).total_seconds())
+
+
+def glyph_for(project: Project, *, now: datetime) -> tuple[str, str]:
+    """Return ``(glyph, color_name)`` for a project's live agent status.
+
+    A three-way split, and deliberately **not** a function of
+    ``project.agent.state``:
+
+    * ``⚠ warn`` — an agent has been here but has been silent past
+      :data:`STALL_AFTER_S`. Needs attention.
+    * ``● green``/``● yellow`` — an agent is moving; the colour comes from
+      re-deriving the state at *render* time, so it stays honest even when
+      ``projects.json`` is a couple of minutes stale.
+    * ``○ dim`` — no agent has ever been seen here.
+
+    The stored ``state`` field is bypassed on purpose. It was stamped when the
+    daemon last scanned, and this glyph sits next to a live silence counter;
+    reading the stale field would let the two disagree on screen.
+    """
+    if not has_agent(project):
+        return ("○", "dim")
+    silence = silence_seconds(project, now=now)
+    if silence >= STALL_AFTER_S:
+        return ("⚠", "warn")
+    return agent_bulb(agent_state_for_silence(silence))
+
+
+# ---------------------------------------------------------------------------
+# Dashboard ordering, density and pane layout
+# ---------------------------------------------------------------------------
+
+def sort_for_dashboard(projects: list[Project], *, now: datetime) -> list[Project]:
+    """Order the dashboard's top section: the row that needs you comes first.
+
+    Two groups, in this order:
+
+    1. **Projects with an agent**, longest silence first. This is a triage
+       order — sorting most-recent-first would put the healthiest run at the
+       top and bury the wedged one, which defeats the whole point of the
+       screen.
+    2. **Projects without an agent**, most recent activity first. These are
+       context, not triage, so the useful order flips: newest is most
+       relevant. (They land in the top section at all because ``_bucket()``
+       calls anything touched within 48h "active".)
+
+    Ties break on ``name`` so the output is deterministic — otherwise two runs
+    that last spoke in the same second could swap places between repaints and
+    make the screen flicker.
+
+    Implemented as **two partitions concatenated**, not one composite sort key.
+    A single key wants a leading group rank plus a signed second element, and
+    then the sign silently does the partitioning on its own — the rank becomes
+    decorative and no test can tell whether it is there. Two explicit lists
+    make the grouping load-bearing and readable.
+    """
+    def _age(p: Project) -> float:
+        if p.last_activity_at is None:
+            return float("inf")
+        return max(0.0, (to_utc(now) - to_utc(p.last_activity_at)).total_seconds())
+
+    with_agent = sorted(
+        (p for p in projects if has_agent(p)),
+        key=lambda p: (-silence_seconds(p, now=now), p.name),
+    )
+    without_agent = sorted(
+        (p for p in projects if not has_agent(p)),
+        key=lambda p: (_age(p), p.name),
+    )
+    return with_agent + without_agent
+
+
+#: Card densities for the dashboard's top section.
+DENSITIES = ("roomy", "compact")
+
+#: Above this many rows in the top section, roomy cards stop fitting: 5 cards
+#: x 4 lines would leave nothing for the in-flight and stale sections on a
+#: 40-row terminal. Density collapses instead of capping the count — on an
+#: overnight fan-out you want to see *every* run, not the top three.
+ROOMY_MAX_ROWS = 4
+
+
+def dashboard_density(n_rows: int, *, override: str | None = None) -> str:
+    """Pick ``"roomy"`` or ``"compact"`` for ``n_rows`` projects.
+
+    ``override`` is the user's ``z`` keypress and always wins — but an
+    unrecognised value is ignored rather than raising, because this is a
+    cosmetic choice reached from a key handler.
+    """
+    if override in DENSITIES:
+        # Narrow to the literal type pyright infers from DENSITIES membership.
+        return "compact" if override == "compact" else "roomy"
+    return "roomy" if n_rows <= ROOMY_MAX_ROWS else "compact"
+
+
+#: Terminal width at or above which the browser's detail pane sits on the
+#: right. Below it, the pane goes back to the bottom. A side pane spends
+#: columns you were not using; a bottom pane spends rows, which is the one
+#: resource the project list needs.
+DETAIL_RIGHT_MIN_COLS = 100
+
+
+def detail_layout(width: int) -> str:
+    """``"right"`` or ``"bottom"`` for the browser's detail pane.
+
+    Derived from terminal width rather than bound to a key: that makes
+    terminal-resize handling fall out for free, and leaves one fewer thing to
+    remember.
+    """
+    return "right" if width >= DETAIL_RIGHT_MIN_COLS else "bottom"
+
+
+# ---------------------------------------------------------------------------
 # Interaction cursor
 # ---------------------------------------------------------------------------
 
@@ -285,4 +480,15 @@ __all__ = [
     "pad_row",
     "AGENT_STATE_GLYPHS",
     "agent_bulb",
+    "STALL_AFTER_S",
+    "format_silence",
+    "has_agent",
+    "silence_seconds",
+    "glyph_for",
+    "sort_for_dashboard",
+    "DENSITIES",
+    "ROOMY_MAX_ROWS",
+    "dashboard_density",
+    "DETAIL_RIGHT_MIN_COLS",
+    "detail_layout",
 ]
