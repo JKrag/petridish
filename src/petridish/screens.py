@@ -28,11 +28,12 @@ from __future__ import annotations
 
 from datetime import datetime
 
-from petridish.schema import Project, Radar
+from petridish.schema import Project, QuotaState, Radar, to_utc
 from petridish.tui_state import (
     ROW_HEADERS,
     column_widths,
     filter_projects,
+    format_countdown,
     format_detail,
     format_silence,
     glyph_for,
@@ -264,6 +265,77 @@ def format_compact_row(
 # Shared section chrome
 # ---------------------------------------------------------------------------
 
+#: Cells in a quota bar. Ten keeps each cell worth exactly 10%, so the bar and
+#: the percentage beside it can never appear to disagree.
+QUOTA_BAR_CELLS = 10
+
+#: Past this, the quota figures are labelled with their age. Claude Code only
+#: rewrites its status file while a session is running, so overnight these
+#: numbers go stale while the rest of projects.json stays fresh — a percentage
+#: with no age next to it would quietly lie.
+QUOTA_STALE_AFTER_S = 15 * 60
+
+
+def _bar(pct: int | None, cells: int = QUOTA_BAR_CELLS) -> str:
+    """A ``████░░░░░░`` meter. ``None`` yields all-empty."""
+    if pct is None:
+        return "░" * cells
+    filled = max(0, min(cells, round(pct / 100 * cells)))
+    return "█" * filled + "░" * (cells - filled)
+
+
+def format_quota_line(
+    quota: QuotaState | None, *, now: datetime, width: int
+) -> list[str]:
+    """The header's quota line, or ``[]`` when there is nothing to say.
+
+    Returns a list so the caller can splice it in without a null check — an
+    absent sensor simply contributes no rows.
+
+    Degrades by width rather than truncating: the bars are the first thing
+    dropped, because the percentage carries the same information in fewer
+    columns. Below that, only the seven-day window survives — it is the one
+    that bites, since the five-hour window refills on its own.
+    """
+    # These two guards overlap: a None quota would fall through to the second
+    # one anyway (an empty QuotaState has no windows), so mutation testing
+    # reports removing the first as an equivalent mutant. Kept for readability —
+    # "no sensor reading" and "a reading with nothing in it" are different
+    # facts, even when they render the same.
+    if quota is None:
+        return []
+
+    five = quota.five_hour_used_pct
+    seven = quota.seven_day_used_pct
+    if five is None and seven is None:
+        return []
+
+    age = ""
+    if quota.measured_at is not None:
+        elapsed = (to_utc(now) - to_utc(quota.measured_at)).total_seconds()
+        if elapsed >= QUOTA_STALE_AFTER_S:
+            age = f"  · {format_silence(quota.measured_at, now=now)} old"
+
+    def part(label: str, pct: int | None, resets: datetime | None, bars: bool) -> str:
+        shown = "  -%" if pct is None else f"{pct:3d}%"
+        meter = f"{_bar(pct)} " if bars else ""
+        return f"{label} {meter}{shown}  resets {format_countdown(resets, now=now)}"
+
+    for bars, both in ((True, True), (False, True), (False, False)):
+        chunks = [part("7d", seven, quota.seven_day_resets_at, bars)]
+        if both:
+            chunks.insert(
+                0, part("5h", five, quota.five_hour_resets_at, bars)
+            )
+        line = " " + "   ·   ".join(chunks) + age
+        if len(line) <= width:
+            return [line]
+
+    # Even the bar-less single window does not fit; let the caller's clip
+    # handle it rather than returning nothing at all.
+    return [" " + part("7d", seven, quota.seven_day_resets_at, False)]
+
+
 def _header(
     radar: Radar, *, now: datetime, width: int, title: str, n_projects: int
 ) -> list[str]:
@@ -279,7 +351,11 @@ def _header(
         f"{now.strftime('%H:%M')} · "
         f"{radar.scan_duration_ms / 1000:.2f}s"
     )
-    return [_split(f"petri · {title}", right, width).rstrip(), "═" * width]
+    return [
+        _split(f"petri · {title}", right, width).rstrip(),
+        *format_quota_line(radar.quota, now=now, width=width),
+        "═" * width,
+    ]
 
 
 def _section(
@@ -657,7 +733,10 @@ def _join_columns(
     lines = _header(
         radar, now=now, width=width, title="browser", n_projects=n_projects
     )
-    lines[1] = "═" * left_w + "╤" + "═" * max(0, width - left_w - 1)
+    # Re-cut the header's heavy rule so the column divider starts on it. Index
+    # -1, not 1: the header grew a quota line between the title and the rule,
+    # and a hardcoded index silently overwrote it here.
+    lines[-1] = "═" * left_w + "╤" + "═" * max(0, width - left_w - 1)
 
     body_h = max(0, height - len(lines) - 2)
     for i in range(body_h):
@@ -672,6 +751,9 @@ def _join_columns(
 
 __all__ = [
     "render_dashboard",
+    "format_quota_line",
+    "QUOTA_BAR_CELLS",
+    "QUOTA_STALE_AFTER_S",
     "browser_groups",
     "DASHBOARD_KEYS",
     "BROWSER_KEYS",

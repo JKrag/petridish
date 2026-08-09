@@ -176,7 +176,7 @@ src/petridish/          core daemon — stdlib only
   schema.py             the wire contract for projects.json (start here)
   scan.py               discovery + sensor fusion -> Radar
   config.py             TOML loading with per-key fallback
-  sensors/              claude.py, copilot.py
+  sensors/              claude.py, copilot.py, quota.py
   tui_state.py          pure logic for petri — testable without a terminal
   screens.py            the two petri screens (Radar -> list[str])
   tui.py                curses blitter + key handling — keep it thin
@@ -205,6 +205,30 @@ than a second renderer.
 - **The dashboard sorts by *longest* silence first.** Not most-recent-first.
   It is a triage order: the run that has stopped moving is the one you need, and
   freshest-first would bury it under the healthy ones.
+
+### The quota sensor reads someone else's file
+
+`sensors/quota.py` parses `~/.claude/last-status.json`, which Claude Code
+writes as it runs. It is where the header's 5h/7d usage bars come from, and it
+is the only sensor whose **source is an undocumented internal of another
+program**. Anthropic never promised its shape.
+
+So the rules there are stricter than elsewhere: every field is optional, every
+function returns `None` rather than raising, and a payload with *some*
+recognisable fields yields a partial `QuotaState` rather than nothing. Most of
+`tests/test_sensor_quota.py` is not the happy path — it is the ways an upgrade
+could change the file.
+
+Two things it deliberately guards that look paranoid and aren't:
+
+- **`bool` is rejected before `int`.** `bool` is an `int` subclass, so
+  `"used_percentage": true` would otherwise render as 1%.
+- **Timestamps more than 30 days out are dropped.** The classic failure is
+  milliseconds where seconds were expected; "resets in 20000d" is worse than
+  showing nothing.
+
+Note that the numbers are **account-global**. They belong in a header. A
+project row claiming 87% would be a lie.
 
 Also worth knowing: `agent.state` is a pure recency clock, not a liveness
 signal. `working` means "emitted an event in the last 90 seconds", so a local

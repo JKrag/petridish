@@ -30,6 +30,7 @@ from petridish.schema import (
     to_utc,
     agent_state_for_silence,
 )
+from petridish.sensors.quota import read_quota
 
 
 def _sha1_id(resolved_path: str) -> str:
@@ -271,10 +272,16 @@ def run_scan(
 
     elapsed_ms = int((time.monotonic() - t0) * 1000)
 
+    # Quota is account-global, so it is read once per tick rather than per
+    # project. read_quota() never raises and returns None when Claude Code's
+    # status file is absent or unrecognisable.
+    quota = read_quota(now=now)
+
     return Radar(
         updated_at=now,
         projects=tuple(projects),
         scan_duration_ms=elapsed_ms,
+        quota=quota,
     )
 
 

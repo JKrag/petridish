@@ -245,7 +245,16 @@ def format_silence(
     if elapsed < 0:
         elapsed = 0.0
 
-    secs = int(elapsed)
+    return _humanize(elapsed, precise=precise)
+
+
+def _humanize(seconds: float, *, precise: bool) -> str:
+    """Seconds as one unit (``47m``) or two (``47m 03s``).
+
+    Shared by :func:`format_silence` and :func:`format_countdown` so a
+    duration reads identically whether it points backwards or forwards.
+    """
+    secs = int(max(0.0, seconds))
     if secs < 60:
         return f"{secs}s"
 
@@ -259,6 +268,27 @@ def format_silence(
 
     days, h = divmod(hours, 24)
     return f"{days}d {h:02d}h" if precise else f"{days}d"
+
+
+def format_countdown(
+    at: datetime | None,
+    *,
+    now: datetime,
+    precise: bool = False,
+) -> str:
+    """Time remaining until ``at``. The forward-facing twin of
+    :func:`format_silence`.
+
+    ``None`` renders ``-``; a moment already past renders ``now`` rather than
+    ``0s``, because a quota window whose reset time has elapsed has reset —
+    the daemon simply has not rescanned yet.
+    """
+    if at is None:
+        return "-"
+    remaining = (to_utc(at) - to_utc(now)).total_seconds()
+    if remaining <= 0:
+        return "now"
+    return _humanize(remaining, precise=precise)
 
 
 def has_agent(project: Project) -> bool:
@@ -509,6 +539,7 @@ __all__ = [
     "agent_bulb",
     "STALL_AFTER_S",
     "format_silence",
+    "format_countdown",
     "has_agent",
     "silence_seconds",
     "glyph_for",

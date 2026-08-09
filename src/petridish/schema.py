@@ -226,6 +226,63 @@ class AgentSignal:
     raw_cwd: str | None = None
 
 
+class QuotaStateDict(TypedDict):
+    measured_at: str | None
+    five_hour_used_pct: int | None
+    five_hour_resets_at: str | None
+    seven_day_used_pct: int | None
+    seven_day_resets_at: str | None
+    context_used_pct: int | None
+
+
+@dataclass(frozen=True)
+class QuotaState:
+    """Claude subscription usage, as last reported by Claude Code itself.
+
+    Sourced from ``~/.claude/last-status.json`` — see
+    :mod:`petridish.sensors.quota`. Account-global, not per-project: this
+    belongs in a header, never in a project row.
+
+    Every field is optional and defaults to ``None``. That is not defensive
+    padding: the file is an **undocumented internal** of another program, so
+    any field may disappear on a Claude Code upgrade, and a missing value must
+    degrade to "unknown" rather than break the tick (invariant 5).
+
+    ``measured_at`` is when *Claude Code* wrote the numbers, not when the
+    daemon read them. A frontend needs it to say how stale the figures are:
+    the file only updates while a session is running, so overnight it can be
+    hours old while everything else in ``projects.json`` is a minute old.
+    """
+
+    measured_at: datetime | None = None
+    five_hour_used_pct: int | None = None
+    five_hour_resets_at: datetime | None = None
+    seven_day_used_pct: int | None = None
+    seven_day_resets_at: datetime | None = None
+    context_used_pct: int | None = None
+
+    def to_dict(self) -> QuotaStateDict:
+        return {
+            "measured_at": _iso(self.measured_at),
+            "five_hour_used_pct": self.five_hour_used_pct,
+            "five_hour_resets_at": _iso(self.five_hour_resets_at),
+            "seven_day_used_pct": self.seven_day_used_pct,
+            "seven_day_resets_at": _iso(self.seven_day_resets_at),
+            "context_used_pct": self.context_used_pct,
+        }
+
+    @classmethod
+    def from_dict(cls, d: Mapping[str, Any]) -> QuotaState:
+        return cls(
+            measured_at=_parse(d.get("measured_at")),
+            five_hour_used_pct=d.get("five_hour_used_pct"),
+            five_hour_resets_at=_parse(d.get("five_hour_resets_at")),
+            seven_day_used_pct=d.get("seven_day_used_pct"),
+            seven_day_resets_at=_parse(d.get("seven_day_resets_at")),
+            context_used_pct=d.get("context_used_pct"),
+        )
+
+
 class ProjectDict(TypedDict):
     id: str
     name: str
@@ -285,6 +342,9 @@ class RadarDict(TypedDict):
     updated_at: str | None
     scan_duration_ms: int
     projects: list[ProjectDict]
+    #: Always present (possibly ``null``) so the shape we *write* is total,
+    #: even though what we *read* may predate the field entirely.
+    quota: QuotaStateDict | None
 
 
 @dataclass(frozen=True)
@@ -295,6 +355,9 @@ class Radar:
     projects: tuple[Project, ...] = ()
     scan_duration_ms: int = 0
     schema_version: int = SCHEMA_VERSION
+    #: Account-wide Claude quota, or ``None`` when the sensor found nothing.
+    #: Optional and last so every existing construction site keeps working.
+    quota: QuotaState | None = None
 
     def to_dict(self) -> RadarDict:
         return {
@@ -302,6 +365,7 @@ class Radar:
             "updated_at": _iso(self.updated_at),
             "scan_duration_ms": self.scan_duration_ms,
             "projects": [p.to_dict() for p in self.projects],
+            "quota": self.quota.to_dict() if self.quota else None,
         }
 
     @classmethod
@@ -316,6 +380,13 @@ class Radar:
             projects=tuple(Project.from_dict(p) for p in d.get("projects", ())),
             scan_duration_ms=d.get("scan_duration_ms", 0),
             schema_version=d.get("schema_version", SCHEMA_VERSION),
+            # Absent in every file written before this field existed, and null
+            # whenever the sensor came up empty. Both mean "unknown", not "0%".
+            quota=(
+                QuotaState.from_dict(d["quota"])
+                if isinstance(d.get("quota"), dict)
+                else None
+            ),
         )
 
     def to_json(self, *, indent: int | None = 2) -> str:
@@ -369,6 +440,7 @@ __all__ = [
     "agent_state_for_silence",
     "GitState",
     "AgentState",
+    "QuotaState",
     "AgentSignal",
     "Project",
     "Radar",

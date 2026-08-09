@@ -652,3 +652,165 @@ def test_in_flight_rows_are_sorted_by_name():
     rows = [ln for ln in lines if "commit" in ln and "IN FLIGHT" not in ln]
     names = [ln.split()[0] for ln in rows]
     assert names == ["alpha", "mike", "zulu"]
+
+
+# ---------------------------------------------------------------------------
+# 10. The quota header line.
+#
+# Account-global figures from Claude Code's own status file. Lives in the
+# header of BOTH screens, never in a project row.
+# ---------------------------------------------------------------------------
+
+from petridish.schema import QuotaState  # noqa: E402
+from petridish.screens import QUOTA_STALE_AFTER_S, format_quota_line  # noqa: E402
+
+
+def _quota(**kw) -> QuotaState:
+    base = dict(
+        measured_at=NOW,
+        five_hour_used_pct=9,
+        five_hour_resets_at=NOW + timedelta(hours=5),
+        seven_day_used_pct=86,
+        seven_day_resets_at=NOW + timedelta(days=2),
+        context_used_pct=28,
+    )
+    base.update(kw)
+    return QuotaState(**base)
+
+
+def test_quota_line_exact_string_at_full_width():
+    (line,) = format_quota_line(_quota(), now=NOW, width=100)
+    assert line == (
+        " 5h █░░░░░░░░░   9%  resets 5h   ·   7d █████████░  86%  resets 2d"
+    )
+
+
+def test_quota_line_bar_matches_the_percentage():
+    """Ten cells, so each is exactly 10% — the bar can never contradict the number."""
+    (line,) = format_quota_line(
+        _quota(five_hour_used_pct=0, seven_day_used_pct=100), now=NOW, width=100
+    )
+    assert "5h ░░░░░░░░░░" in line
+    assert "7d ██████████" in line
+
+
+def test_quota_line_is_empty_without_a_sensor_reading():
+    """No sensor contributes no rows, so the header needs no null check."""
+    assert format_quota_line(None, now=NOW, width=100) == []
+
+
+def test_quota_line_is_empty_when_both_windows_are_unknown():
+    quota = _quota(five_hour_used_pct=None, seven_day_used_pct=None)
+    assert format_quota_line(quota, now=NOW, width=100) == []
+
+
+def test_quota_line_survives_one_missing_window():
+    (line,) = format_quota_line(
+        _quota(five_hour_used_pct=None, five_hour_resets_at=None),
+        now=NOW,
+        width=100,
+    )
+    assert "-%" in line
+    assert "86%" in line
+
+
+def test_quota_line_drops_bars_before_it_drops_information():
+    """Degrade by shedding decoration, not by truncating values."""
+    wide = format_quota_line(_quota(), now=NOW, width=100)[0]
+    narrow = format_quota_line(_quota(), now=NOW, width=60)[0]
+    assert "█" in wide
+    assert "█" not in narrow
+    assert "9%" in narrow and "86%" in narrow  # both values survive
+
+
+def test_quota_line_keeps_the_seven_day_window_when_only_one_fits():
+    """The 5h window refills on its own; the 7d window is the one that bites."""
+    (line,) = format_quota_line(_quota(), now=NOW, width=34)
+    assert "7d" in line
+    assert "5h" not in line
+
+
+@pytest.mark.parametrize("width", [20, 28, 34, 46, 60, 78, 100, 160])
+def test_quota_line_never_exceeds_its_width(width):
+    for lines in (
+        format_quota_line(_quota(), now=NOW, width=width),
+        format_quota_line(_quota(measured_at=NOW - timedelta(hours=3)),
+                          now=NOW, width=width),
+    ):
+        for line in lines:
+            assert len(line) <= width or width < 24, (width, len(line), line)
+
+
+def test_quota_line_labels_its_age_only_once_stale():
+    """Claude Code stops rewriting the file when no session runs.
+
+    A percentage with no age beside it would quietly claim to be current.
+    """
+    fresh = format_quota_line(_quota(), now=NOW, width=100)[0]
+    assert "old" not in fresh
+
+    just_under = format_quota_line(
+        _quota(measured_at=NOW - timedelta(seconds=QUOTA_STALE_AFTER_S - 1)),
+        now=NOW, width=100,
+    )[0]
+    assert "old" not in just_under
+
+    stale = format_quota_line(
+        _quota(measured_at=NOW - timedelta(hours=3)), now=NOW, width=100
+    )[0]
+    assert "3h old" in stale
+
+
+def test_quota_line_handles_a_reset_time_already_past():
+    """The window has reset; the daemon simply has not rescanned yet."""
+    (line,) = format_quota_line(
+        _quota(five_hour_resets_at=NOW - timedelta(minutes=5)), now=NOW, width=100
+    )
+    assert "resets now" in line
+
+
+def test_quota_line_without_a_measured_at_shows_no_age():
+    (line,) = format_quota_line(_quota(measured_at=None), now=NOW, width=100)
+    assert "old" not in line
+
+
+# --- integration: the header of both screens ------------------------------
+
+def test_quota_appears_in_both_screen_headers():
+    radar = Radar(
+        updated_at=NOW,
+        projects=(_p("x", silence_s=10, agent="a", session="s"),),
+        quota=_quota(),
+    )
+    for lines in (
+        render_dashboard(radar, now=NOW, width=100, height=40, home=HOME),
+        render_browser(radar, now=NOW, width=100, height=40, home=HOME),
+        render_browser(radar, now=NOW, width=78, height=40, home=HOME),
+    ):
+        assert any("86%" in ln for ln in lines[:3]), lines[:3]
+
+
+def test_screens_render_unchanged_when_the_quota_sensor_found_nothing():
+    """quota=None must cost zero rows, not an empty line."""
+    projects = (_p("x", silence_s=10, agent="a", session="s"),)
+    without = render_dashboard(
+        Radar(updated_at=NOW, projects=projects), now=NOW, width=100, height=40
+    )
+    with_quota = render_dashboard(
+        Radar(updated_at=NOW, projects=projects, quota=_quota()),
+        now=NOW, width=100, height=40,
+    )
+    assert len(with_quota) == len(without) + 1
+    assert without[1].startswith("═")  # heavy rule directly under the title
+
+
+def test_quota_row_never_appears_in_a_project_row():
+    """It is account-global. A per-project row claiming 86% would be a lie."""
+    radar = Radar(
+        updated_at=NOW,
+        projects=(_p("x", silence_s=10, agent="a", session="s"),),
+        quota=_quota(),
+    )
+    lines = render_dashboard(radar, now=NOW, width=100, height=40, home=HOME)
+    for line in lines[3:]:
+        assert "86%" not in line
