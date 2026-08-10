@@ -13,3 +13,4 @@ raycast/dist/
 raycast/raycast-env.d.ts
 .claude/settings.local.json
 docs/
+meta_docs/
