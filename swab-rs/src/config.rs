@@ -67,9 +67,17 @@ impl std::fmt::Display for ConfigError {
 }
 impl std::error::Error for ConfigError {}
 
-/// Default location: `~/.petridish/config.toml`.
+/// `~/.petridish/config.toml` under the given home directory. Kept separate from
+/// `default_path()` so tests can exercise the real path-composition logic against a tmp dir
+/// without mutating the process-wide `HOME` env var (which is `unsafe` to set under the
+/// 2024 edition and racy under parallel tests regardless).
+pub fn for_home(home: &std::path::Path) -> PathBuf {
+    home.join(".petridish").join("config.toml")
+}
+
+/// Default location: `~/.petridish/config.toml`, reading `$HOME` from the environment.
 pub fn default_path() -> PathBuf {
-    todo!("R2: expand ~ + HOME, join .petridish/config.toml")
+    todo!("R2: for_home(&PathBuf::from(std::env::var(\"HOME\").expect(\"HOME must be set\")))")
 }
 
 /// Load config from `path` (or defaults if missing). A malformed *file* (unparsable TOML)

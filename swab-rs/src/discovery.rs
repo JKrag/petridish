@@ -14,7 +14,7 @@ use std::path::{Path, PathBuf};
 /// (2) `config.extra_paths`, deduped by resolved path. Missing roots are skipped, not errors.
 /// Symlinks are not followed.
 pub fn discover(_config: &Config) -> Vec<PathBuf> {
-    todo!("R3: walk roots to max_depth, stop at .git, skip ignore_dirs, dedupe by resolved path")
+    todo!("R4: walk roots to max_depth, stop at .git, skip ignore_dirs, dedupe by resolved path")
 }
 
 /// Walk up from `cwd` (checking `cwd` itself first, then each ancestor) for the first
@@ -23,7 +23,7 @@ pub fn discover(_config: &Config) -> Vec<PathBuf> {
 /// iteration) — never returned merely for being the ceiling. No `.git` ancestor found within
 /// bounds => returns `cwd` unchanged.
 pub fn resolve_root(cwd: &Path, _config: &Config) -> PathBuf {
-    todo!("R3: ascend from cwd checking for .git each step, respecting root/home/'/' as a non-returned ceiling; cwd={cwd:?}")
+    todo!("R4: ascend from cwd checking for .git each step, respecting root/home/'/' as a non-returned ceiling; cwd={cwd:?}")
 }
 
 /// `true` if `path` is a git repo whose most recent commit (within `config.author_since`,
@@ -32,6 +32,9 @@ pub fn resolve_root(cwd: &Path, _config: &Config) -> PathBuf {
 /// which is treated as positive evidence of active work and short-circuits to `false`
 /// regardless of authorship. A non-repo path is never foreign (`false`). An empty
 /// `author_patterns` list means everything is foreign (`true`) for any repo.
+///
+/// Use `crate::git::run_git` (implemented in R3, before this module) for both the dirty-tree
+/// check and the author-match check — do not write a second git-timeout wrapper here.
 pub fn is_foreign(_path: &Path, _config: &Config) -> bool {
-    todo!("R3: git log -1 --author=<pattern> --since=<since> match, OR dirty-tree override, per config.author_patterns")
+    todo!("R4: crate::git::run_git for dirty-tree + author-match, per config.author_patterns")
 }

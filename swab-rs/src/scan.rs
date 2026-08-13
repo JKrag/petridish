@@ -22,10 +22,31 @@ pub struct ScanPaths {
 }
 
 impl ScanPaths {
-    /// Real production defaults — must resolve to the actual `$HOME`-relative locations,
-    /// never `None`/empty. This is the exact seam the Python bug lived in; get it right here.
+    /// Composes all four sensor paths relative to `home`. Kept separate from
+    /// `production_defaults()` so tests can exercise the exact real path composition against
+    /// a tmp dir without mutating the process-wide `HOME` env var (`unsafe` under the 2024
+    /// edition, and racy under parallel tests regardless of edition).
+    pub fn for_home(home: &Path) -> Self {
+        ScanPaths {
+            claude_projects_dir: home.join(".claude").join("projects"),
+            workspace_storage_dir: home
+                .join("Library")
+                .join("Application Support")
+                .join("Code")
+                .join("User")
+                .join("workspaceStorage"),
+            events_path: crate::events::events_path(),
+            quota_path: home.join(".claude").join("last-status.json"),
+        }
+    }
+
+    /// Real production defaults, reading `$HOME` from the environment — must resolve to the
+    /// actual `$HOME`-relative locations, never `None`/empty. This is the exact seam the
+    /// Python original's production bug lived in; get it right here (see this module's
+    /// doc comment above).
     pub fn production_defaults() -> Self {
-        todo!("R8: real $HOME-relative defaults for all four sensor paths, no silent None")
+        let home = std::env::var("HOME").expect("HOME must be set");
+        Self::for_home(Path::new(&home))
     }
 }
 
