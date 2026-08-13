@@ -23,8 +23,20 @@ echo "Fixture HOME: $FIXTURE_HOME" >&2
 PY_OUT="$FIXTURE_ROOT/py-projects.json"
 RS_OUT="$FIXTURE_ROOT/rs-projects.json"
 
+EVENTS_FILE="$FIXTURE_HOME/.petridish/events.ndjson"
+EVENTS_BACKUP="$FIXTURE_ROOT/events.ndjson.orig"
+if [ -f "$EVENTS_FILE" ]; then
+  cp "$EVENTS_FILE" "$EVENTS_BACKUP"
+fi
+
 echo "Running Python swab scan ..." >&2
 HOME="$FIXTURE_HOME" "$REPO_ROOT/.venv/bin/swab" --state "$PY_OUT" scan >&2
+
+# read_and_compact() truncates events.ndjson after reading (invariant: consumed exactly
+# once) — restore it so the Rust run sees the identical input, not an empty file.
+if [ -f "$EVENTS_BACKUP" ]; then
+  cp "$EVENTS_BACKUP" "$EVENTS_FILE"
+fi
 
 echo "Building swab-rs (debug) ..." >&2
 if command -v cargo >/dev/null 2>&1; then

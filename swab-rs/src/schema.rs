@@ -109,9 +109,10 @@ pub struct Radar {
     pub quota: Option<QuotaState>,
 }
 
-/// Internal sensor contract — never serialized into `projects.json`.
+/// Internal sensor contract — never serialized into `projects.json` (`Radar`/`Project`
+/// never hold one). `Serialize` here is for `examples/probe.rs`'s parity-check tooling only.
 /// `root` is always a `resolve_root()`-resolved path (invariant #3), never a raw `cwd`.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct AgentSignal {
     pub root: String,
     pub at: DateTime<Utc>,
