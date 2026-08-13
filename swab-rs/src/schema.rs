@@ -122,15 +122,172 @@ pub struct AgentSignal {
     pub raw_cwd: Option<String>,
 }
 
-/// Silence (seconds since `at`) -> `AgentActivity`, per `AGENT_WORKING_MAX_S` /
+/// Silence (seconds since last event) -> `AgentActivity`, per `AGENT_WORKING_MAX_S` /
 /// `AGENT_RECENT_MAX_S`. Negative silence must clamp to zero, not panic or go negative.
-pub fn agent_state_for_silence(_silence_seconds: i64) -> AgentActivity {
-    todo!("R1: threshold silence against AGENT_WORKING_MAX_S / AGENT_RECENT_MAX_S, clamp negative to 0")
+///
+/// Mirrors the Python reference (`petridish.schema.agent_state_for_silence`):
+/// negative input is treated as zero rather than panicking, a frontend must
+/// never crash on a timestamp from the future.
+pub fn agent_state_for_silence(silence_seconds: i64) -> AgentActivity {
+    let silence = if silence_seconds < 0 { 0 } else { silence_seconds };
+    if silence < AGENT_WORKING_MAX_S {
+        AgentActivity::Working
+    } else if silence < AGENT_RECENT_MAX_S {
+        AgentActivity::Recent
+    } else {
+        AgentActivity::Idle
+    }
 }
 
 /// Serialize `radar` to `<path>.tmp` (same dir as `path`) then atomically rename onto
 /// `path` (invariant #1: daemon is the sole writer, temp-file + rename). On any failure
 /// the tmp file must be removed; the parent dir is created if missing.
-pub fn write_atomic(_path: &Path, _radar: &Radar) -> std::io::Result<()> {
-    todo!("R1: create parent dir if missing, write to sibling .tmp, fs::rename onto path, clean up .tmp on failure")
+pub fn write_atomic(path: &Path, radar: &Radar) -> std::io::Result<()> {
+    // Same behavior as `petridish.schema.write_atomic`: parent dir first,
+    // sibling `.tmp` for the rename to stay on the same filesystem (so
+    // `os.replace` / `fs::rename` stays atomic), and cleanup on any failure.
+    std::fs::create_dir_all(path.parent().ok_or_else(|| {
+        std::io::Error::new(
+            std::io::ErrorKind::Other,
+            "radar path has no parent directory",
+        )
+    })?)?;
+
+    let tmp_name = path
+        .file_name()
+        .and_then(|n| n.to_str())
+        .ok_or_else(|| {
+            std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "radar path has a non-UTF8 filename",
+            )
+        })?;
+    let tmp = path.with_file_name(format!("{}.tmp", tmp_name));
+
+    let body = serde_json::to_string(radar).map_err(|e| {
+        std::io::Error::new(std::io::ErrorKind::Other, e.to_string())
+    })?;
+
+    std::fs::write(&tmp, &body)?;
+    std::fs::rename(&tmp, path)
+        .map_err(|rename_err| {
+            // Best-effort cleanup: ignore any error from this remove so the
+            // original rename failure is what the caller sees.
+            let _ = std::fs::remove_file(&tmp);
+            rename_err
+        })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn agent_state_for_silence_zero_is_working() {
+        assert_eq!(agent_state_for_silence(0), AgentActivity::Working);
+    }
+
+    #[test]
+    fn agent_state_for_silence_just_under_working_is_working() {
+        assert_eq!(agent_state_for_silence(89), AgentActivity::Working);
+    }
+
+    #[test]
+    fn agent_state_for_silence_working_upper_bound_exclusive() {
+        // AGENT_WORKING_MAX_S (90) is *not* Working — boundary is exclusive.
+        assert_eq!(agent_state_for_silence(90), AgentActivity::Recent);
+    }
+
+    #[test]
+    fn agent_state_for_silence_just_under_recent_is_recent() {
+        assert_eq!(agent_state_for_silence(1799), AgentActivity::Recent);
+    }
+
+    #[test]
+    fn agent_state_for_silence_recent_upper_bound_is_idle() {
+        // AGENT_RECENT_MAX_S (1800) is *not* Recent — falls through to Idle.
+        assert_eq!(agent_state_for_silence(1800), AgentActivity::Idle);
+    }
+
+    #[test]
+    fn agent_state_for_silence_negative_clamps_to_zero() {
+        // Negative input must clamp to 0 -> Working, never panic.
+        assert_eq!(agent_state_for_silence(-50), AgentActivity::Working);
+    }
+
+    #[test]
+    fn write_atomic_creates_missing_parent_dir_and_no_tmp_left_behind() {
+        let tmp = std::env::temp_dir();
+        let dir = tmp.join("swab_rs_write_atomic_test_dir");
+        let _ = std::fs::remove_dir_all(&dir); // start clean
+
+        let path = dir.join("projects.json");
+        assert!(!path.exists());
+        assert!(!path.parent().unwrap().exists());
+
+        let radar = Radar {
+            schema_version: 1,
+            updated_at: chrono::Utc::now(),
+            scan_duration_ms: 0,
+            projects: vec![],
+            quota: None,
+        };
+        write_atomic(&path, &radar).expect("write_atomic should succeed");
+
+        assert!(path.exists(), "target file must exist after write_atomic");
+        // No stray .tmp sibling should be left behind.
+        assert!(
+            !path.with_file_name("projects.json.tmp").exists(),
+            "stray .tmp file must not be left behind"
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn write_atomic_overwrite_second_call_differs() {
+        let tmp = std::env::temp_dir();
+        let dir = tmp.join("swab_rs_write_atomic_overwrite_test");
+        let _ = std::fs::remove_dir_all(&dir);
+
+        let path = dir.join("projects.json");
+        let radar_a = Radar {
+            schema_version: 1,
+            updated_at: chrono::Utc::now(),
+            scan_duration_ms: 0,
+            projects: vec![],
+            quota: None,
+        };
+        write_atomic(&path, &radar_a).expect("first write should succeed");
+
+        // Second call: use a different `scan_duration_ms` so the contents differ.
+        let mut radar_b = radar_a.clone();
+        radar_b.scan_duration_ms = 9999;
+        write_atomic(&path, &radar_b).expect("second write should succeed");
+
+        // Read back the file on disk.
+        let back = std::fs::read_to_string(&path).expect("file must be readable");
+
+        // File contents must match radar_b, not radar_a.
+        let file_json: serde_json::Value =
+            serde_json::from_str(&back).expect("file is valid JSON");
+
+        let expected_b: serde_json::Value =
+            serde_json::from_str(&serde_json::to_string(&radar_b).unwrap()).unwrap();
+        assert_eq!(file_json, expected_b);
+    }
+
+    #[test]
+    fn write_atomic_round_trip_minimal_radar() {
+        let radar = Radar {
+            schema_version: 1,
+            updated_at: chrono::Utc::now(),
+            scan_duration_ms: 0,
+            projects: vec![],
+            quota: None,
+        };
+        let s = serde_json::to_string(&radar).expect("serialize minimal Radar");
+        let decoded: Radar = serde_json::from_str(&s).expect("round-trip minimal Radar");
+        assert_eq!(radar, decoded);
+    }
 }
