@@ -118,7 +118,11 @@ fn main() {
                     .expect("workspace_storage_dir required"),
             );
             let cfg = config_from_args(&args);
-            signal_map_to_json(sensors::copilot::scan(&dir, &cfg))
+            let cutoff = args
+                .get("cold_cutoff_hours")
+                .and_then(Value::as_u64)
+                .unwrap_or(1440);
+            signal_map_to_json(sensors::copilot::scan(&dir, &cfg, cutoff))
         }
         "events_read_and_compact" => {
             let path = PathBuf::from(args["path"].as_str().expect("path required"));

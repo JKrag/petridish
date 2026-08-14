@@ -132,6 +132,39 @@ fn is_project(dir: &Path) -> bool {
     MANIFEST_FILENAMES.iter().any(|name| dir.join(name).is_file())
 }
 
+/// Resolves `path` as far as the filesystem allows, mirroring Python's default
+/// `Path.resolve()` (non-strict): canonicalizes the deepest existing ancestor and
+/// re-appends whatever trailing components don't exist, rather than failing outright the
+/// way `std::fs::canonicalize` does when the leaf is missing. Falls back to `path` itself
+/// unchanged only if not even the filesystem root can be reached (never in practice).
+fn resolve_non_strict(path: &Path) -> PathBuf {
+    if let Ok(p) = path.canonicalize() {
+        return p;
+    }
+    let mut missing_tail: Vec<&std::ffi::OsStr> = Vec::new();
+    let mut ancestor = path;
+    loop {
+        match ancestor.canonicalize() {
+            Ok(resolved) => {
+                let mut result = resolved;
+                for component in missing_tail.into_iter().rev() {
+                    result.push(component);
+                }
+                return result;
+            }
+            Err(_) => {
+                if let Some(name) = ancestor.file_name() {
+                    missing_tail.push(name);
+                }
+                match ancestor.parent() {
+                    Some(parent) => ancestor = parent,
+                    None => return path.to_path_buf(),
+                }
+            }
+        }
+    }
+}
+
 /// Walk up from `cwd` (checking `cwd` itself first, then each ancestor) for the first
 /// directory containing `.git`. A configured root, `$HOME`, or `/` caps the ascent, but is
 /// only returned if it *itself* contains `.git` (checked before the ceiling test each
@@ -141,13 +174,17 @@ fn is_project(dir: &Path) -> bool {
 /// Pre-computes the set of canonicalised configured roots once so every iteration's ceiling
 /// check is cheap. Per F2, only the real filesystem is consulted — no slug parsing anywhere.
 pub fn resolve_root(cwd: &Path, config: &Config) -> PathBuf {
-    // Canonicalise cwd once at the top. We resolve against the real FS so a `../` chain
-    // or symlinked cwd collapses correctly. If cwd doesn't exist we can't walk — return
-    // the original unchanged per contract.
-    let cwd = match cwd.canonicalize() {
-        Ok(p) => p,
-        Err(_) => return cwd.to_path_buf(),
-    };
+    // Canonicalise cwd (best-effort, non-strict): resolve against the real FS so a `../`
+    // chain or symlinked cwd collapses correctly, matching Python's `Path.resolve()`
+    // (non-strict by default — it resolves as far as the filesystem allows and keeps any
+    // non-existent trailing components literally, rather than failing outright). This
+    // matters here specifically: a signal recorded against a since-deleted directory (e.g.
+    // a git worktree that has since been removed with `git worktree remove`) must still
+    // walk up to find its still-existing parent repo, not silently skip the whole ascent —
+    // confirmed as a real-world regression: a stale worktree signal was returned unresolved
+    // (never climbing to the real repo root) because `Path::canonicalize()` in Rust's std
+    // errors outright on a non-existent leaf, unlike Python's default `resolve()`.
+    let cwd = resolve_non_strict(cwd);
 
     // `/` has no parent — nothing to walk up from.
     if cwd == Path::new("/") {
@@ -517,6 +554,37 @@ mod tests {
             result.canonicalize().unwrap(),
             tmp.path.canonicalize().unwrap(),
             "monorepo subdir should resolve up to the .git root"
+        );
+    }
+
+    // Regression: an earlier version of `resolve_root` canonicalized `cwd` up front via
+    // `std::fs::canonicalize`, which errors outright on a non-existent leaf -- unlike
+    // Python's default `Path.resolve()` (non-strict), which resolves as far as it can and
+    // keeps missing trailing components literally. A signal recorded against a
+    // since-deleted directory (e.g. a git worktree removed after the transcript that
+    // referenced it was written) silently returned unresolved instead of climbing to its
+    // still-existing parent repo -- caught only by diffing a real $HOME against Python.
+    #[test]
+    fn resolve_root_walks_up_from_a_deleted_leaf() {
+        let tmp = Tmp::new("resolve_deleted_leaf");
+        fs::create_dir_all(tmp.path.join("repo")).expect("mkdir repo");
+        fs::create_dir_all(tmp.path.join("repo/.git")).expect("mkdir .git");
+
+        // A leaf that never existed on disk, several levels under the real repo root.
+        let deleted_leaf = tmp
+            .path
+            .join("repo")
+            .join(".worktrees")
+            .join("removed-branch");
+
+        let cfg = test_config(vec![tmp.path.clone()], vec![]);
+        let result = resolve_root(&deleted_leaf, &cfg);
+
+        assert_eq!(
+            result,
+            tmp.path.join("repo").canonicalize().unwrap(),
+            "a non-existent leaf must still walk up to its existing parent repo, not be \
+             returned unresolved just because the leaf itself is missing"
         );
     }
 

@@ -13,16 +13,28 @@ use std::path::Path;
 /// Walks `workspace_storage_dir` (`~/Library/Application Support/Code/User/workspaceStorage/`
 /// on macOS). Per hash directory: skip if no `chatSessions/` subdir, skip if no
 /// `workspace.json`, skip multi-root workspaces (v1 limitation — `workspace.json` has more
-/// than one folder), skip on malformed JSON (never raise). Otherwise percent-decode the
-/// `folder` `file://` URI into a real filesystem path (use the `url` crate — do not
-/// string-slice `%XX` sequences), resolve via `discovery::resolve_root`, and set the
-/// signal's `at` to the newest mtime under `chatSessions/`. Two hashes resolving to the same
-/// root fold to one signal, newest wins. Missing `workspace_storage_dir` => empty map.
-pub fn scan(workspace_storage_dir: &Path, config: &Config) -> HashMap<String, AgentSignal> {
+/// than one folder), skip on malformed JSON (never raise), skip if the newest chat session
+/// mtime is older than `cold_cutoff_hours` (default 1440h/60 days in the real Python
+/// `scan()` — this parameter was missing entirely from an earlier version of this function,
+/// so every Copilot chat session ever recorded, no matter how stale, produced a permanent
+/// signal; caught only by a real-`$HOME` diff against the Python implementation, since the
+/// small AFK fixture never had a stale enough Copilot fixture to expose it). Otherwise
+/// percent-decode the `folder` `file://` URI into a real filesystem path (use the `url`
+/// crate — do not string-slice `%XX` sequences), resolve via `discovery::resolve_root`, and
+/// set the signal's `at` to the newest mtime under `chatSessions/`. Two hashes resolving to
+/// the same root fold to one signal, newest wins. Missing `workspace_storage_dir` => empty map.
+pub fn scan(
+    workspace_storage_dir: &Path,
+    config: &Config,
+    cold_cutoff_hours: u64,
+) -> HashMap<String, AgentSignal> {
     let Ok(entries) = std::fs::read_dir(workspace_storage_dir) else {
         // Missing, unreadable, or not a dir — degrade to empty, never error.
         return HashMap::new();
     };
+
+    let cutoff_secs =
+        std::time::SystemTime::now() - std::time::Duration::from_secs(cold_cutoff_hours * 3600);
 
     let mut signals: HashMap<String, AgentSignal> = HashMap::new();
 
@@ -31,7 +43,7 @@ pub fn scan(workspace_storage_dir: &Path, config: &Config) -> HashMap<String, Ag
         if !path.is_dir() {
             continue;
         }
-        fold_one_hash(&path, config, &mut signals);
+        fold_one_hash(&path, config, cutoff_secs, &mut signals);
     }
 
     signals
@@ -39,11 +51,13 @@ pub fn scan(workspace_storage_dir: &Path, config: &Config) -> HashMap<String, Ag
 
 /// Consider a single hash directory; folds into `signals` in place. Mirrors the Python
 /// `_process_one_hash` one-to-one: both `chatSessions/` and `workspace.json` must be
-/// present, `workspace.json`'s `folder` field must be a single string (not an array), and
-/// the URI is percent-decoded via the `url` crate — not hand-sliced.
+/// present, `workspace.json`'s `folder` field must be a single string (not an array), the
+/// newest chat session mtime must be at or after `cutoff` (cold-skip), and the URI is
+/// percent-decoded via the `url` crate — not hand-sliced.
 fn fold_one_hash(
     hash_dir: &Path,
     config: &Config,
+    cutoff: std::time::SystemTime,
     signals: &mut HashMap<String, AgentSignal>,
 ) {
     let workspace_json = hash_dir.join("workspace.json");
@@ -92,6 +106,16 @@ fn fold_one_hash(
         Some(t) => t,
         None => return,
     };
+
+    // Cold-skip: mirrors Python's `if newest_mtime < cutoff: return signals`, checked
+    // right after computing the newest mtime, before resolving/inserting anything.
+    let cutoff_secs = cutoff
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or(i64::MIN);
+    if newest_mtime < cutoff_secs {
+        return;
+    }
 
     let at = match DateTime::from_timestamp(newest_mtime, 0) {
         Some(dt) => dt,
@@ -259,7 +283,7 @@ mod tests {
         );
 
         let cfg = test_config(vec![tmp.path.clone()]);
-        let signals = scan(&ws, &cfg);
+        let signals = scan(&ws, &cfg, 1440);
 
         assert_eq!(signals.len(), 1, "one hash -> one signal");
         let sig = signals.values().next().unwrap();
@@ -286,7 +310,7 @@ mod tests {
         );
 
         let cfg = test_config(vec![tmp.path.clone()]);
-        let signals = scan(&ws, &cfg);
+        let signals = scan(&ws, &cfg, 1440);
         assert!(signals.is_empty(), "hash without chatSessions/ must not emit a signal");
     }
 
@@ -308,7 +332,7 @@ mod tests {
         );
 
         let cfg = test_config(vec![tmp.path.clone()]);
-        let signals = scan(&ws, &cfg);
+        let signals = scan(&ws, &cfg, 1440);
         assert!(signals.is_empty(), "hash without workspace.json must not emit a signal");
     }
 
@@ -344,7 +368,7 @@ mod tests {
         );
 
         let cfg = test_config(vec![tmp.path.clone()]);
-        let signals = scan(&ws, &cfg);
+        let signals = scan(&ws, &cfg, 1440);
         assert_eq!(signals.len(), 1, "only the good hash must yield a signal");
     }
 
@@ -404,7 +428,7 @@ mod tests {
         write_file_set_mtime(&newer_file, b"new", 30); // 30 seconds ago
 
         let cfg = test_config(vec![tmp.path.clone()]);
-        let signals = scan(&ws, &cfg);
+        let signals = scan(&ws, &cfg, 1440);
 
         let sig = signals.values().next().expect("must have one signal");
         let expected = DateTime::from_timestamp(
@@ -425,7 +449,7 @@ mod tests {
     #[test]
     fn missing_dir_yields_empty_map() {
         let cfg = test_config(vec![]);
-        let signals = scan(std::path::Path::new("/definitely/does/not/exist"), &cfg);
+        let signals = scan(std::path::Path::new("/definitely/does/not/exist"), &cfg, 1440);
         assert!(signals.is_empty(), "missing dir must not yield signals and must not panic");
     }
 
@@ -457,7 +481,7 @@ mod tests {
         }
 
         let cfg = test_config(vec![tmp.path.clone()]);
-        let signals = scan(&ws, &cfg);
+        let signals = scan(&ws, &cfg, 1440);
 
         assert_eq!(signals.len(), 1, "must collapse to one signal");
         let sig = signals.values().next().unwrap();
@@ -516,7 +540,39 @@ mod tests {
         );
 
         let cfg = test_config(vec![tmp.path.clone()]);
-        let signals = scan(&ws, &cfg);
+        let signals = scan(&ws, &cfg, 1440);
         assert!(signals.is_empty(), "empty chatSessions must not yield a signal");
+    }
+
+    // Regression: an earlier version of `scan()` had no `cold_cutoff_hours` parameter at
+    // all, so a chat session from months ago produced a permanent signal every tick --
+    // caught only by diffing a real $HOME against the Python implementation, since no
+    // fixture here was ever built stale enough to exercise it. A session older than the
+    // cutoff must contribute nothing.
+    #[test]
+    fn cold_chat_session_is_skipped() {
+        let tmp = Tmp::new("cold_chat_session");
+        init_repo(&tmp.path.join("repo"));
+
+        let ws = tmp.path.join("workspaceStorage");
+        std::fs::create_dir_all(&ws).expect("mkdir ws");
+
+        let h = ws.join("stale");
+        std::fs::create_dir_all(h.join("chatSessions")).expect("mkdir");
+        write_json_file(&h.join("workspace.json"), r#"{"folder": "file:///fake/repo"}"#);
+        // 2000 hours ago -- well past the default 1440h (60-day) cutoff.
+        write_file_set_mtime(h.join("chatSessions").join("old.jsonl"), b"old", 2000 * 3600);
+
+        let cfg = test_config(vec![tmp.path.clone()]);
+        let signals = scan(&ws, &cfg, 1440);
+        assert!(signals.is_empty(), "a chat session older than the cutoff must not yield a signal");
+
+        // Same fixture, but with a cutoff wide enough to include it -- confirms the skip
+        // above is genuinely the cutoff doing its job, not some other bug hiding the signal.
+        let signals_with_wide_cutoff = scan(&ws, &cfg, 3000);
+        assert_eq!(
+            signals_with_wide_cutoff.len(), 1,
+            "the same session must produce a signal once the cutoff is wide enough"
+        );
     }
 }

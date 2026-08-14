@@ -19,11 +19,9 @@ use std::panic::AssertUnwindSafe;
 use std::path::{Path, PathBuf};
 use std::time::Instant;
 
-/// Cold-skip threshold (hours) reused from `sensors::claude`. Kept as a local const here so
-/// this module's sensor-read setup doesn't reach into a private sub-module just to reference
-/// the same literal — if the claude sensor's constant ever changes, we'll catch drift when
-/// tests run.
-const CLAUDE_COLD_CUTOFF_HOURS: u64 = 1_440;
+/// Cold-skip threshold (hours), shared by both the claude and copilot sensor calls below —
+/// matches Python's default `cold_cutoff_hours` for both (1440h/60 days).
+const DEFAULT_COLD_CUTOFF_HOURS: u64 = 1_440;
 
 /// Hard cap on events.ndjson bytes consumed per tick — matches the Python reference's 5 MB.
 const EVENTS_MAX_BYTES: u64 = 5_000_000;
@@ -258,13 +256,15 @@ pub fn run_scan(config: &Config, paths: &ScanPaths) -> Radar {
     //    seam): never ad-hoc, never `None`.
     let claude_signals: HashMap<String, schema::AgentSignal> = std::panic::catch_unwind(
         AssertUnwindSafe(|| {
-            crate::sensors::claude::scan(&paths.claude_projects_dir, config, CLAUDE_COLD_CUTOFF_HOURS)
+            crate::sensors::claude::scan(&paths.claude_projects_dir, config, DEFAULT_COLD_CUTOFF_HOURS)
         }),
     )
     .unwrap_or_default();
 
     let copilot_signals: HashMap<String, schema::AgentSignal> = std::panic::catch_unwind(
-        AssertUnwindSafe(|| crate::sensors::copilot::scan(&paths.workspace_storage_dir, config)),
+        AssertUnwindSafe(|| {
+            crate::sensors::copilot::scan(&paths.workspace_storage_dir, config, DEFAULT_COLD_CUTOFF_HOURS)
+        }),
     )
     .unwrap_or_default();
 
