@@ -266,12 +266,12 @@ pub fn is_foreign(path: &Path, config: &Config) -> bool {
     }
 
     // Dirty-tree check (Rust-specific reversal of Python's order, per spec): any status
-    // entry is positive evidence of active work, overriding authorship. A `statuses()`
-    // error degrades to "treat as not dirty", never a panic.
-    let mut status_opts = git2::StatusOptions::new();
-    status_opts.include_untracked(true).recurse_untracked_dirs(true);
-    if let Ok(statuses) = repo.statuses(Some(&mut status_opts)) {
-        if !statuses.is_empty() {
+    // entry is positive evidence of active work, overriding authorship. Uses
+    // `crate::git::effective_status_entries` (not a raw `statuses()` call) so this check
+    // is subject to the same libgit2-ignore-negation fix as `git::scan`'s dirty check —
+    // see that function's doc comment for why a raw call would be wrong here too.
+    {
+        if !crate::git::effective_status_entries(&repo).is_empty() {
             return false;
         }
     }

@@ -61,6 +61,68 @@ pub(crate) fn git2_time_to_utc(time: git2::Time) -> Option<DateTime<Utc>> {
     Utc.timestamp_opt(time.seconds(), 0).single()
 }
 
+/// `repo.statuses()`'s entries, minus any path real git would still treat as ignored
+/// despite a nested `!pattern` negation re-including it. This closes a genuine libgit2
+/// fidelity gap versus core git found on a real repo in this codebase's own dev machine
+/// (`.gitignore` containing `.vscode/*` followed by `!.vscode/settings.json`): per
+/// `gitignore(5)`, "it is not possible to re-include a file if a parent directory of that
+/// file is excluded" — core git enforces this by never descending into an excluded
+/// directory at all, so the negation is simply never reached. libgit2's status/ignore
+/// engine does NOT enforce that rule and honors the file-level negation anyway, so
+/// `Repository::statuses()` reported the file as untracked when real `git status
+/// --porcelain` correctly omits it — inflating `uncommitted_files` by one on the one repo
+/// that happened to exercise this pattern shape, caught only by diffing swab-rs's real-
+/// $HOME output against the Python (real-git-backed) implementation.
+///
+/// Confirmed empirically that `Repository::status_should_ignore()`, when asked about the
+/// *directory* itself (not the negated file), still correctly reports `true` — so this
+/// walks each entry's ancestor directories and drops the entry if any ancestor is ignored,
+/// reconstructing the "never descend into an excluded directory" rule that libgit2's own
+/// tree walk skips.
+pub(crate) fn effective_status_entries(repo: &git2::Repository) -> Vec<String> {
+    let mut opts = git2::StatusOptions::new();
+    // `recurse_untracked_dirs` is deliberately left at its default (`false`) — that default
+    // is what makes libgit2 match `git status --porcelain`'s default "normal" untracked-files
+    // mode, which collapses a wholly-untracked directory into ONE entry (`dir/`) rather than
+    // one entry per file inside it. Setting it `true` (an earlier version of this function
+    // did) is the `-uall`/`--untracked-files=all` behavior instead — a second, independent
+    // libgit2-vs-porcelain divergence found the same way as the ignore-negation gap below:
+    // two real repos on this codebase's own dev machine each had one wholly-untracked
+    // directory, and both had their file counts inflated (every file inside counted
+    // separately) versus the real Python (git-CLI-backed) implementation's single-line count.
+    opts.include_untracked(true);
+    let Ok(statuses) = repo.statuses(Some(&mut opts)) else {
+        return Vec::new();
+    };
+    statuses
+        .iter()
+        .filter_map(|entry| entry.path().ok().map(String::from))
+        .filter(|path| !ancestor_dir_is_ignored(repo, path))
+        .collect()
+}
+
+/// `true` if any ancestor directory of `path` (checked as a directory, i.e. with a
+/// trailing slash — libgit2, like git, only applies directory-only ignore patterns when
+/// the checked path is asserted to be a directory) is itself ignored per libgit2's own
+/// ignore engine. See `effective_status_entries`'s doc comment for why this check exists.
+fn ancestor_dir_is_ignored(repo: &git2::Repository, path: &str) -> bool {
+    let mut ancestor = std::path::Path::new(path).parent();
+    while let Some(dir) = ancestor {
+        if dir.as_os_str().is_empty() {
+            break;
+        }
+        let dir_with_slash = format!("{}/", dir.display());
+        if repo
+            .status_should_ignore(std::path::Path::new(&dir_with_slash))
+            .unwrap_or(false)
+        {
+            return true;
+        }
+        ancestor = dir.parent();
+    }
+    false
+}
+
 /// Parses an ISO-8601 timestamp from `text` (the exact format git emits via `%cI`).
 /// Returns `None` on empty, unparseable, or malformed input — never panics.
 /// The output is always timezone-aware UTC (analogous to Python's `replace(tzinfo=utc)`).
@@ -133,14 +195,12 @@ pub fn scan(path: &Path, author_patterns: &[String], author_since: &str) -> GitS
     }
 
     // Dirty state: mirrors `git status --porcelain`'s default scope (tracked modifications
-    // + untracked files, ignored files excluded).
-    let mut status_opts = git2::StatusOptions::new();
-    status_opts.include_untracked(true).recurse_untracked_dirs(true);
-    if let Ok(statuses) = repo.statuses(Some(&mut status_opts)) {
-        let count = statuses.len();
-        result.is_dirty = count > 0;
-        result.uncommitted_files = count as u32;
-    }
+    // + untracked files, ignored files excluded) via `effective_status_entries` below,
+    // which additionally filters out the nested-negation-under-an-excluded-directory gap
+    // libgit2's raw `statuses()` doesn't handle the way real git does.
+    let entries = effective_status_entries(&repo);
+    result.is_dirty = !entries.is_empty();
+    result.uncommitted_files = entries.len() as u32;
 
     // Last commit: HEAD's committer time (matches `%cI`, which is the committer date).
     let head_commit = repo.head().ok().and_then(|h| h.peel_to_commit().ok());
@@ -349,6 +409,42 @@ mod tests {
         assert_eq!(state.last_commit_at, Some(parse_date(AUTHOR_DATE).unwrap()));
     }
 
+    // Regression: a wholly-untracked directory (every file inside it new, nothing tracked)
+    // must count as ONE uncommitted entry, matching `git status --porcelain`'s default
+    // "normal" untracked-files mode (which prints a single `?? dir/` line rather than one
+    // line per file). An earlier version of `effective_status_entries` set
+    // `StatusOptions::recurse_untracked_dirs(true)`, which is libgit2's equivalent of
+    // `--untracked-files=all` and expands the directory into every individual file --
+    // caught on two real repos in this codebase's own dev machine, each inflating
+    // `uncommitted_files` by (file count - 1) versus the real Python implementation.
+    #[test]
+    fn wholly_untracked_directory_counts_as_one_entry() {
+        let tmp = make_tmp_dir("untracked_dir_collapse");
+        git_init(&tmp);
+        git_add_and_commit(&tmp, "README.md", "hello");
+
+        let notes_dir = tmp.join("notes");
+        fs::create_dir_all(&notes_dir).expect("mkdir notes");
+        fs::write(notes_dir.join("a.md"), "a").expect("write a.md");
+        fs::write(notes_dir.join("b.md"), "b").expect("write b.md");
+        fs::write(notes_dir.join("c.md"), "c").expect("write c.md");
+
+        // Sanity: confirm the real git CLI collapses this to one line, not three.
+        let cli_porcelain = git_run(&tmp, &["status", "--porcelain"]);
+        let cli_lines: Vec<&str> = cli_porcelain.lines().filter(|l| !l.trim().is_empty()).collect();
+        assert_eq!(
+            cli_lines.len(), 1,
+            "real git must collapse a wholly-untracked dir to one line: {cli_lines:?}"
+        );
+
+        let state = scan(&tmp, &[], "3 years");
+        assert!(state.is_dirty);
+        assert_eq!(
+            state.uncommitted_files, 1,
+            "a wholly-untracked directory must count as one entry, not one per file inside it"
+        );
+    }
+
     // 3. Dirty repo (uncommitted file) -> is_dirty=true, uncommitted_files>=1.
     #[test]
     fn dirty_repo_reports_uncommitted() {
@@ -367,6 +463,76 @@ mod tests {
             "expected uncommitted_files>=1, got {}",
             state.uncommitted_files
         );
+    }
+
+    // Regression: a .gitignore with `dir/*` followed by `!dir/file` (negating one file
+    // inside an excluded directory) must NOT surface that file as untracked -- real git
+    // enforces "cannot re-include a file if a parent directory is excluded"
+    // (gitignore(5)) by never descending into the excluded directory at all, but
+    // libgit2's raw `Repository::statuses()` does not enforce this and returns the file
+    // anyway. Caught on a real repo in this codebase's own dev machine (a large VS-style
+    // .gitignore with `.vscode/*` + `!.vscode/settings.json`), where it inflated
+    // `uncommitted_files` by exactly one versus the real Python (git-CLI-backed)
+    // implementation.
+    #[test]
+    fn negated_file_inside_excluded_directory_stays_ignored() {
+        let tmp = make_tmp_dir("negation_gap");
+        git_init(&tmp);
+        git_add_and_commit(&tmp, "README.md", "hello");
+
+        // Must be a DIRECTORY-level exclude (trailing slash, `dir/`) to reproduce the real
+        // bug -- a contents-only glob like `dir/*` (no trailing slash on `dir`) does not
+        // exclude the directory itself, so git still descends into it and honors the
+        // negation normally. Real git only blocks re-inclusion when the directory ITSELF
+        // was excluded by a separate rule, exactly matching the real repo's `.gitignore`
+        // (`.vscode/` on one line, `.vscode/*` + `!.vscode/settings.json` on later lines).
+        fs::write(
+            tmp.join(".gitignore"),
+            "dir/\ndir/*\n!dir/keep.txt\n",
+        )
+        .expect("write .gitignore");
+        fs::create_dir_all(tmp.join("dir")).expect("mkdir dir");
+        fs::write(tmp.join("dir").join("keep.txt"), "should stay ignored").expect("write keep.txt");
+        assert!(
+            Command::new("git")
+                .args(["-C", tmp.to_str().unwrap(), "add", ".gitignore"])
+                .envs(GIT_ENV.iter().map(|(k, v)| (k, *v)))
+                .spawn()
+                .expect("git spawn")
+                .wait()
+                .expect("git add wait")
+                .success(),
+            "git add .gitignore failed"
+        );
+        assert!(
+            Command::new("git")
+                .args([
+                    "-C", tmp.to_str().unwrap(),
+                    "commit", "--no-gpg-sign", "-m", "add gitignore", "--allow-empty",
+                ])
+                .envs(GIT_ENV.iter().map(|(k, v)| (k, *v)))
+                .spawn()
+                .expect("git spawn")
+                .wait()
+                .expect("git commit wait")
+                .success(),
+            "git commit .gitignore failed"
+        );
+
+        // Sanity: confirm the real git CLI agrees this file is ignored, not just our
+        // assumption about gitignore(5)'s documented behavior.
+        let cli_porcelain = git_run(&tmp, &["status", "--porcelain"]);
+        assert!(
+            cli_porcelain.trim().is_empty(),
+            "real git must treat dir/keep.txt as ignored despite the negation: {cli_porcelain:?}"
+        );
+
+        let state = scan(&tmp, &[], "3 years");
+        assert!(
+            !state.is_dirty,
+            "dir/keep.txt must stay ignored (parent dir excluded), not surface as untracked"
+        );
+        assert_eq!(state.uncommitted_files, 0);
     }
 
     // 3b. Modified tracked file also counts as dirty.
