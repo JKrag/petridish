@@ -7,6 +7,7 @@
 //!   its enclosing project root, or one monorepo session shatters into phantom projects."
 
 use crate::config::Config;
+use chrono::Utc;
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 
@@ -248,16 +249,15 @@ pub fn resolve_root(cwd: &Path, config: &Config) -> PathBuf {
 /// regardless of authorship. A non-repo path is never foreign (`false`). An empty
 /// `author_patterns` list means everything is foreign (`true`) for any repo.
 ///
-/// Use `crate::git::run_git` (implemented in R3, before this module) for both the dirty-tree
-/// check and the author-match check — do not write a second git-timeout wrapper here.
+/// EXPERIMENTAL git2 (libgit2) backend — see `git.rs`'s module doc comment for the
+/// `experiment/git2-backend` benchmark branch context and the known `--since`/`--author`
+/// parsing gaps versus the original CLI-subprocess implementation.
 pub fn is_foreign(path: &Path, config: &Config) -> bool {
     // Pre-check: confirm this is actually a git repo before running any authorship logic.
-    // `rev-parse --git-dir` is the cheapest introspection we can do and doubles as the
-    // "any git error -> False" guard. `run_git` returning `None` (spawn/timeout failure)
-    // degrades to "not a repo" per contract — never panic.
-    if !matches!(crate::git::run_git(path, &["rev-parse", "--git-dir"]), Some((true, _))) {
+    // A failed `Repository::open` degrades to "not a repo" (never foreign) per contract.
+    let Ok(repo) = git2::Repository::open(path) else {
         return false;
-    }
+    };
 
     // Empty author_patterns: no signal at all, so treat every repo as foreign. Mirrors
     // the spec divergence from Python (Python would fall through to the dirty check here).
@@ -265,27 +265,51 @@ pub fn is_foreign(path: &Path, config: &Config) -> bool {
         return true;
     }
 
-    // Dirty-tree check (Rust-specific reversal of Python's order, per spec): a non-empty
-    // `git status --porcelain` is positive evidence of active work, overriding authorship.
-    // `run_git` returning `None` here just means "treat as not dirty", never a panic.
-    if let Some((true, output)) = crate::git::run_git(path, &["status", "--porcelain"]) {
-        if !output.trim().is_empty() {
+    // Dirty-tree check (Rust-specific reversal of Python's order, per spec): any status
+    // entry is positive evidence of active work, overriding authorship. A `statuses()`
+    // error degrades to "treat as not dirty", never a panic.
+    let mut status_opts = git2::StatusOptions::new();
+    status_opts.include_untracked(true).recurse_untracked_dirs(true);
+    if let Ok(statuses) = repo.statuses(Some(&mut status_opts)) {
+        if !statuses.is_empty() {
             return false;
         }
     }
 
-    // Authorship check: any pattern matching a recent commit means NOT foreign. No pattern
-    // matches -> foreign. `run_git` returning `None` on a pattern just means "no match for
-    // this one"; we continue to the next pattern rather than bailing.
+    // Authorship check: any pattern matching a commit within the since-horizon means NOT
+    // foreign. No pattern matches -> foreign. A revwalk/regex failure on one pattern just
+    // means "no match for this one" — continue to the next pattern, never bail out.
+    let now = Utc::now();
+    let cutoff = crate::git::parse_since_horizon(&config.author_since, now);
     for pattern in &config.author_patterns {
-        // Build the args with owned strings so the `&str` slice lives long enough.
-        let author_arg = format!("--author={pattern}");
-        let since_arg = format!("--since={}", config.author_since);
-        let mut args: Vec<&str> = vec!["log", "-1", "--format=%cI"];
-        args.push(&author_arg);
-        args.push(&since_arg);
-        if let Some((true, output)) = crate::git::run_git(path, &args) {
-            if !output.trim().is_empty() {
+        let Ok(re) = regex::Regex::new(&format!("(?i){pattern}")) else {
+            continue;
+        };
+        let Ok(mut revwalk) = repo.revwalk() else {
+            continue;
+        };
+        if revwalk.push_head().is_err() {
+            continue;
+        }
+        for oid in revwalk.filter_map(|o| o.ok()) {
+            let Ok(commit) = repo.find_commit(oid) else {
+                continue;
+            };
+            let Some(commit_time) = crate::git::git2_time_to_utc(commit.time()) else {
+                continue;
+            };
+            if let Some(cutoff) = cutoff {
+                if commit_time < cutoff {
+                    continue;
+                }
+            }
+            let author = commit.author();
+            let signature = format!(
+                "{} <{}>",
+                author.name().unwrap_or(""),
+                author.email().unwrap_or("")
+            );
+            if re.is_match(&signature) {
                 return false; // matching commit -> not foreign.
             }
         }

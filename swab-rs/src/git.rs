@@ -1,49 +1,64 @@
 //! Git facts for one path. Mirrors `src/petridish/git.py`.
 //!
-//! Invariant #6 (`CLAUDE.md`): "`git` calls use `subprocess.run` with `check=False` and a
-//! 5s timeout. A git failure is a `GitState(is_repo=False)`, never an exception." In Rust,
-//! `std::process::Command::output()` has **no built-in timeout** — this module must wrap
-//! every git invocation with the `wait-timeout` crate (already in Cargo.toml) or an
-//! equivalent thread+kill, and must never let a git failure/timeout become a panic or `Err`
-//! that propagates past this module.
+//! ## EXPERIMENTAL: git2 (libgit2) backend, not the CLI-subprocess backend
+//!
+//! This is a throwaway benchmark branch (`experiment/git2-backend`) swapping the original
+//! `git` CLI subprocess implementation for `git2` (Rust bindings to libgit2, the same
+//! library Cargo itself uses). The motivation: the subprocess version's wall-clock time was
+//! dominated by OS `sys` time (process fork/exec overhead, ~7-9s out of ~28s for an 80-repo
+//! scan) rather than actual git work (`user` time, ~2.7s) — `git2` does the same work
+//! in-process against an already-open repo handle, with no process spawn at all. See the
+//! `experiment/git2-backend` branch's own README/commit message for the measured result.
+//!
+//! Invariant #6 (`CLAUDE.md`) still applies in spirit ("a git failure is a
+//! `GitState(is_repo=False)`, never an exception") but its literal mechanism (5s subprocess
+//! timeout via `wait-timeout`) no longer applies: there is no child process to hang. Every
+//! libgit2 call here is synchronous and in-process; a failure is a `Result::Err` handled
+//! inline, never a panic.
+//!
+//! Known behavioral gaps versus the original CLI-subprocess implementation (acceptable for
+//! a benchmark prototype, would need closing before this could replace the CLI version):
+//! - `--since=<horizon>` parsing: the CLI version hands the raw string straight to git's own
+//!   approxidate parser (accepts "3 years", "yesterday", ISO dates, etc). This version only
+//!   understands `<N> years|months|weeks|days` (optionally pluralized) and falls back to "no
+//!   cutoff" (include everything) on anything else — sufficient for this codebase's only
+//!   real usage (`Config::default().author_since == "3 years"`) but not a general parser.
+//! - `--author=<pattern>` matching: the CLI version delegates to git's own regex engine
+//!   against the exact `Name <email>` header line. This version builds the same
+//!   `"{name} <{email}>"` string and matches it with the `regex` crate, case-insensitively
+//!   (`(?i)` prefix) to approximate git's default author-match case-insensitivity. Patterns
+//!   that don't compile as a Rust regex are skipped (degrade), not a hard error.
 
 use crate::schema::GitState;
-use chrono::{DateTime, Utc};
+use chrono::{DateTime, TimeZone, Utc};
 use std::path::Path;
-use std::process::{Command, Stdio};
-use std::time::Duration;
-use wait_timeout::ChildExt;
 
-pub const GIT_TIMEOUT: Duration = Duration::from_secs(5);
+/// Very small `--since=<N> <unit>` parser covering this codebase's actual usage (the
+/// default and only configured value is `"3 years"`). Returns `None` (no cutoff — include
+/// everything) on anything it doesn't recognize, rather than guessing.
+pub(crate) fn parse_since_horizon(since: &str, now: DateTime<Utc>) -> Option<DateTime<Utc>> {
+    let parts: Vec<&str> = since.trim().split_whitespace().collect();
+    let [n_str, unit] = parts.as_slice() else {
+        return None;
+    };
+    let n: i64 = n_str.parse().ok()?;
+    let unit = unit.trim_end_matches('s').to_lowercase();
+    let days = match unit.as_str() {
+        "year" => n * 365,
+        "month" => n * 30,
+        "week" => n * 7,
+        "day" => n,
+        _ => return None,
+    };
+    Some(now - chrono::Duration::days(days))
+}
 
-/// The single git-with-timeout entry point for the whole crate — `discovery::is_foreign`
-/// (R4, implemented after this module) reuses this rather than writing a second wrapper, so
-/// there is exactly one place that can get the 5s-timeout/never-panic invariant wrong.
-/// Returns `Some((success, stdout))` on a completed process (`success` mirrors
-/// `check=false` — a nonzero exit is still `Some`, not an error), or `None` on a spawn
-/// failure or a timeout (in which case the child is killed and reaped, never left running).
-pub(crate) fn run_git(path: &Path, args: &[&str]) -> Option<(bool, String)> {
-    let mut child = Command::new("git")
-        .arg("-C")
-        .arg(path)
-        .args(args)
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .ok()?;
-    match child.wait_timeout(GIT_TIMEOUT).ok()? {
-        Some(status) => {
-            let output = child.wait_with_output().ok()?;
-            let success = status.success();
-            let stdout = String::from_utf8_lossy(&output.stdout).into_owned();
-            Some((success, stdout))
-        }
-        None => {
-            let _ = child.kill();
-            let _ = child.wait();
-            None // timed out — degrade to None, never panic
-        }
-    }
+/// Converts a libgit2 `Time` (seconds since epoch + a UTC-offset-in-minutes the commit was
+/// authored/committed under) to a `DateTime<Utc>` — always normalized to UTC regardless of
+/// the original commit's local offset, matching `%cI`'s ISO-8601 output re-parsed by the
+/// CLI-backed `parse_date()` (which also always ends up UTC).
+pub(crate) fn git2_time_to_utc(time: git2::Time) -> Option<DateTime<Utc>> {
+    Utc.timestamp_opt(time.seconds(), 0).single()
 }
 
 /// Parses an ISO-8601 timestamp from `text` (the exact format git emits via `%cI`).
@@ -80,23 +95,16 @@ pub(crate) fn github_url(remote: &str) -> Option<String> {
     None
 }
 
-/// Runs: `rev-parse --git-dir` (is-a-repo), `rev-parse --abbrev-ref HEAD` (branch),
-/// `status --porcelain` (dirty + uncommitted file count), `log -1 --format=%cI` (last
-/// commit), `log -1 --format=%cI --author=<pattern> --since=<horizon>` for each of
-/// `config.author_patterns` (first match wins, for `mine_last_commit_at`), and
-/// `remote get-url origin` normalized to an `https://github.com/...` URL (SSH or HTTPS
-/// remote forms both normalize; a non-GitHub remote or no remote => `None`). Any command
-/// failing, erroring, or timing out (5s, `GIT_TIMEOUT`) => that field is `None`/default,
-/// never a panic — and if `rev-parse --git-dir` itself fails, short-circuit to
-/// `GitState::not_a_repo()` without running the rest. Built entirely on `run_git` above.
+/// git2 (libgit2) implementation. Opens `path` as a repository once and reuses the handle
+/// for every fact below — no process spawn anywhere. Field-for-field equivalent to the
+/// CLI-subprocess version's contract (see module doc comment for the two known parsing
+/// gaps: `--since` horizon and `--author` regex matching). If `path` isn't a repo at all,
+/// short-circuits to `GitState::not_a_repo()` without touching any other field.
 pub fn scan(path: &Path, author_patterns: &[String], author_since: &str) -> GitState {
-    let is_repo = run_git(path, &["rev-parse", "--git-dir"])
-        .map(|(ok, _)| ok)
-        .unwrap_or(false);
-
-    if !is_repo {
-        return GitState::not_a_repo();
-    }
+    let repo = match git2::Repository::open(path) {
+        Ok(r) => r,
+        Err(_) => return GitState::not_a_repo(),
+    };
 
     let mut result = GitState {
         is_repo: true,
@@ -108,56 +116,89 @@ pub fn scan(path: &Path, author_patterns: &[String], author_since: &str) -> GitS
         github_url: None,
     };
 
-    // Branch.
-    if let Some((true, out)) = run_git(path, &["rev-parse", "--abbrev-ref", "HEAD"]) {
-        let branch = out.trim().to_string();
-        if !branch.is_empty() {
-            result.branch = Some(branch);
-        }
-    }
-
-    // Dirty state.
-    if let Some((true, out)) = run_git(path, &["status", "--porcelain"]) {
-        let lines: Vec<&str> = out.lines().filter(|l| !l.trim().is_empty()).collect();
-        result.is_dirty = !lines.is_empty();
-        // `uncommitted_files` here is the Python parity: count of non-empty porcelain lines.
-        // The schema still uses u32; a long tree wouldn't realistically overflow anyway.
-        result.uncommitted_files = lines.len() as u32;
-    }
-
-    // Last commit.
-    if let Some((true, out)) = run_git(path, &["log", "-1", "--format=%cI"]) {
-        if let Some(dt) = parse_date(&out) {
-            result.last_commit_at = Some(dt);
-        }
-    }
-
-    // Mine last commit: iterate author patterns in order, first match wins.
-    let mut mine_last: Option<DateTime<Utc>> = None;
-    for pattern in author_patterns {
-        let since_arg = format!("--since={author_since}");
-        let author_arg = format!("--author={pattern}");
-        let args: &[&str] = &[
-            "log",
-            "-1",
-            "--format=%cI",
-            &author_arg,
-            &since_arg,
-        ];
-        if let Some((true, out)) = run_git(path, args) {
-            if let Some(dt) = parse_date(&out) {
-                if mine_last.is_none() || dt > mine_last.unwrap() {
-                    mine_last = Some(dt);
+    // Branch: "HEAD" literal for a detached checkout (matching `git rev-parse
+    // --abbrev-ref HEAD`'s behavior), the branch shorthand otherwise. An unborn HEAD (fresh
+    // repo, zero commits) makes `repo.head()` error — degrades to `None`, same as the CLI
+    // version's `rev-parse --abbrev-ref HEAD` failing on the same repo shape.
+    match repo.head_detached() {
+        Ok(true) => result.branch = Some("HEAD".to_string()),
+        Ok(false) => {
+            if let Ok(head) = repo.head() {
+                if let Ok(name) = head.shorthand() {
+                    result.branch = Some(name.to_string());
                 }
+            }
+        }
+        Err(_) => {}
+    }
+
+    // Dirty state: mirrors `git status --porcelain`'s default scope (tracked modifications
+    // + untracked files, ignored files excluded).
+    let mut status_opts = git2::StatusOptions::new();
+    status_opts.include_untracked(true).recurse_untracked_dirs(true);
+    if let Ok(statuses) = repo.statuses(Some(&mut status_opts)) {
+        let count = statuses.len();
+        result.is_dirty = count > 0;
+        result.uncommitted_files = count as u32;
+    }
+
+    // Last commit: HEAD's committer time (matches `%cI`, which is the committer date).
+    let head_commit = repo.head().ok().and_then(|h| h.peel_to_commit().ok());
+    if let Some(ref commit) = head_commit {
+        result.last_commit_at = git2_time_to_utc(commit.time());
+    }
+
+    // Mine last commit: for each author pattern, walk every commit reachable from HEAD,
+    // keep the newest whose committer time is at/after the since-horizon AND whose
+    // "Name <email>" line matches the pattern (case-insensitively) -- then take the max
+    // across all patterns, exactly mirroring the CLI version's "first pattern that returns
+    // a commit, keep whichever produced the latest date" loop.
+    let now = Utc::now();
+    let cutoff = parse_since_horizon(author_since, now);
+    let mut mine_last: Option<DateTime<Utc>> = None;
+    if let Ok(mut revwalk) = repo.revwalk() {
+        if revwalk.push_head().is_ok() {
+            for pattern in author_patterns {
+                let Ok(re) = regex::Regex::new(&format!("(?i){pattern}")) else {
+                    continue; // pattern doesn't compile as a regex -- skip, don't panic.
+                };
+                for oid in revwalk.by_ref().filter_map(|o| o.ok()) {
+                    let Ok(commit) = repo.find_commit(oid) else {
+                        continue;
+                    };
+                    let Some(commit_time) = git2_time_to_utc(commit.time()) else {
+                        continue;
+                    };
+                    if let Some(cutoff) = cutoff {
+                        if commit_time < cutoff {
+                            continue;
+                        }
+                    }
+                    let author = commit.author();
+                    let signature = format!(
+                        "{} <{}>",
+                        author.name().unwrap_or(""),
+                        author.email().unwrap_or("")
+                    );
+                    if re.is_match(&signature)
+                        && mine_last.is_none_or(|best| commit_time > best)
+                    {
+                        mine_last = Some(commit_time);
+                    }
+                }
+                // Reset the walk for the next pattern -- `revwalk` is consumed by iteration.
+                let _ = revwalk.reset();
+                let _ = revwalk.push_head();
             }
         }
     }
     result.mine_last_commit_at = mine_last;
 
-    // Remote URL -> github_url.
-    if let Some((true, out)) = run_git(path, &["remote", "get-url", "origin"]) {
-        if let Some(url) = github_url(&out) {
-            result.github_url = Some(url);
+    // Remote URL -> github_url. Missing remote (no "origin") degrades to None, same as the
+    // CLI version's `remote get-url origin` failing on a repo with no configured remote.
+    if let Ok(remote) = repo.find_remote("origin") {
+        if let Ok(url) = remote.url() {
+            result.github_url = github_url(url);
         }
     }
 
@@ -639,18 +680,6 @@ mod tests {
     fn parse_date_rejects_non_iso() {
         // RFC 2822-style date is NOT strict ISO 8601.
         assert!(parse_date("Mon, 15 Jan 2024 10:30:00 +0000").is_none());
-    }
-
-    // run_git returns success=false on nonzero exit (check=false semantics).
-    #[test]
-    fn run_git_nonzero_exit_is_some_success_false() {
-        let tmp = make_tmp_dir("run_git_nonzero");
-        git_init(&tmp);
-        // `git show nonexistent-ref` fails with a clean nonzero exit in any repo.
-        let result = run_git(&tmp, &["show", "does-not-exist-ref-xyz"]);
-        assert!(result.is_some(), "run_git must return Some even on nonzero exit");
-        let (success, _) = result.unwrap();
-        assert!(!success, "success flag must reflect nonzero exit");
     }
 
     // A scan call with a nonexistent path should not panic.
