@@ -54,10 +54,22 @@ fn config_from_args(args: &Value) -> Config {
     cfg
 }
 
+/// Truncates `at` to whole-second precision before serializing, matching the real
+/// `projects.json` wire contract (schema.rs's write path). Without this, mtime-derived
+/// fields spuriously mismatch py_probe.py's output due to float-vs-nanosecond precision
+/// differences in how each language's stdlib reads back a file's mtime, even when both
+/// sides observed the identical file.
 fn signal_map_to_json(signals: HashMap<String, schema::AgentSignal>) -> Value {
     let map: serde_json::Map<String, Value> = signals
         .into_iter()
-        .map(|(root, sig)| (root, serde_json::to_value(sig).unwrap()))
+        .map(|(root, sig)| {
+            let truncated_at = sig.at.format("%Y-%m-%dT%H:%M:%SZ").to_string();
+            let mut value = serde_json::to_value(&sig).unwrap();
+            if let Some(obj) = value.as_object_mut() {
+                obj.insert("at".to_string(), Value::String(truncated_at));
+            }
+            (root, value)
+        })
         .collect();
     Value::Object(map)
 }

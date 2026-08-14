@@ -44,7 +44,13 @@ def _iso(dt: datetime | None) -> str | None:
         return None
     if dt.tzinfo is None:
         dt = dt.replace(tzinfo=timezone.utc)
-    return dt.astimezone(timezone.utc).isoformat().replace("+00:00", "Z")
+    # Truncate to whole-second precision, matching the real projects.json wire contract
+    # (see schema.py's write path) -- without this, mtime-derived fields (claude/copilot
+    # sensor `at`) spuriously mismatch the Rust probe due to float-vs-nanosecond precision
+    # differences in how each language's stdlib reads back a file's mtime, even though
+    # both sides observed the identical file.
+    dt = dt.astimezone(timezone.utc).replace(microsecond=0)
+    return dt.isoformat().replace("+00:00", "Z")
 
 
 def _signal_to_dict(sig) -> dict:
