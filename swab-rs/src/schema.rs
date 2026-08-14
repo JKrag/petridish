@@ -6,6 +6,60 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use std::path::Path;
 
+/// Serde helpers truncating every `DateTime<Utc>` to whole-second precision at the
+/// serialization boundary, matching the real wire contract (`petridish.schema.to_utc`/
+/// `_iso`, which apply `.replace(microsecond=0)` regardless of where the timestamp
+/// originated -- mtime reads, git commit times, etc. can all carry sub-second precision
+/// in memory). Without this, a value round-tripped straight from `serde`'s default
+/// `DateTime<Utc>` impl (full nanosecond precision) diverges from the Python output on
+/// every mtime-derived field (`AgentState.last_event_at`, `Project.last_activity_at`) --
+/// caught only once the full aggregator pipeline existed end to end and `diff_check.sh`
+/// could run for the first time (see the R9 commit message for how this surfaced).
+mod iso_second {
+    use chrono::{DateTime, SubsecRound, Utc};
+    use serde::{Deserialize, Deserializer, Serializer};
+
+    pub fn serialize<S: Serializer>(dt: &DateTime<Utc>, s: S) -> Result<S::Ok, S::Error> {
+        s.serialize_str(&dt.trunc_subsecs(0).format("%Y-%m-%dT%H:%M:%SZ").to_string())
+    }
+
+    pub fn deserialize<'de, D: Deserializer<'de>>(d: D) -> Result<DateTime<Utc>, D::Error> {
+        let s = String::deserialize(d)?;
+        DateTime::parse_from_rfc3339(&s)
+            .map(|dt| dt.with_timezone(&Utc))
+            .map_err(serde::de::Error::custom)
+    }
+}
+
+mod iso_second_opt {
+    use chrono::{DateTime, SubsecRound, Utc};
+    use serde::{Deserialize, Deserializer, Serializer};
+
+    pub fn serialize<S: Serializer>(
+        dt: &Option<DateTime<Utc>>,
+        s: S,
+    ) -> Result<S::Ok, S::Error> {
+        match dt {
+            Some(dt) => {
+                s.serialize_str(&dt.trunc_subsecs(0).format("%Y-%m-%dT%H:%M:%SZ").to_string())
+            }
+            None => s.serialize_none(),
+        }
+    }
+
+    pub fn deserialize<'de, D: Deserializer<'de>>(
+        d: D,
+    ) -> Result<Option<DateTime<Utc>>, D::Error> {
+        let opt: Option<String> = Option::deserialize(d)?;
+        match opt {
+            Some(s) => DateTime::parse_from_rfc3339(&s)
+                .map(|dt| Some(dt.with_timezone(&Utc)))
+                .map_err(serde::de::Error::custom),
+            None => Ok(None),
+        }
+    }
+}
+
 /// Silence below this many seconds => `AgentActivity::Working`.
 pub const AGENT_WORKING_MAX_S: i64 = 90;
 /// Silence below this many seconds (and not `Working`) => `AgentActivity::Recent`.
@@ -34,7 +88,9 @@ pub struct GitState {
     pub branch: Option<String>,
     pub is_dirty: bool,
     pub uncommitted_files: u32,
+    #[serde(with = "iso_second_opt")]
     pub last_commit_at: Option<DateTime<Utc>>,
+    #[serde(with = "iso_second_opt")]
     pub mine_last_commit_at: Option<DateTime<Utc>>,
     pub github_url: Option<String>,
 }
@@ -60,6 +116,7 @@ pub struct AgentState {
     pub state: AgentActivity,
     pub active_agent: Option<String>,
     pub last_event: Option<String>,
+    #[serde(with = "iso_second_opt")]
     pub last_event_at: Option<DateTime<Utc>>,
     pub session_id: Option<String>,
 }
@@ -86,16 +143,20 @@ pub struct Project {
     pub is_foreign: bool,
     pub git: GitState,
     pub agent: AgentState,
+    #[serde(with = "iso_second_opt")]
     pub last_activity_at: Option<DateTime<Utc>>,
     pub status_bucket: StatusBucket,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct QuotaState {
+    #[serde(with = "iso_second_opt")]
     pub measured_at: Option<DateTime<Utc>>,
     pub five_hour_used_pct: Option<u8>,
+    #[serde(with = "iso_second_opt")]
     pub five_hour_resets_at: Option<DateTime<Utc>>,
     pub seven_day_used_pct: Option<u8>,
+    #[serde(with = "iso_second_opt")]
     pub seven_day_resets_at: Option<DateTime<Utc>>,
     pub context_used_pct: Option<u8>,
 }
@@ -103,6 +164,7 @@ pub struct QuotaState {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Radar {
     pub schema_version: u32,
+    #[serde(with = "iso_second")]
     pub updated_at: DateTime<Utc>,
     pub scan_duration_ms: u64,
     pub projects: Vec<Project>,
@@ -115,6 +177,7 @@ pub struct Radar {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct AgentSignal {
     pub root: String,
+    #[serde(with = "iso_second")]
     pub at: DateTime<Utc>,
     pub agent: String,
     pub session_id: Option<String>,
@@ -181,6 +244,7 @@ pub fn write_atomic(path: &Path, radar: &Radar) -> std::io::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use chrono::SubsecRound;
 
     #[test]
     fn agent_state_for_silence_zero_is_working() {
@@ -227,7 +291,7 @@ mod tests {
 
         let radar = Radar {
             schema_version: 1,
-            updated_at: chrono::Utc::now(),
+            updated_at: chrono::Utc::now().trunc_subsecs(0),
             scan_duration_ms: 0,
             projects: vec![],
             quota: None,
@@ -253,7 +317,7 @@ mod tests {
         let path = dir.join("projects.json");
         let radar_a = Radar {
             schema_version: 1,
-            updated_at: chrono::Utc::now(),
+            updated_at: chrono::Utc::now().trunc_subsecs(0),
             scan_duration_ms: 0,
             projects: vec![],
             quota: None,
@@ -281,7 +345,7 @@ mod tests {
     fn write_atomic_round_trip_minimal_radar() {
         let radar = Radar {
             schema_version: 1,
-            updated_at: chrono::Utc::now(),
+            updated_at: chrono::Utc::now().trunc_subsecs(0),
             scan_duration_ms: 0,
             projects: vec![],
             quota: None,

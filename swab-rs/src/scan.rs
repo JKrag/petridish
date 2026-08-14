@@ -13,6 +13,7 @@
 use crate::config::Config;
 use crate::discovery::{self};
 use crate::schema::{self, AgentActivity, AgentState, Radar, StatusBucket};
+use chrono::SubsecRound;
 use std::collections::HashMap;
 use std::panic::AssertUnwindSafe;
 use std::path::{Path, PathBuf};
@@ -240,9 +241,13 @@ pub fn run_scan(config: &Config, paths: &ScanPaths) -> Radar {
     let tick_start = Instant::now();
 
     // Now-as-UTC — `Radar.updated_at` is UTC, and agent-state thresholding uses the same
-    // reference point Python's `now`/`to_utc(now)` uses. The Python code normalizes a caller-
-    // supplied `now` with `to_utc()` (for the "naive datetimes are UTC" rule).
-    let now = chrono::Utc::now();
+    // reference point Python's `now`/`to_utc(now)` uses. Truncated to whole-second precision
+    // at generation time, matching Python's `utcnow()` (`datetime.now(utc).replace(
+    // microsecond=0)`) rather than relying solely on serde's truncation at the write
+    // boundary -- this value is also used directly for in-memory age/bucketing math and
+    // compared against round-tripped values in tests, so it needs to already be at
+    // whole-second precision, not just truncated when it happens to get serialized.
+    let now = chrono::Utc::now().trunc_subsecs(0);
 
     // 1. Discovery: walk roots + extras into a candidate-list. Missing roots degrade to empty.
     let discovered = discovery::discover(config);
