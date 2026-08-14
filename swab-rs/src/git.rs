@@ -1,56 +1,80 @@
 //! Git facts for one path. Mirrors `src/petridish/git.py`.
 //!
-//! ## EXPERIMENTAL: git2 (libgit2) backend, not the CLI-subprocess backend
+//! ## EXPERIMENTAL: hybrid git2 (libgit2) + one CLI-subprocess call, not pure CLI-subprocess
 //!
-//! This is a throwaway benchmark branch (`experiment/git2-backend`) swapping the original
-//! `git` CLI subprocess implementation for `git2` (Rust bindings to libgit2, the same
-//! library Cargo itself uses). The motivation: the subprocess version's wall-clock time was
-//! dominated by OS `sys` time (process fork/exec overhead, ~7-9s out of ~28s for an 80-repo
-//! scan) rather than actual git work (`user` time, ~2.7s) — `git2` does the same work
-//! in-process against an already-open repo handle, with no process spawn at all. See the
-//! `experiment/git2-backend` branch's own README/commit message for the measured result.
+//! This is a throwaway benchmark branch (`experiment/git2-backend`) swapping most of the
+//! original `git` CLI subprocess implementation for `git2` (Rust bindings to libgit2, the
+//! same library Cargo itself uses). The motivation: the pure-subprocess version's wall-clock
+//! time was dominated by OS `sys` time (process fork/exec overhead, ~3.3s out of ~5.2s for
+//! an 80-repo scan on a clean, uncontended benchmark) rather than actual git work (`user`
+//! time, ~1.9s) — `git2` does the same work in-process against an already-open repo handle,
+//! with no process spawn at all.
 //!
-//! Invariant #6 (`CLAUDE.md`) still applies in spirit ("a git failure is a
-//! `GitState(is_repo=False)`, never an exception") but its literal mechanism (5s subprocess
-//! timeout via `wait-timeout`) no longer applies: there is no child process to hang. Every
-//! libgit2 call here is synchronous and in-process; a failure is a `Result::Err` handled
-//! inline, never a panic.
+//! **This module is a deliberate HYBRID, not pure git2**, after a real measurement showed a
+//! pure-git2 version wasn't actually faster overall: `is_repo`/`branch`/`status`/
+//! `last_commit_at`/`remote` all moved to git2 cleanly (each measurably cheap, no downside).
+//! But `mine_last_commit_at` (the `--author=<pattern> --since=<horizon>` search) did NOT --
+//! a git2 revwalk visiting one commit at a time via `find_commit()` (parsing a full commit
+//! object per step, no commit-graph acceleration) is measurably slower **per commit
+//! visited** than git's own optimized `git log --author --since` search, even after adding
+//! newest-first sorting and early-exit-on-first-match. On repos where the pattern never
+//! matches within the since-horizon (common: any repo the configured author didn't
+//! personally commit to recently), the revwalk has no early exit at all and must visit
+//! every commit in the window. Isolated via a real diagnostic (temporarily disabling each
+//! git2 call in turn and re-measuring `user` time): removing the revwalk alone dropped
+//! `user` time from ~3.2s to ~1.87s — i.e. it was responsible for essentially ALL of the
+//! elevated `user` time a pure-git2 version showed versus the CLI-subprocess baseline.
+//! `run_author_since_query` below keeps that ONE query on the CLI (git's own optimized
+//! path), timeout-wrapped exactly like the original all-subprocess implementation, while
+//! every other field stays on git2. This also incidentally closes the `--author`
+//! regex-approximation gap noted in an earlier version of this module: this hybrid call
+//! IS `git log --author=<pattern> --since=<horizon>`, using git's own matcher, not a
+//! hand-rolled `regex`-crate approximation.
 //!
-//! Known behavioral gaps versus the original CLI-subprocess implementation (acceptable for
-//! a benchmark prototype, would need closing before this could replace the CLI version):
-//! - `--since=<horizon>` parsing: the CLI version hands the raw string straight to git's own
-//!   approxidate parser (accepts "3 years", "yesterday", ISO dates, etc). This version only
-//!   understands `<N> years|months|weeks|days` (optionally pluralized) and falls back to "no
-//!   cutoff" (include everything) on anything else — sufficient for this codebase's only
-//!   real usage (`Config::default().author_since == "3 years"`) but not a general parser.
-//! - `--author=<pattern>` matching: the CLI version delegates to git's own regex engine
-//!   against the exact `Name <email>` header line. This version builds the same
-//!   `"{name} <{email}>"` string and matches it with the `regex` crate, case-insensitively
-//!   (`(?i)` prefix) to approximate git's default author-match case-insensitivity. Patterns
-//!   that don't compile as a Rust regex are skipped (degrade), not a hard error.
+//! Invariant #6 (`CLAUDE.md`, "a git failure is `GitState(is_repo=False)`, never an
+//! exception") applies literally again for this one call (5s subprocess timeout via
+//! `wait-timeout`, `check=false` semantics) — everything else in this module is an in-process
+//! libgit2 call where a failure is a `Result::Err` handled inline, never a panic, and there's
+//! no child process that could hang in the first place.
 
 use crate::schema::GitState;
 use chrono::{DateTime, TimeZone, Utc};
 use std::path::Path;
+use std::process::{Command, Stdio};
+use std::time::Duration;
+use wait_timeout::ChildExt;
 
-/// Very small `--since=<N> <unit>` parser covering this codebase's actual usage (the
-/// default and only configured value is `"3 years"`). Returns `None` (no cutoff — include
-/// everything) on anything it doesn't recognize, rather than guessing.
-pub(crate) fn parse_since_horizon(since: &str, now: DateTime<Utc>) -> Option<DateTime<Utc>> {
-    let parts: Vec<&str> = since.trim().split_whitespace().collect();
-    let [n_str, unit] = parts.as_slice() else {
+pub const GIT_TIMEOUT: Duration = Duration::from_secs(5);
+
+/// The one CLI-subprocess call this hybrid module still makes -- see the module doc
+/// comment for why `mine_last_commit_at` specifically stays on the CLI rather than git2's
+/// revwalk. Runs `git -C <path> log -1 --format=%cI --author=<pattern> --since=<since>`
+/// with a 5s timeout; returns the parsed committer date, or `None` on any failure
+/// (spawn failure, timeout, nonzero exit, empty/unparseable output) -- never panics.
+pub(crate) fn run_author_since_query(path: &Path, pattern: &str, since: &str) -> Option<DateTime<Utc>> {
+    let author_arg = format!("--author={pattern}");
+    let since_arg = format!("--since={since}");
+    let mut child = Command::new("git")
+        .arg("-C")
+        .arg(path)
+        .args(["log", "-1", "--format=%cI", &author_arg, &since_arg])
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .ok()?;
+    let status = match child.wait_timeout(GIT_TIMEOUT).ok()? {
+        Some(status) => status,
+        None => {
+            let _ = child.kill();
+            let _ = child.wait();
+            return None; // timed out -- degrade to None, never panic.
+        }
+    };
+    if !status.success() {
         return None;
-    };
-    let n: i64 = n_str.parse().ok()?;
-    let unit = unit.trim_end_matches('s').to_lowercase();
-    let days = match unit.as_str() {
-        "year" => n * 365,
-        "month" => n * 30,
-        "week" => n * 7,
-        "day" => n,
-        _ => return None,
-    };
-    Some(now - chrono::Duration::days(days))
+    }
+    let output = child.wait_with_output().ok()?;
+    parse_date(&String::from_utf8_lossy(&output.stdout))
 }
 
 /// Converts a libgit2 `Time` (seconds since epoch + a UTC-offset-in-minutes the commit was
@@ -208,47 +232,17 @@ pub fn scan(path: &Path, author_patterns: &[String], author_since: &str) -> GitS
         result.last_commit_at = git2_time_to_utc(commit.time());
     }
 
-    // Mine last commit: for each author pattern, walk every commit reachable from HEAD,
-    // keep the newest whose committer time is at/after the since-horizon AND whose
-    // "Name <email>" line matches the pattern (case-insensitively) -- then take the max
-    // across all patterns, exactly mirroring the CLI version's "first pattern that returns
-    // a commit, keep whichever produced the latest date" loop.
-    let now = Utc::now();
-    let cutoff = parse_since_horizon(author_since, now);
+    // Mine last commit: see module doc comment for why this ONE query stays on the git
+    // CLI (git's own `--author --since` search is measurably faster than a git2 revwalk
+    // for this specific query shape) while everything else in this function uses git2.
+    // Iterate patterns, keep the max across all of them -- exactly mirroring the original
+    // all-subprocess implementation's semantics (this literally IS that implementation
+    // again, for just this one field).
     let mut mine_last: Option<DateTime<Utc>> = None;
-    if let Ok(mut revwalk) = repo.revwalk() {
-        if revwalk.push_head().is_ok() {
-            for pattern in author_patterns {
-                let Ok(re) = regex::Regex::new(&format!("(?i){pattern}")) else {
-                    continue; // pattern doesn't compile as a regex -- skip, don't panic.
-                };
-                for oid in revwalk.by_ref().filter_map(|o| o.ok()) {
-                    let Ok(commit) = repo.find_commit(oid) else {
-                        continue;
-                    };
-                    let Some(commit_time) = git2_time_to_utc(commit.time()) else {
-                        continue;
-                    };
-                    if let Some(cutoff) = cutoff {
-                        if commit_time < cutoff {
-                            continue;
-                        }
-                    }
-                    let author = commit.author();
-                    let signature = format!(
-                        "{} <{}>",
-                        author.name().unwrap_or(""),
-                        author.email().unwrap_or("")
-                    );
-                    if re.is_match(&signature)
-                        && mine_last.is_none_or(|best| commit_time > best)
-                    {
-                        mine_last = Some(commit_time);
-                    }
-                }
-                // Reset the walk for the next pattern -- `revwalk` is consumed by iteration.
-                let _ = revwalk.reset();
-                let _ = revwalk.push_head();
+    for pattern in author_patterns {
+        if let Some(dt) = run_author_since_query(path, pattern, author_since) {
+            if mine_last.is_none_or(|best| dt > best) {
+                mine_last = Some(dt);
             }
         }
     }

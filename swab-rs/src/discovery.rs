@@ -7,7 +7,6 @@
 //!   its enclosing project root, or one monorepo session shatters into phantom projects."
 
 use crate::config::Config;
-use chrono::Utc;
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 
@@ -277,41 +276,17 @@ pub fn is_foreign(path: &Path, config: &Config) -> bool {
     }
 
     // Authorship check: any pattern matching a commit within the since-horizon means NOT
-    // foreign. No pattern matches -> foreign. A revwalk/regex failure on one pattern just
+    // foreign. No pattern matches -> foreign. Uses `crate::git::run_author_since_query`
+    // (the git-CLI-backed hybrid call, NOT a git2 revwalk) for the same reason `git::scan`
+    // does — see that module's doc comment: a git2 revwalk visiting every commit one at a
+    // time is measurably slower per commit than git's own `--author --since` search,
+    // especially on repos where no commit matches within the window and the walk (with no
+    // early exit at all, unlike the CLI's own optimized search) would have to visit every
+    // commit in the horizon before giving up. A query failure/timeout on one pattern just
     // means "no match for this one" — continue to the next pattern, never bail out.
-    let now = Utc::now();
-    let cutoff = crate::git::parse_since_horizon(&config.author_since, now);
     for pattern in &config.author_patterns {
-        let Ok(re) = regex::Regex::new(&format!("(?i){pattern}")) else {
-            continue;
-        };
-        let Ok(mut revwalk) = repo.revwalk() else {
-            continue;
-        };
-        if revwalk.push_head().is_err() {
-            continue;
-        }
-        for oid in revwalk.filter_map(|o| o.ok()) {
-            let Ok(commit) = repo.find_commit(oid) else {
-                continue;
-            };
-            let Some(commit_time) = crate::git::git2_time_to_utc(commit.time()) else {
-                continue;
-            };
-            if let Some(cutoff) = cutoff {
-                if commit_time < cutoff {
-                    continue;
-                }
-            }
-            let author = commit.author();
-            let signature = format!(
-                "{} <{}>",
-                author.name().unwrap_or(""),
-                author.email().unwrap_or("")
-            );
-            if re.is_match(&signature) {
-                return false; // matching commit -> not foreign.
-            }
+        if crate::git::run_author_since_query(path, pattern, &config.author_since).is_some() {
+            return false; // matching commit -> not foreign.
         }
     }
 
