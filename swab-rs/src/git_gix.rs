@@ -108,10 +108,21 @@ pub fn scan(path: &Path, author_patterns: &[String], author_since: &str) -> GitS
     result
 }
 
+/// Mirrors `git rev-parse --abbrev-ref HEAD`'s exact behavior, including its one surprising
+/// case: on an unborn HEAD (fresh repo, zero commits) the CLI command fails outright ("fatal:
+/// ambiguous argument 'HEAD': unknown revision", exit 128) even though HEAD symbolically
+/// points at a named branch — confirmed empirically against real git. gix's
+/// `referent_name()` returns `Some("refs/heads/master")` for this same unborn case (it CAN
+/// resolve the symbolic name, git's plumbing chooses not to), so the unborn case must be
+/// special-cased to `None` here or this diverges from both git.rs (git2, which also returns
+/// `None` here since `repo.head()` errors on unborn) and the Python CLI-subprocess original.
 fn branch_name(repo: &gix::Repository) -> Option<String> {
     let head = repo.head().ok()?;
     if head.is_detached() {
         return Some("HEAD".to_string());
+    }
+    if matches!(head.kind, gix::head::Kind::Unborn(_)) {
+        return None;
     }
     head.referent_name().map(|n| n.shorten().to_string())
 }
@@ -132,7 +143,14 @@ fn status_entries(repo: &gix::Repository) -> Vec<String> {
         .collect()
 }
 
+/// `pattern` is a regular expression, exactly like `git log --author=<pattern>` (config's
+/// default is literally `"Jan.*Krag"`) — not a literal substring. Matched against the
+/// `"Name <email>"` combined author line, the same string git's own `--author` matches
+/// against, so a pattern spanning the name/email boundary behaves identically to the CLI.
+/// An invalid regex degrades to "never matches" (returns `None`) rather than panicking,
+/// consistent with invariant #6's "never an exception" rule extended to this in-process path.
 fn author_since_revwalk(repo: &gix::Repository, pattern: &str, since: &str) -> Option<DateTime<Utc>> {
+    let re = regex::Regex::new(pattern).ok()?;
     let head_id = repo.head_id().ok()?;
     let since_dt = parse_since(since)?;
     let walk = repo.rev_walk([head_id]).all().ok()?;
@@ -144,7 +162,7 @@ fn author_since_revwalk(repo: &gix::Repository, pattern: &str, since: &str) -> O
         }
         let author = commit.author().ok()?;
         let author_str = format!("{} <{}>", author.name, author.email);
-        if author_str.contains(pattern) || author.name.to_string().contains(pattern) {
+        if re.is_match(&author_str) {
             return Some(commit_time);
         }
     }
@@ -329,6 +347,54 @@ mod tests {
         assert!(state.is_repo);
         assert_eq!(state.last_commit_at, None);
         assert_eq!(state.mine_last_commit_at, None);
+    }
+
+    // Regression: found via diff_check.sh against the real Python (git-CLI-backed)
+    // implementation. `git rev-parse --abbrev-ref HEAD` fails outright (exit 128) on an
+    // unborn HEAD, confirmed empirically -- even though HEAD symbolically points at a named
+    // branch. gix's `referent_name()` CAN resolve that name and returns `Some("master")`
+    // unless the unborn case is special-cased, which would diverge from both the CLI and
+    // git.rs's git2 backend (whose `repo.head()` also errors on unborn, degrading to None).
+    #[test]
+    fn empty_repo_branch_is_none_matching_real_git_cli_failure() {
+        let tmp = make_tmp_dir("empty_repo_branch");
+        git_init(&tmp);
+
+        let state = scan(&tmp, &[], "3 years");
+        assert_eq!(
+            state.branch, None,
+            "unborn HEAD: real `git rev-parse --abbrev-ref HEAD` fails, branch must stay None"
+        );
+    }
+
+    // Regression: found via diff_check.sh. `author_patterns` entries are regular
+    // expressions (config's default is literally "Jan.*Krag"), matched the same way git's
+    // own `--author=<pattern>` does -- not a literal substring. A naive `.contains(pattern)`
+    // check would never match "Jan.*Krag" against "Jan Krag <j@k.com>" since the literal
+    // ".*" isn't in the string.
+    #[test]
+    fn author_pattern_is_regex_not_literal_substring() {
+        let tmp = make_tmp_dir("author_regex");
+        git_init(&tmp);
+
+        let env_author = &[
+            ("GIT_AUTHOR_DATE", AUTHOR_DATE),
+            ("GIT_COMMITTER_DATE", COMMITTER_DATE),
+            ("GIT_AUTHOR_NAME", "Jan Krag"),
+            ("GIT_AUTHOR_EMAIL", "jan@example.invalid"),
+            ("GIT_COMMITTER_NAME", "Jan Krag"),
+            ("GIT_COMMITTER_EMAIL", "jan@example.invalid"),
+        ];
+        assert!(Command::new("git")
+            .args(["-C", tmp.to_str().unwrap(), "commit", "--no-gpg-sign", "-m", "mine", "--allow-empty"])
+            .envs(env_author.iter().map(|(k, v)| (k, *v)))
+            .spawn().unwrap().wait().unwrap().success());
+
+        let state = scan(&tmp, &["Jan.*Krag".to_string()], "3 years");
+        assert!(
+            state.mine_last_commit_at.is_some(),
+            "\"Jan.*Krag\" must match as a regex against \"Jan Krag <jan@example.invalid>\""
+        );
     }
 
     #[test]

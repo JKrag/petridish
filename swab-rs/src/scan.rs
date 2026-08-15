@@ -192,7 +192,14 @@ fn build_project(
         });
 
     let foreign = discovery::is_foreign(resolved, config);
-    let git_state = crate::git::scan(resolved, &config.author_patterns, &config.author_since);
+    // SWAB_RS_GIT_BACKEND=gix switches the git backend for the gix-vs-git2 benchmark spike
+    // (experiment/gitoxide-backend) -- unset/anything else keeps the git2-hybrid default.
+    // Throwaway benchmark toggle, not a real config surface; git.rs stays the baseline.
+    let git_state = if std::env::var("SWAB_RS_GIT_BACKEND").as_deref() == Ok("gix") {
+        crate::git_gix::scan(resolved, &config.author_patterns, &config.author_since)
+    } else {
+        crate::git::scan(resolved, &config.author_patterns, &config.author_since)
+    };
 
     let agent = derive_agent(signal, now);
 

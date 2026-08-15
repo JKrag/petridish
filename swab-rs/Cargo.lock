@@ -2122,6 +2122,7 @@ dependencies = [
  "clap",
  "git2",
  "gix",
+ "regex",
  "serde",
  "serde_json",
  "sha1",
