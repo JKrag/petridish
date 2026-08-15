@@ -1,3 +1,16 @@
+> **ARCHIVED — 2026-08-15.** This was the build spec for the original all-Python
+> implementation (scanner + `petri`). The scanner (`cli.py`/`config.py`/`discovery.py`/
+> `git.py`/`events.py`/`scan.py`/`hook.py`/`sensors/`) was ported to Rust (`swab-rs/`) and
+> the Python originals deleted; `petri` is slated for a Go/Bubbletea or Rust/ratatui port
+> next. Everything here that's still true regardless of implementation language — the §0
+> empirical findings, the architecture/single-writer invariant, the `projects.json` schema,
+> the discovery/authorship-filter design, and forward-looking deferred items — has been
+> extracted to **`ARCHITECTURE.md`** at the repo root, which supersedes this file for all of
+> that. What's NOT carried forward: the Python module-by-module build breakdown (M0–M12),
+> language-specific contracts (dataclasses, argparse, curses), and the delegation notes for
+> a build process that's already finished. Kept here only as a historical record of how the
+> original Python build was actually planned and executed.
+
 # petridish — Implementation Plan
 
 Companion to `DESIGN.md`. This document is the authoritative build spec: it supersedes

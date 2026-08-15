@@ -1,7 +1,7 @@
-//! `swab-hook-rs` — the fast hook path. Mirrors `src/petridish/hook.py`.
+//! `swab-hook` — the fast hook path. Fully replaced (and Python's `src/petridish/hook.py` deleted, along with `cli.py` and everything the scanner depended on).
 //!
 //! Single-writer invariant (`CLAUDE.md` #1): this binary must NEVER open `projects.json` for
-//! writing — only `swab-rs scan` may do that. This binary's only job is one `O_APPEND` write
+//! writing — only `swab scan` may do that. This binary's only job is one `O_APPEND` write
 //! of one JSON line to `events.ndjson`.
 //!
 //! No CLI flags — reads the hook-event JSON body from stdin (`cwd`, `session_id`/`sessionId`,

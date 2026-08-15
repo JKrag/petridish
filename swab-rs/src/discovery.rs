@@ -1,6 +1,6 @@
 //! Project crawl, monorepo-collapse, and authorship filter. Mirrors `src/petridish/discovery.py`.
 //!
-//! Two invariants live here and must not regress (verbatim from `IMPLEMENTATION_PLAN.md` §0):
+//! Two invariants live here and must not regress (verbatim from `ARCHITECTURE.md` §0):
 //! - F2: "The directory slug is not reversibly decodable ... Never parse the dirname for a
 //!   path." `resolve_root` only ever walks the real filesystem, never a Claude-projects slug.
 //! - F9: "`cwd` varies within a single transcript ... every raw cwd must be resolved up to
@@ -248,16 +248,15 @@ pub fn resolve_root(cwd: &Path, config: &Config) -> PathBuf {
 /// regardless of authorship. A non-repo path is never foreign (`false`). An empty
 /// `author_patterns` list means everything is foreign (`true`) for any repo.
 ///
-/// Use `crate::git::run_git` (implemented in R3, before this module) for both the dirty-tree
-/// check and the author-match check — do not write a second git-timeout wrapper here.
+/// gix-backed — see `git.rs`'s module doc comment for the full backend history. Reuses
+/// `git::status_entries`/`git::author_since_revwalk` directly rather than duplicating the
+/// gix status/ignore-parity and regex-author-matching logic those functions already encode.
 pub fn is_foreign(path: &Path, config: &Config) -> bool {
     // Pre-check: confirm this is actually a git repo before running any authorship logic.
-    // `rev-parse --git-dir` is the cheapest introspection we can do and doubles as the
-    // "any git error -> False" guard. `run_git` returning `None` (spawn/timeout failure)
-    // degrades to "not a repo" per contract — never panic.
-    if !matches!(crate::git::run_git(path, &["rev-parse", "--git-dir"]), Some((true, _))) {
+    // A failed `gix::open` degrades to "not a repo" (never foreign) per contract.
+    let Ok(repo) = gix::open(path) else {
         return false;
-    }
+    };
 
     // Empty author_patterns: no signal at all, so treat every repo as foreign. Mirrors
     // the spec divergence from Python (Python would fall through to the dirty check here).
@@ -265,29 +264,18 @@ pub fn is_foreign(path: &Path, config: &Config) -> bool {
         return true;
     }
 
-    // Dirty-tree check (Rust-specific reversal of Python's order, per spec): a non-empty
-    // `git status --porcelain` is positive evidence of active work, overriding authorship.
-    // `run_git` returning `None` here just means "treat as not dirty", never a panic.
-    if let Some((true, output)) = crate::git::run_git(path, &["status", "--porcelain"]) {
-        if !output.trim().is_empty() {
-            return false;
-        }
+    // Dirty-tree check (Rust-specific reversal of Python's order, per spec): any status
+    // entry is positive evidence of active work, overriding authorship.
+    if !crate::git::status_entries(&repo).is_empty() {
+        return false;
     }
 
-    // Authorship check: any pattern matching a recent commit means NOT foreign. No pattern
-    // matches -> foreign. `run_git` returning `None` on a pattern just means "no match for
-    // this one"; we continue to the next pattern rather than bailing.
+    // Authorship check: any pattern matching a commit within the since-horizon means NOT
+    // foreign. No pattern matches -> foreign. A query failure on one pattern just means "no
+    // match for this one" — continue to the next pattern, never bail out.
     for pattern in &config.author_patterns {
-        // Build the args with owned strings so the `&str` slice lives long enough.
-        let author_arg = format!("--author={pattern}");
-        let since_arg = format!("--since={}", config.author_since);
-        let mut args: Vec<&str> = vec!["log", "-1", "--format=%cI"];
-        args.push(&author_arg);
-        args.push(&since_arg);
-        if let Some((true, output)) = crate::git::run_git(path, &args) {
-            if !output.trim().is_empty() {
-                return false; // matching commit -> not foreign.
-            }
+        if crate::git::author_since_revwalk(&repo, pattern, &config.author_since).is_some() {
+            return false; // matching commit -> not foreign.
         }
     }
 

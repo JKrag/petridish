@@ -4,7 +4,7 @@ This is the one module in the package that mutates state outside its own
 data directory: ``~/.claude/settings.json`` (shared with other hook
 consumers — pixtuoid, statusbar, notchbar) and ``~/Library/LaunchAgents``.
 Every edit to ``settings.json`` is *structural*: it only ever adds or removes
-dict entries that carry :data:`petridish.config.HOOK_MARKER` somewhere in
+dict entries that carry :data:`petridish.schema.HOOK_MARKER` somewhere in
 their subtree. Nothing here ever reserialises or touches an entry it did not
 add itself — see DESIGN.md D4.
 
@@ -25,7 +25,7 @@ import sys
 from pathlib import Path
 from typing import Callable
 
-from petridish.config import HOOK_MARKER
+from petridish.schema import HOOK_MARKER
 
 PLIST_LABEL = "com.petridish.daemon"
 

@@ -68,7 +68,7 @@ def filter_projects(
 def format_row(project: Project) -> list[str]:
     """Produce the four TUI columns for one project.
 
-    Mirrors :func:`petridish.cli._print_table` row-building logic — the agent
+    Mirrors `swab-rs`'s `_print_table` row-building logic (`swab-rs/src/cli.rs`) — the agent
     label and the dirty marker come from exactly the same expressions:
 
     * ``[name, agent_label, branch_or_dash, dirty_marker]``
@@ -161,7 +161,7 @@ def pad_row(row: list[str], widths: list[int]) -> str:
 # ---------------------------------------------------------------------------
 
 #: schema.py's AGENT_STATES is ("working", "recent", "idle") — that's the
-#: full granularity the sensors currently produce (see IMPLEMENTATION_PLAN.md
+#: full granularity the sensors currently produce (see ARCHITECTURE.md
 #: F3: liveness is mtime-recency based, no finer state machine from
 #: transcripts alone). A tool like pixtuoid showing reading/editing/thinking
 #: is reading richer hook events this project doesn't sense yet.

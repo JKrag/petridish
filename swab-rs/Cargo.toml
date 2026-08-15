@@ -3,12 +3,26 @@ name = "swab-rs"
 version = "0.1.0"
 edition = "2024"
 
+# The crate/directory keep the "swab-rs" name (internal, developer-facing — matches the
+# source layout and every script under scripts/ that references it) but the produced
+# binaries are named "swab" and "swab-hook": swab-rs fully replaced the Python swab/
+# swab-hook implementation (src/petridish/{cli,hook}.py, deleted), and installer.py/
+# install.sh resolve those exact names via shutil.which()/`command -v` on PATH.
+[[bin]]
+name = "swab"
+path = "src/main.rs"
+
+[[bin]]
+name = "swab-hook"
+path = "src/bin/swab-hook.rs"
+
 [dependencies]
 chrono = { version = "0.4", features = ["serde"] }
 clap = { version = "4", features = ["derive"] }
+gix = { version = "0.86.0", features = ["status", "revision"] }
+regex = "1.13.1"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 sha1 = "0.10"
 toml = "0.8"
 url = "2"
-wait-timeout = "0.2"

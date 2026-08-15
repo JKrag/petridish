@@ -21,7 +21,7 @@ from pathlib import Path
 
 import pytest
 
-from petridish.config import HOOK_MARKER
+from petridish.schema import HOOK_MARKER
 from petridish.installer import (
     InstallError,
     add_hook_entries,

@@ -148,9 +148,8 @@ class _Petri:
         import pty
 
         code = (
-            "import petridish.tui as t, petridish.cli as c;"
+            "import petridish.tui as t;"
             f"t._DEFAULT_STATE_PATH={self.state_path!r};"
-            f"c._DEFAULT_STATE_PATH={self.state_path!r};"
             "raise SystemExit(t.main())"
         )
         src = os.path.join(os.path.dirname(os.path.dirname(__file__)), "src")

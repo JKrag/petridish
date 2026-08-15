@@ -24,8 +24,7 @@ import os
 import sys
 from datetime import datetime, timezone
 
-from petridish.cli import _DEFAULT_STATE_PATH
-from petridish.schema import Radar, read_json
+from petridish.schema import _DEFAULT_STATE_PATH, Radar, read_json
 from petridish.screens import browser_groups, render_browser, render_dashboard
 from petridish.tui_state import (
     SelectionState,

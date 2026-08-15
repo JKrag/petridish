@@ -125,7 +125,7 @@ fn status_bucket(
     threshold_stale_h: f64,
 ) -> StatusBucket {
     // Agent state overrides — a Working or Recent project is always "active", regardless of
-    // when the last git commit landed (invariant #6 of IMPLEMENTATION_PLAN.md: git-only
+    // when the last git commit landed (invariant #6 of ARCHITECTURE.md: git-only
     // bucketing loses when an agent is actively working in it).
     if matches!(agent.state, AgentActivity::Working | AgentActivity::Recent) {
         return StatusBucket::Active;
