@@ -117,44 +117,64 @@ fn as_path_list(table: &toml::value::Table, key: &str) -> Option<Vec<PathBuf>> {
     Some(items.iter().map(|s| PathBuf::from(expand_path(s, &home))).collect())
 }
 
-/// A `{string: number}` table (`bucket_thresholds`). Any non-numeric value makes the
-/// whole field fall back to defaults.
+/// A `{string: number}` table (`bucket_thresholds`), coerced per-key against `defaults`
+/// rather than all-or-nothing. Mirrors `config.py::_coerce_durations` exactly: a *missing*
+/// key falls back to that key's own default, and a *non-numeric* value for a present key
+/// also falls back to that key's own default — only a key present in `defaults` is ever
+/// emitted (an extra user-supplied key not in `defaults` is silently dropped, matching
+/// Python's `for key, default_value in defaults.items()` loop bound). Returns `None` only
+/// when the whole field isn't a table at all (missing key, or present but not a table),
+/// which leaves the caller's already-defaulted `Config::default()` value untouched — same
+/// effect as Python's "not isinstance(user, dict)" branch, which also falls through to
+/// full defaults.
+///
+/// Found via a gap audit: an earlier version returned only the keys present in the file,
+/// so `[bucket_thresholds]\nactive = 72` would leave `in_flight`/`stale` missing from the
+/// map entirely instead of defaulted.
 fn as_float_table(
     table: &toml::value::Table,
     key: &str,
+    defaults: &HashMap<String, f64>,
 ) -> Option<HashMap<String, f64>> {
     let tbl = table.get(key)?.as_table()?;
-    if tbl.is_empty() {
-        return Some(HashMap::new());
-    }
-    let mut out = HashMap::with_capacity(tbl.len());
-    for (k, v) in tbl {
+    let mut out = HashMap::with_capacity(defaults.len());
+    for (k, default_value) in defaults {
+        let v = match tbl.get(k) {
+            Some(v) => v,
+            None => {
+                out.insert(k.clone(), *default_value);
+                continue;
+            }
+        };
         let f = match (v.as_float(), v.as_integer()) {
             (Some(f), _) => f,
             (_, Some(i)) => i as f64,
-            _ => return None,
+            _ => *default_value,
         };
         out.insert(k.clone(), f);
     }
     Some(out)
 }
 
-/// A `{string: string}` table (`category_overrides`). Any non-string value makes the
-/// whole field fall back to defaults.
+/// A `{string: string}` table (`category_overrides`), filtered per-key rather than
+/// all-or-nothing. Mirrors `config.py::load_config`'s category_overrides handling exactly:
+/// `{str(k): v for k, v in raw_overrides.items() if isinstance(v, str)}` — a non-string
+/// value for one key drops just that key, the rest of the table survives. Returns `None`
+/// only when the whole field isn't a table at all, matching Python's `else: {}` branch
+/// (falls through to the caller's already-empty `Config::default()` value).
+///
+/// Found via a gap audit: an earlier version bailed the whole table to `None` on the
+/// first non-string value.
 fn as_str_table(
     table: &toml::value::Table,
     key: &str,
 ) -> Option<HashMap<String, String>> {
     let tbl = table.get(key)?.as_table()?;
-    if tbl.is_empty() {
-        return Some(HashMap::new());
-    }
     let mut out = HashMap::with_capacity(tbl.len());
     for (k, v) in tbl {
-        match v.as_str() {
-            Some(s) => out.insert(k.clone(), s.to_string()),
-            None => return None,
-        };
+        if let Some(s) = v.as_str() {
+            out.insert(k.clone(), s.to_string());
+        }
     }
     Some(out)
 }
@@ -244,7 +264,7 @@ pub fn load_config(path: &std::path::Path) -> Result<Config, ConfigError> {
     if let Some(items) = as_string_list(&table, "ignore_dirs") {
         cfg.ignore_dirs = items.into_iter().collect();
     }
-    if let Some(v) = as_float_table(&table, "bucket_thresholds") {
+    if let Some(v) = as_float_table(&table, "bucket_thresholds", &Config::default().bucket_thresholds) {
         cfg.bucket_thresholds = v;
     }
     if let Some(v) = as_str_table(&table, "category_overrides") {
@@ -424,6 +444,48 @@ stale = 1440.0
 
         assert_eq!(cfg.category_overrides.get("*.js").unwrap(), "javascript");
         assert_eq!(cfg.category_overrides.get("*.py").unwrap(), "python");
+    }
+
+    /// Regression: found via a gap audit against `config.py::_coerce_durations`. A partial
+    /// `[bucket_thresholds]` override (only `active` set) must still produce a map with all
+    /// three keys — `in_flight`/`stale` defaulted, not absent. An earlier version only
+    /// emitted the keys present in the file.
+    #[test]
+    fn bucket_thresholds_partial_override_merges_with_defaults() {
+        let toml_text = "[bucket_thresholds]\nactive = 72.0\n";
+        let path = with_tmp("partial_thresholds.toml", toml_text);
+        let cfg = load_config(&path).expect("partial table must parse");
+
+        assert_eq!(cfg.bucket_thresholds.get("active"), Some(&72.0));
+        assert_eq!(
+            cfg.bucket_thresholds.get("in_flight"),
+            Config::default().bucket_thresholds.get("in_flight"),
+            "in_flight must default, not be absent, when only active is overridden"
+        );
+        assert_eq!(
+            cfg.bucket_thresholds.get("stale"),
+            Config::default().bucket_thresholds.get("stale"),
+            "stale must default, not be absent, when only active is overridden"
+        );
+    }
+
+    /// Regression: found via a gap audit against `config.py::load_config`'s
+    /// category_overrides handling (`{k: v for k, v in raw.items() if isinstance(v, str)}`).
+    /// One bad (non-string) value in the table must drop only that key, not the whole
+    /// field. An earlier version fell back to `{}` (empty) on the first bad value.
+    #[test]
+    fn category_overrides_drops_only_the_bad_key() {
+        let toml_text = "[category_overrides]\n\"*.js\" = \"javascript\"\n\"*.bad\" = 42\n\"*.py\" = \"python\"\n";
+        let path = with_tmp("partial_overrides.toml", toml_text);
+        let cfg = load_config(&path).expect("table with one bad value must still parse");
+
+        assert_eq!(cfg.category_overrides.get("*.js").unwrap(), "javascript");
+        assert_eq!(cfg.category_overrides.get("*.py").unwrap(), "python");
+        assert_eq!(
+            cfg.category_overrides.get("*.bad"), None,
+            "the non-string value's key must be dropped, not crash the whole table"
+        );
+        assert_eq!(cfg.category_overrides.len(), 2, "the two good keys must survive");
     }
 
     /// Sanity check: env-var prefix on a path string is expanded too.

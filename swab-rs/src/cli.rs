@@ -195,10 +195,11 @@ pub fn cmd_list(
 /// if a match is found, print only the project path (so `cd $(swab-rs path x)` works);
 /// if not, emit an error to *stderr-equivalent* sink and return 1.
 ///
-/// Priority: exact match first (then most-recent), then case-sensitive substring of
-/// name (most-recent tiebreak). Matches the Python reference's order-of-candidate-priority
-/// minus the case-insensitive fallthrough (the contract says "case-sensitive substring",
-/// which is what `contains` gives us).
+/// Priority: exact name match (if exactly one); else case-insensitive substring of name
+/// (rank 0); else case-insensitive substring of path (rank 1). Ties within a rank broken by
+/// most-recent `last_activity_at`. Mirrors `cli.py::_cmd_path` exactly — found via a real
+/// gap audit that an earlier version of this function was case-sensitive and had no
+/// path-substring fallback tier at all.
 pub fn cmd_path(
     state_path: &std::path::Path,
     query: &str,
@@ -224,34 +225,34 @@ pub fn cmd_path(
         })?
     };
 
-    let mut candidates: Vec<&crate::schema::Project> = Vec::new();
-
-    // Priority 1: exact match on name.
-    let mut exact_match: Option<&crate::schema::Project> = None;
-    for p in &radar.projects {
-        if p.name == query {
-            exact_match = Some(p);
-        }
-    }
-
-    if let Some(_p) = exact_match {
-        // If there are multiple exact matches, fall through to the tiebreak-by-recency
-        // (single-project per state file in practice, but be defensive).
-        let multi: Vec<_> = radar.projects.iter().filter(|pp| pp.name == query).collect();
-        if multi.len() == 1 {
-            let _ = writeln!(out, "{}", multi[0].path);
-            return Ok(0);
-        }
-        // Multiple exact matches — pick most recent `last_activity_at`.
-        let best = multi.iter().max_by_key(|p| p.last_activity_at).expect("multi.nonempty");
-        let _ = writeln!(out, "{}", best.path);
+    // Priority 1: exact match on name. If exactly one, use it immediately. If zero or
+    // several (duplicate names — shouldn't happen, but Python is defensive about it too),
+    // fall through to the tiered substring search below, which still finds exact-name
+    // matches at rank 0 (an exact match trivially contains itself as a substring).
+    let exact: Vec<&crate::schema::Project> = radar.projects.iter().filter(|p| p.name == query).collect();
+    if exact.len() == 1 {
+        let _ = writeln!(out, "{}", exact[0].path);
         return Ok(0);
     }
 
-    // Priority 2: case-sensitive substring of name.
+    // Priority 2: case-insensitive substring of name (rank 0). Priority 3: case-insensitive
+    // substring of path (rank 1), for projects not already matched by name. Ties within a
+    // rank broken by most-recent last_activity_at (None sorts last, mirroring Python's
+    // `0.0 if None else -timestamp` key).
+    let query_lower = query.to_lowercase();
+    let mut candidates: Vec<(u8, &crate::schema::Project)> = Vec::new();
+    let mut matched_by_name: Vec<&crate::schema::Project> = Vec::new();
     for p in &radar.projects {
-        if p.name.contains(query) {
-            candidates.push(p);
+        if p.name.to_lowercase().contains(&query_lower) {
+            candidates.push((0, p));
+            matched_by_name.push(p);
+        }
+    }
+    for p in &radar.projects {
+        if p.path.to_lowercase().contains(&query_lower)
+            && !matched_by_name.iter().any(|m| std::ptr::eq(*m, p))
+        {
+            candidates.push((1, p));
         }
     }
 
@@ -260,10 +261,9 @@ pub fn cmd_path(
         return Ok(1);
     }
 
-    // Tie-break: most recent `last_activity_at` first (None sorts last).
-    candidates.sort_by(|a, b| b.last_activity_at.cmp(&a.last_activity_at));
+    candidates.sort_by(|a, b| a.0.cmp(&b.0).then_with(|| b.1.last_activity_at.cmp(&a.1.last_activity_at)));
 
-    let _ = writeln!(out, "{}", candidates[0].path);
+    let _ = writeln!(out, "{}", candidates[0].1.path);
     Ok(0)
 }
 
@@ -368,6 +368,20 @@ pub fn cmd_doctor(
     Ok(if problems.is_empty() { 0 } else { 1 })
 }
 
+/// One line of human explanation per `Config` field. Mirrors `cli.py::_CONFIG_FIELD_HELP`
+/// verbatim — found missing entirely in a gap audit (an earlier version of `cmd_config`
+/// printed only the field name + default, dropping the description Python always prints).
+const CONFIG_FIELD_HELP: &[(&str, &str)] = &[
+    ("roots", "Directories crawled for projects"),
+    ("extra_paths", "Individual extra project paths, for anything outside roots"),
+    ("author_patterns", "Regex(es) matched against \"git log --author=\" to decide \"did I write this\""),
+    ("author_since", "How far back git log looks when computing authorship"),
+    ("ignore_dirs", "Directory basenames hard-skipped during crawl"),
+    ("bucket_thresholds", "Hour cutoffs for the active/in_flight/stale/cold status buckets"),
+    ("category_overrides", "{path_glob_or_pattern: category_label} manual recategorisation"),
+    ("max_depth", "How deep the crawl descends into roots before giving up on a subtree"),
+];
+
 /// `config`: print the config file location + every `Config` field, one at a time in
 /// struct-field order. Keeps the list hardcoded (one line per field name + default) rather
 /// than reflecting over `dataclasses.fields` — the struct is small enough to update by eye,
@@ -385,28 +399,18 @@ pub fn cmd_config(out: &mut dyn Write) -> std::io::Result<u8> {
 
     // Field order kept in sync with `Config` struct definition by hand.
     for (name, default) in &[
-        ("roots", format_default_config_field(&cfg.roots)),
-        ("extra_paths", format_default_config_field(&cfg.extra_paths)),
-        (
-            "author_patterns",
-            format_default_config_field(&cfg.author_patterns),
-        ),
-        ("author_since", format_default_config_field(&cfg.author_since)),
-        (
-            "ignore_dirs",
-            format_default_config_field(&cfg.ignore_dirs),
-        ),
-        (
-            "bucket_thresholds",
-            format_default_config_field(&cfg.bucket_thresholds),
-        ),
-        (
-            "category_overrides",
-            format_default_config_field(&cfg.category_overrides),
-        ),
-        ("max_depth", format_default_config_field(&cfg.max_depth)),
+        ("roots", format_toml_path_list(&cfg.roots)),
+        ("extra_paths", format_toml_path_list(&cfg.extra_paths)),
+        ("author_patterns", format_toml_string_list(&cfg.author_patterns)),
+        ("author_since", format_toml_string(&cfg.author_since)),
+        ("ignore_dirs", format_toml_sorted_string_set(&cfg.ignore_dirs)),
+        ("bucket_thresholds", format_toml_bucket_thresholds(&cfg.bucket_thresholds)),
+        ("category_overrides", format_toml_string_map(&cfg.category_overrides)),
+        ("max_depth", cfg.max_depth.to_string()),
     ] {
+        let help_text = CONFIG_FIELD_HELP.iter().find(|(n, _)| n == name).map(|(_, h)| *h).unwrap_or("");
         writeln!(out, "  {name}")?;
+        writeln!(out, "      {help_text}")?;
         writeln!(out, "      default: {default}")?;
     }
 
@@ -420,12 +424,68 @@ pub fn cmd_config(out: &mut dyn Write) -> std::io::Result<u8> {
     Ok(0)
 }
 
-/// Render a default value for display by `cmd_config`. Mirrors `cli.py::_format_default`
-/// closely enough that the output looks familiar to Python-side reviewers. Uses `Debug`
-/// rather than `Display` since several `Config` field types (`Vec<PathBuf>`,
-/// `HashSet<String>`, `HashMap<String, _>`) don't implement `Display` at all.
-fn format_default_config_field(value: &impl std::fmt::Debug) -> String {
-    format!("{value:?}")
+/// TOML-style rendering of `Config` field defaults, mirroring `cli.py::_format_default`
+/// field-type by field-type (that function dispatches on Python's dynamic type at runtime;
+/// Rust's static types mean one formatter per field type instead — found via a gap audit
+/// that an earlier version used `{value:?}` (Rust `Debug`) instead, which doesn't look like
+/// TOML at all: `Vec<PathBuf>` debug-quotes each path, `HashMap` uses Rust's `{k: v}` map
+/// syntax, and — since `HashMap`/`HashSet` iteration order is unspecified — the SAME config
+/// could legitimately print its keys in a different order across two runs).
+fn format_toml_path_list(items: &[std::path::PathBuf]) -> String {
+    let quoted: Vec<String> = items.iter().map(|p| format!("\"{}\"", p.display())).collect();
+    format!("[{}]", quoted.join(", "))
+}
+
+fn format_toml_string_list(items: &[String]) -> String {
+    let quoted: Vec<String> = items.iter().map(|s| format!("\"{s}\"")).collect();
+    format!("[{}]", quoted.join(", "))
+}
+
+fn format_toml_string(s: &str) -> String {
+    format!("\"{s}\"")
+}
+
+/// `ignore_dirs` is a `HashSet` (Python: `frozenset`) — unordered by construction, so its
+/// default rendering must sort, exactly like `_format_default`'s frozenset branch
+/// (`sorted(str(v) for v in value)`), or the printed default would vary run to run.
+fn format_toml_sorted_string_set(items: &std::collections::HashSet<String>) -> String {
+    let mut sorted: Vec<&String> = items.iter().collect();
+    sorted.sort();
+    let quoted: Vec<String> = sorted.iter().map(|s| format!("\"{s}\"")).collect();
+    format!("[{}]", quoted.join(", "))
+}
+
+/// `DEFAULT_BUCKETS`' Python dict literal has a fixed key order (active, in_flight, stale);
+/// `HashMap` doesn't preserve insertion order, so that fixed order is hardcoded here rather
+/// than iterated — any unexpected extra key (shouldn't happen for the default map) is
+/// appended sorted so nothing silently goes missing from the printed default.
+fn format_toml_bucket_thresholds(map: &std::collections::HashMap<String, f64>) -> String {
+    if map.is_empty() {
+        return "{}".to_string();
+    }
+    let known_order = ["active", "in_flight", "stale"];
+    let mut parts = Vec::new();
+    for key in known_order {
+        if let Some(v) = map.get(key) {
+            parts.push(format!("{key} = {v:?}")); // {:?} forces "48.0", not "48" — matches Python's str(48.0).
+        }
+    }
+    let mut extra: Vec<&String> = map.keys().filter(|k| !known_order.contains(&k.as_str())).collect();
+    extra.sort();
+    for key in extra {
+        parts.push(format!("{key} = {:?}", map[key]));
+    }
+    format!("{{{}}}", parts.join(", "))
+}
+
+fn format_toml_string_map(map: &std::collections::HashMap<String, String>) -> String {
+    if map.is_empty() {
+        return "{}".to_string();
+    }
+    let mut keys: Vec<&String> = map.keys().collect();
+    keys.sort();
+    let parts: Vec<String> = keys.iter().map(|k| format!("{k} = {}", map[*k])).collect();
+    format!("{{{}}}", parts.join(", "))
 }
 
 /// Print a table of projects: header row, separator, then one row per project.
@@ -793,6 +853,76 @@ mod tests {
         );
 
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Regression: found via a gap audit against `cli.py::_cmd_path`. A query that only
+    /// matches a project's *path* (not its name) must still resolve — Python has a rank-1
+    /// substring-of-path fallback tier; an earlier Rust version had no such tier at all.
+    #[test]
+    fn path_matches_via_path_substring_not_name() {
+        let dir = std::env::temp_dir().join("swab_rs_test_path_via_path");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let state_path = dir.join("projects.json");
+
+        let radar = test_radar(vec![
+            test_project("frontend", "/tmp/xyz/special-repo-name/frontend", StatusBucket::Active, false),
+            test_project("backend", "/tmp/xyz/other/backend", StatusBucket::Active, false),
+        ]);
+        write_fixture_radar(&state_path, radar);
+
+        let mut cap = Capture::new();
+        let code = cmd_path(&state_path, "special-repo-name", &mut cap).unwrap();
+        assert_eq!(code, 0, "a query matching only the path (not any project name) must still resolve");
+
+        let cap_str = cap.as_str();
+        assert_eq!(cap_str.trim(), "/tmp/xyz/special-repo-name/frontend");
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Regression: found via a gap audit. Name matching must be case-insensitive, matching
+    /// `cli.py::_cmd_path`'s `query.lower() in p.name.lower()`.
+    #[test]
+    fn path_name_match_is_case_insensitive() {
+        let dir = std::env::temp_dir().join("swab_rs_test_path_case_insensitive");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let state_path = dir.join("projects.json");
+
+        let radar = test_radar(vec![
+            test_project("MyProject", "/tmp/xyz/MyProject", StatusBucket::Active, false),
+        ]);
+        write_fixture_radar(&state_path, radar);
+
+        let mut cap = Capture::new();
+        let code = cmd_path(&state_path, "myproject", &mut cap).unwrap();
+        assert_eq!(code, 0);
+        assert_eq!(cap.as_str().trim(), "/tmp/xyz/MyProject");
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Regression: found via a gap audit that `cmd_config` had no test at all, and was
+    /// silently missing the per-field help line (`cli.py::_CONFIG_FIELD_HELP`) plus
+    /// rendering defaults with Rust `Debug` instead of TOML syntax. Locks in the exact
+    /// output shape byte-for-byte against a value confirmed identical to `swab config`'s
+    /// real output on this machine.
+    #[test]
+    fn config_output_matches_python_format() {
+        let mut cap = Capture::new();
+        let code = cmd_config(&mut cap).unwrap();
+        assert_eq!(code, 0);
+        let out = cap.as_str();
+
+        assert!(out.contains("  roots\n      Directories crawled for projects\n      default: [\"~/repos\", \"~/learning\"]\n"));
+        assert!(out.contains("  bucket_thresholds\n      Hour cutoffs for the active/in_flight/stale/cold status buckets\n      default: {active = 48.0, in_flight = 336.0, stale = 1440.0}\n"));
+        assert!(out.contains("  category_overrides\n      {path_glob_or_pattern: category_label} manual recategorisation\n      default: {}\n"));
+        assert!(out.contains("  max_depth\n      How deep the crawl descends into roots before giving up on a subtree\n      default: 4\n"));
+        assert!(
+            out.contains("ignore_dirs\n      Directory basenames hard-skipped during crawl\n      default: [\".Trash\""),
+            "ignore_dirs (a HashSet) must render sorted, matching Python's frozenset->sorted() branch"
+        );
     }
 
     // ── Tests 7..8: Doctor ──────────────────────────────────────────────
