@@ -29,6 +29,20 @@ from petridish.schema import HOOK_MARKER
 
 PLIST_LABEL = "com.petridish.daemon"
 
+#: Default filename for the menubar xbar/SwiftBar plugin. Matches the name of
+#: the template in ``resources/petridish_menubar.30s.py``.
+DEFAULT_MENUBAR_PLUGIN_FILENAME = "petridish_menubar.30s.py"
+
+def default_menubar_plugins_dir(home: Path) -> Path:
+    """xbar's real default plugin directory on macOS, anchored on `home`.
+
+    SwiftBar's directory is user-configured and cannot be guessed, so xbar's
+    default is the right fallback. Takes `home` explicitly (never reads
+    `Path.home()` itself) so it stays testable like every other path in this
+    module.
+    """
+    return home / "Library" / "Application Support" / "xbar" / "plugins"
+
 #: Events the hook is registered on: PreToolUse for in-session liveness,
 #: Stop for turn-end. Both accept matcher-less hook groups in the real
 #: settings.json (verified against this machine's file).
@@ -285,6 +299,19 @@ def write_plist(plist_path: Path, content: str) -> None:
     plist_path.write_text(content, encoding="utf-8")
 
 
+def write_menubar_plugin(plugin_path: Path, content: str) -> None:
+    """Write a menubar plugin script to ``plugin_path`` and make it executable.
+
+    Unlike :func:`write_plist`, a plist is a data file that launchd reads
+    verbatim — it must never be +x. A menubar plugin script (xbar/SwiftBar)
+    is executed by an external interpreter and MUST be +x to run. Mode set
+    to ``0o755`` (rwxr-xr-x).
+    """
+    plugin_path.parent.mkdir(parents=True, exist_ok=True)
+    plugin_path.write_text(content, encoding="utf-8")
+    plugin_path.chmod(0o755)
+
+
 def _default_runner(args: list[str]) -> "subprocess.CompletedProcess[str]":
     return subprocess.run(
         args, capture_output=True, text=True, timeout=10, check=False
@@ -334,6 +361,7 @@ def install(
     launch_agents_dir: Path,
     uid: int,
     runner: Runner = _default_runner,
+    menubar_plugins_dir: Path | None = None,
 ) -> int:
     check_platform()
 
@@ -366,6 +394,14 @@ def install(
     load_job(plist_path, uid, runner)
     print(f"launchd job loaded: {plist_path}")
 
+    # Menubar plugin: always re-render/write on every install call.
+    if menubar_plugins_dir is not None:
+        plugin_filename = DEFAULT_MENUBAR_PLUGIN_FILENAME
+        plugin_path = menubar_plugins_dir / plugin_filename
+        content = render_menubar_plugin(python_executable=sys.executable)
+        write_menubar_plugin(plugin_path, content)
+        print(f"menubar plugin installed: {plugin_path}")
+
     return 0
 
 
@@ -376,6 +412,7 @@ def uninstall(
     launch_agents_dir: Path,
     uid: int,
     runner: Runner = _default_runner,
+    menubar_plugins_dir: Path | None = None,
 ) -> int:
     plist_path = launch_agents_dir / f"{PLIST_LABEL}.plist"
     unload_job(PLIST_LABEL, uid, runner)
@@ -392,6 +429,16 @@ def uninstall(
     else:
         print("no hook entries found in settings.json; nothing to remove")
 
+    # Menubar plugin: only remove if installed (file exists) at the given dir.
+    if menubar_plugins_dir is not None:
+        plugin_filename = DEFAULT_MENUBAR_PLUGIN_FILENAME
+        plugin_path = menubar_plugins_dir / plugin_filename
+        if plugin_path.exists():
+            plugin_path.unlink()
+            print(f"removed {plugin_path}")
+        else:
+            print("nothing to remove: menubar plugin not found at given directory")
+
     data_dir = home / ".petridish"
     backup_path = data_dir / "settings.json.backup"
     if backup_path.exists():
@@ -406,6 +453,24 @@ def main(argv: list[str] | None = None) -> int:
 
     parser = argparse.ArgumentParser(prog="petridish-installer")
     parser.add_argument("--uninstall", action="store_true")
+    parser.add_argument(
+        "--menubar-plugins-dir",
+        type=Path,
+        default=None,
+        help="Override the target directory for the menubar xbar/SwiftBar "
+             "plugin. When omitted, defaults to "
+             "~/Library/Application Support/xbar/plugins.",
+    )
+    # Boolean opt-out so users without xbar/SwiftBar can skip the plugin
+    # step without having to figure out the default directory layout.
+    parser.add_argument(
+        "--no-menubar-plugin",
+        action="store_true",
+        default=False,
+        dest="skip_menubar_plugin",
+        help="Skip installing the menubar plugin. Useful when xbar/SwiftBar "
+             "is not installed.",
+    )
     args = parser.parse_args(argv)
 
     home = Path.home()
@@ -413,15 +478,28 @@ def main(argv: list[str] | None = None) -> int:
     launch_agents_dir = home / "Library" / "LaunchAgents"
     uid = os.getuid()
 
+    # Menubar plugin directory resolution:
+    #   --skip-menubar-plugin → None (skip entirely)
+    #   --menubar-plugins-dir <p> → <p>
+    #   otherwise → default (xbar's real default plugins directory on macOS).
+    if args.skip_menubar_plugin:
+        menubar_plugins_dir: Path | None = None
+    elif args.menubar_plugins_dir is not None:
+        menubar_plugins_dir = args.menubar_plugins_dir
+    else:
+        menubar_plugins_dir = default_menubar_plugins_dir(home)
+
     try:
         if args.uninstall:
             return uninstall(
                 home=home, claude_dir=claude_dir,
                 launch_agents_dir=launch_agents_dir, uid=uid,
+                menubar_plugins_dir=menubar_plugins_dir,
             )
         return install(
             home=home, claude_dir=claude_dir,
             launch_agents_dir=launch_agents_dir, uid=uid,
+            menubar_plugins_dir=menubar_plugins_dir,
         )
     except InstallError as exc:
         print(f"error: {exc}", file=sys.stderr)

@@ -25,10 +25,12 @@ import pytest
 
 from petridish.schema import Project, Radar, read_json, utcnow, HOOK_MARKER
 from petridish.installer import (
+    DEFAULT_MENUBAR_PLUGIN_FILENAME,
     InstallError,
     add_hook_entries,
     backup_settings,
     check_platform,
+    default_menubar_plugins_dir,
     ensure_data_dir,
     has_marker,
     install,
@@ -42,6 +44,7 @@ from petridish.installer import (
     uninstall,
     unload_job,
     write_default_config,
+    write_menubar_plugin,
     write_settings_atomic,
 )
 from petridish.menubar import render_menubar
@@ -573,3 +576,139 @@ def test_plugin_stdout_matches_render_menubar_directly(tmp_path, monkeypatch):
         f"expected: {expected!r}\n"
         f"got:      {plugin_result.stdout!r}"
     )
+
+
+# ---------------------------------------------------------------------------
+# Menubar plugin: write, install, uninstall integration
+# ---------------------------------------------------------------------------
+
+
+def test_write_menubar_plugin_writes_executable_file(tmp_path):
+    """write_menubar_plugin: creates the file, writes the content, chmods +x."""
+    target = tmp_path / "test_plugin.30s.py"
+    content = "#!/usr/bin/env python3\nprint('hi')"
+
+    write_menubar_plugin(target, content)
+
+    assert target.exists()
+    assert target.read_text(encoding="utf-8") == content
+    assert os.access(target, os.X_OK)
+
+
+def test_install_with_menubar_plugins_dir_writes_plugin(tmp_path, monkeypatch):
+    """install(..., menubar_plugins_dir=...) writes the plugin file."""
+    monkeypatch.setattr(sys, "platform", "darwin")
+
+    home, claude_dir, launch_agents_dir = _installed_fixture(tmp_path, monkeypatch)
+
+    plugin_dir = tmp_path / "menubar" / "plugins"
+    rc = install(
+        home=home, claude_dir=claude_dir, launch_agents_dir=launch_agents_dir,
+        uid=501, runner=_recording_runner([]), menubar_plugins_dir=plugin_dir,
+    )
+
+    assert rc == 0
+    plugin_file = plugin_dir / DEFAULT_MENUBAR_PLUGIN_FILENAME
+    assert plugin_file.exists()
+    assert os.access(plugin_file, os.X_OK)
+    first_line = plugin_file.read_text(encoding="utf-8").splitlines()[0]
+    assert first_line.startswith("#!")
+    # The shebang must use sys.executable so the plugin is runnable as-is.
+    assert sys.executable in first_line
+
+
+def test_install_without_menubar_plugins_dir_skips_it(tmp_path, monkeypatch):
+    """Omitting menubar_plugins_dir (the default=None path) must skip the plugin
+    entirely. The (tmp_path-scoped) default xbar path must not be created as
+    a side-effect."""
+    monkeypatch.setattr(sys, "platform", "darwin")
+
+    home, claude_dir, launch_agents_dir = _installed_fixture(tmp_path, monkeypatch)
+
+    rc = install(
+        home=home, claude_dir=claude_dir,
+        launch_agents_dir=launch_agents_dir, uid=501, runner=_recording_runner([]),
+    )
+
+    assert rc == 0
+    # The default xbar path (anchored on the fake `home`, never the real
+    # machine's) must not have been created by install() when the caller
+    # omitted menubar_plugins_dir.
+    assert not default_menubar_plugins_dir(home).exists()
+
+
+def test_default_menubar_plugins_dir_is_xbar_path(tmp_path):
+    home = tmp_path / "home"
+    assert default_menubar_plugins_dir(home) == home / "Library" / "Application Support" / "xbar" / "plugins"
+
+
+def test_uninstall_with_menubar_plugins_dir_removes_plugin(tmp_path, monkeypatch):
+    """install with menubar_plugins_dir, then uninstall with the same dir:
+    plugin file is gone afterward."""
+    monkeypatch.setattr(sys, "platform", "darwin")
+
+    home, claude_dir, launch_agents_dir = _installed_fixture(tmp_path, monkeypatch)
+
+    plugin_dir = tmp_path / "menubar" / "plugins"
+    install(
+        home=home, claude_dir=claude_dir, launch_agents_dir=launch_agents_dir,
+        uid=501, runner=_recording_runner([]), menubar_plugins_dir=plugin_dir,
+    )
+
+    assert (plugin_dir / DEFAULT_MENUBAR_PLUGIN_FILENAME).exists()
+
+    rc = uninstall(
+        home=home, claude_dir=claude_dir, launch_agents_dir=launch_agents_dir,
+        uid=501, runner=_recording_runner([]), menubar_plugins_dir=plugin_dir,
+    )
+
+    assert rc == 0
+    assert not (plugin_dir / DEFAULT_MENUBAR_PLUGIN_FILENAME).exists()
+
+
+def test_uninstall_menubar_plugin_missing_is_a_noop(tmp_path, monkeypatch):
+    """uninstall with a menubar_plugins_dir where the plugin never existed
+    is a no-op: returns 0, no exception."""
+    monkeypatch.setattr(sys, "platform", "darwin")
+
+    home, claude_dir, launch_agents_dir = _installed_fixture(tmp_path, monkeypatch)
+
+    empty_dir = tmp_path / "empty" / "plugins"
+    empty_dir.mkdir(parents=True)
+
+    rc = uninstall(
+        home=home, claude_dir=claude_dir, launch_agents_dir=launch_agents_dir,
+        uid=501, runner=_recording_runner([]), menubar_plugins_dir=empty_dir,
+    )
+
+    assert rc == 0
+
+
+# ---------------------------------------------------------------------------
+# Backward-compat: existing install/uninstall calls (no new menubar param)
+# ---------------------------------------------------------------------------
+
+
+def test_existing_call_sites_still_work_without_menubar_param(
+    tmp_path, monkeypatch,
+):
+    """None of the existing test call sites pass menubar_plugins_dir. These
+    must continue to return 0 and leave no menubar plugin artifacts."""
+    monkeypatch.setattr(sys, "platform", "darwin")
+
+    home, claude_dir, launch_agents_dir = _installed_fixture(tmp_path, monkeypatch)
+
+    calls: list = []
+    runner = _recording_runner(calls)
+
+    rc_install = install(
+        home=home, claude_dir=claude_dir,
+        launch_agents_dir=launch_agents_dir, uid=501, runner=runner,
+    )
+    assert rc_install == 0
+
+    rc_uninstall = uninstall(
+        home=home, claude_dir=claude_dir,
+        launch_agents_dir=launch_agents_dir, uid=501, runner=runner,
+    )
+    assert rc_uninstall == 0
