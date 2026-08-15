@@ -7,10 +7,10 @@ activity, and aggregates into `~/.petridish/projects.json`.
 
 Two separate pieces, two separate toolchains:
 
-**`swab` / `swab-hook`** (the scanner) are Rust, built from `swab-rs/`:
+**`swab` / `swab-hook`** (the scanner) are Rust, built from `swab/`:
 
 ```sh
-cargo install --path swab-rs
+cargo install --path swab
 ```
 
 This puts `swab` and `swab-hook` on `~/.cargo/bin` (verify it's on `PATH`). Verify:
@@ -51,7 +51,7 @@ Both the install and the launchd/hook step are idempotent — running `install.s
 (the second run detects the hook marker and the launchd label already loaded, and changes
 nothing). One caveat: the plist file itself is always rewritten with the current `swab` path, but
 `launchd` won't pick up that change on an already-loaded label — if `swab`'s absolute path
-changes (e.g. after `cargo install --path swab-rs` relocates it), run
+changes (e.g. after `cargo install --path swab` relocates it), run
 `./install.sh --uninstall && ./install.sh` rather than just `./install.sh` again.
 
 ### Uninstall semantics
@@ -88,7 +88,7 @@ cold       old-experiment   idle                   main
 ## Config
 
 `~/.petridish/config.toml` — entirely optional; every field has a default. Run
-`swab config` for the full field reference (sourced from `swab-rs/src/config.rs`'s own
+`swab config` for the full field reference (sourced from `swab/src/config.rs`'s own
 `Config::default()`, so it can't drift out of sync with the code) and an example.
 `install.sh` writes a commented-out template there on first install (see
 `DEFAULT_CONFIG_TOML` in `src/petridish/installer.py`).

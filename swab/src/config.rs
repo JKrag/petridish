@@ -299,7 +299,7 @@ mod tests {
 
     /// Test helper: write `contents` to a temp file and return the path.
     fn with_tmp(name: &str, contents: &str) -> std::path::PathBuf {
-        let dir = std::env::temp_dir().join("swab_rs_test_config");
+        let dir = std::env::temp_dir().join("swab_test_config");
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join(name);
         let mut f = std::fs::File::create(&path).unwrap();

@@ -68,7 +68,7 @@ def filter_projects(
 def format_row(project: Project) -> list[str]:
     """Produce the four TUI columns for one project.
 
-    Mirrors `swab-rs`'s `_print_table` row-building logic (`swab-rs/src/cli.rs`) — the agent
+    Mirrors `swab`'s `_print_table` row-building logic (`swab/src/cli.rs`) — the agent
     label and the dirty marker come from exactly the same expressions:
 
     * ``[name, agent_label, branch_or_dash, dirty_marker]``

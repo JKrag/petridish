@@ -406,7 +406,7 @@ mod tests {
     impl Tmp {
         fn new(suffix: &str) -> Self {
             let path = std::env::temp_dir()
-                .join(format!("swab_rs_scan_test_{suffix}"));
+                .join(format!("swab_scan_test_{suffix}"));
             let _ = std::fs::remove_dir_all(&path);
             std::fs::create_dir_all(&path).expect("mktemp");
             Self { path }
@@ -547,7 +547,7 @@ mod tests {
     #[test]
     fn run_scan_returns_one_project_for_a_single_repo_with_no_agent_activity() {
         let fixture = Tmp::new("basic");
-        // Real git repo at `<tmp>/swab_rs_scan_test_basic/repo` — configured root. A bare
+        // Real git repo at `<tmp>/swab_scan_test_basic/repo` — configured root. A bare
         // `mkdir .git` is NOT sufficient: `git rev-parse --git-dir` (what git::scan actually
         // calls) requires a real repo structure (HEAD, objects/, refs/) and fails outright on
         // an empty `.git` directory -- confirmed empirically. discovery::is_project only checks
@@ -761,7 +761,7 @@ mod tests {
 
         // Transcript points at an OUTSIDE dir — not under fixture.path.
         let outside = std::env::temp_dir()
-            .join(format!("swab_rs_outside_{uuid}", uuid = unique_suffix()));
+            .join(format!("swab_outside_{uuid}", uuid = unique_suffix()));
         std::fs::create_dir_all(&outside).expect("mkdir outside");
 
         let projects_dir = fixture.path.join(".claude/projects");

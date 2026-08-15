@@ -279,7 +279,7 @@ mod tests {
     ];
 
     fn make_tmp_dir(name: &str) -> PathBuf {
-        let tmp = std::env::temp_dir().join("swab_rs_git_test").join(name);
+        let tmp = std::env::temp_dir().join("swab_git_test").join(name);
         let _ = fs::remove_dir_all(&tmp);
         fs::create_dir_all(&tmp).expect("mktemp");
         tmp
@@ -644,6 +644,6 @@ mod tests {
 
     #[test]
     fn scan_nonexistent_path_does_not_panic() {
-        scan(Path::new("/swab_rs_no_such_dir_xyzzy99"), &[], "3 years");
+        scan(Path::new("/swab_no_such_dir_xyzzy99"), &[], "3 years");
     }
 }

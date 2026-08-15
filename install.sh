@@ -10,7 +10,7 @@
 # a shim's own interpreter instead.
 #
 # That shim used to be `swab` itself, back when it was a Python console
-# script. Now `swab`/`swab-hook` are the Rust binaries (swab-rs/) that fully
+# script. Now `swab`/`swab-hook` are the Rust binaries (swab/) that fully
 # replaced src/petridish/{cli,hook}.py — they're not Python at all, so their
 # own realpath can't point at a venv's python3 anymore. `petri` (the TUI,
 # still Python, still installed the same `uv tool install --editable .` way)
@@ -21,7 +21,7 @@ set -euo pipefail
 
 if ! command -v swab >/dev/null 2>&1 || ! command -v swab-hook >/dev/null 2>&1; then
     echo "error: 'swab'/'swab-hook' not found on PATH. Build and install them first:" >&2
-    echo "  cargo install --path swab-rs" >&2
+    echo "  cargo install --path swab" >&2
     exit 1
 fi
 

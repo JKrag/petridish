@@ -1,18 +1,18 @@
 #!/usr/bin/env bash
-# The differential oracle: runs Python swab and Rust swab-rs against the same fixture
+# The differential oracle: runs Python swab and Rust swab against the same fixture
 # $HOME and diffs their projects.json output (nondeterministic fields masked). This is the
-# correctness gate the AFK loop's verify commands build toward — see swab-rs/README or
+# correctness gate the AFK loop's verify commands build toward — see swab/README or
 # .afk/program-rustport.md for how each module's verify step uses it.
 #
-# Usage: swab-rs/scripts/diff_check.sh [fixture-dir]
+# Usage: swab/scripts/diff_check.sh [fixture-dir]
 # Exit 0 on match, 1 on mismatch or a runtime error from either side.
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
-SWAB_RS_DIR="$REPO_ROOT/swab-rs"
+SWAB_DIR="$REPO_ROOT/swab"
 
-FIXTURE_ROOT="${1:-${TMPDIR:-/tmp}/swab-rs-fixture-$$}"
+FIXTURE_ROOT="${1:-${TMPDIR:-/tmp}/swab-fixture-$$}"
 rm -rf "$FIXTURE_ROOT"
 mkdir -p "$FIXTURE_ROOT"
 
@@ -38,7 +38,7 @@ if [ -f "$EVENTS_BACKUP" ]; then
   cp "$EVENTS_BACKUP" "$EVENTS_FILE"
 fi
 
-echo "Building swab-rs (debug) ..." >&2
+echo "Building swab (debug) ..." >&2
 if command -v cargo >/dev/null 2>&1; then
   CARGO_BIN=cargo
 elif [ -x "$HOME/.rustup/toolchains/stable-aarch64-apple-darwin/bin/cargo" ]; then
@@ -48,10 +48,10 @@ else
   exit 1
 fi
 
-( cd "$SWAB_RS_DIR" && "$CARGO_BIN" build --bin swab-rs >&2 )
+( cd "$SWAB_DIR" && "$CARGO_BIN" build --bin swab >&2 )
 
-echo "Running Rust swab-rs scan ..." >&2
-HOME="$FIXTURE_HOME" "$SWAB_RS_DIR/target/debug/swab-rs" scan --state "$RS_OUT" >&2
+echo "Running Rust swab scan ..." >&2
+HOME="$FIXTURE_HOME" "$SWAB_DIR/target/debug/swab" scan --state "$RS_OUT" >&2
 
 echo "Comparing output ..." >&2
 python3 "$SCRIPT_DIR/compare_radar.py" "$PY_OUT" "$RS_OUT"

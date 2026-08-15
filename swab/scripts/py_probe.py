@@ -4,7 +4,7 @@
 Used by parity_check.sh as the external oracle for modules R2-R7, where the aggregator
 (R8) isn't wired up yet so diff_check.sh's full-scan comparison can't run. Each subcommand
 reads one JSON object of arguments from stdin and prints one JSON result to stdout — the
-Rust side (swab-rs/examples/probe.rs) implements the identical argv/stdin/stdout contract
+Rust side (swab/examples/probe.rs) implements the identical argv/stdin/stdout contract
 so parity_check.sh can run both and diff the output.
 
 Usage: py_probe.py <function> < args.json

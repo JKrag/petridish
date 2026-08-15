@@ -19,7 +19,7 @@ ARGS_JSON="$2"
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
-SWAB_RS_DIR="$REPO_ROOT/swab-rs"
+SWAB_DIR="$REPO_ROOT/swab"
 
 if command -v cargo >/dev/null 2>&1; then
   CARGO_BIN=cargo
@@ -54,8 +54,8 @@ if [ -n "$MUTATED_PATH" ] && [ -f "$TMP_DIR/events_backup.ndjson" ]; then
   cp "$TMP_DIR/events_backup.ndjson" "$MUTATED_PATH"
 fi
 
-( cd "$SWAB_RS_DIR" && "$CARGO_BIN" build --example probe --quiet )
-echo "$ARGS_JSON" | "$SWAB_RS_DIR/target/debug/examples/probe" "$FUNCTION" > "$RS_OUT"
+( cd "$SWAB_DIR" && "$CARGO_BIN" build --example probe --quiet )
+echo "$ARGS_JSON" | "$SWAB_DIR/target/debug/examples/probe" "$FUNCTION" > "$RS_OUT"
 
 # Canonicalize (sorted keys) before comparing — HashMap-backed Rust output has no
 # guaranteed key order, and dict order isn't semantically meaningful here either.

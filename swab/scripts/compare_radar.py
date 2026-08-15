@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Structural, field-masked diff of two projects.json-shaped files.
 
-Used by diff_check.sh to compare Python swab's and Rust swab-rs's output for the same
+Used by diff_check.sh to compare Python swab's and Rust swab's output for the same
 fixture $HOME. Ignores key order (both are parsed to Python objects, not text-diffed) and
 masks fields that are legitimately nondeterministic between two separate runs/processes:
 `updated_at`, `scan_duration_ms`, and any field literally named `*mtime*`.

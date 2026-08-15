@@ -8,7 +8,7 @@ Implementation details belong in `ARCHITECTURE.md` / `DESIGN.md`, not here.
 Two separate console scripts, both installed by the `petridish` package, with
 different jobs:
 
-- **`swab`** — the scanner/CLI (Rust, `swab-rs/`). Runs the crawl, writes `projects.json`
+- **`swab`** — the scanner/CLI (Rust, `swab/`). Runs the crawl, writes `projects.json`
   (`swab scan`), and exposes non-interactive inspection commands (`list`,
   `path`, `doctor`, `config`). Named for "swabbing the environment for
   life" — the sensing side of the metaphor.
@@ -23,7 +23,7 @@ it; that merge is explicitly out of scope until/unless revisited.
 
 ## Status buckets
 
-`active` / `in_flight` / `stale` / `cold` — see `swab-rs/src/schema.rs`'s
+`active` / `in_flight` / `stale` / `cold` — see `swab/src/schema.rs`'s
 `StatusBucket` (or Python `schema.py`'s `STATUS_BUCKETS` on the read side) and
 `ARCHITECTURE.md` §4 for the time thresholds. Every frontend (CLI table, `petri`'s grouped
 sections) organizes primarily by this axis.

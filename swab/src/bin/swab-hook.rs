@@ -31,13 +31,13 @@ pub fn run_hook(input: HookInput, events_path: &std::path::Path) -> io::Result<(
         _ => return Ok(()),
     };
 
-    let event = swab_rs::events::RawHookEvent {
+    let event = swab::events::RawHookEvent {
         cwd,
         session_id: input.session_id,
         event: input.event,
     };
 
-    swab_rs::events::append_event(events_path, &event)?;
+    swab::events::append_event(events_path, &event)?;
     Ok(())
 }
 
@@ -47,7 +47,7 @@ pub fn run_hook(input: HookInput, events_path: &std::path::Path) -> io::Result<(
 /// `main()`. This function returns an exit code (never `None`), but can be `panic!`-safe
 /// via the wrapper around it.
 pub fn handle_hook_input(stdin: &str) -> i32 {
-    let events_path = swab_rs::events::events_path();
+    let events_path = swab::events::events_path();
 
     // If parsing fails for any reason (empty stdin, malformed JSON, wrong shape): exit 0
     // immediately, do nothing else. Mirrors hook.py's `try/except BaseException: return 0`.
@@ -127,7 +127,7 @@ mod hook_tests {
     impl TempEventsFile {
         fn new(override_path: Option<&std::path::Path>) -> Self {
             let dir = std::env::temp_dir().join(format!(
-                "swab_rs_hook_test_{}",
+                "swab_hook_test_{}",
                 std::process::id()
             ));
             let _ = std::fs::create_dir_all(&dir); // best-effort
@@ -163,7 +163,7 @@ mod hook_tests {
         let code = run_hook_in_test(input, None);
         assert_eq!(code, 0, "valid input must exit 0");
 
-        let path = swab_rs::events::events_path();
+        let path = swab::events::events_path();
         let content = std::fs::read_to_string(&path).unwrap_or_default();
         let lines: Vec<_> = content.split('\n').filter(|l| !l.is_empty()).collect();
         assert_eq!(lines.len(), 1, "one line appended: {content:?}");
@@ -183,7 +183,7 @@ mod hook_tests {
         let code = run_hook_in_test("not valid json {{{", None);
         assert_eq!(code, 0, "must exit 0 on malformed JSON");
 
-        let path = swab_rs::events::events_path();
+        let path = swab::events::events_path();
         let content = std::fs::read_to_string(&path).unwrap_or_default();
         let lines: Vec<_> = content.split('\n').filter(|l| !l.is_empty()).collect();
         assert_eq!(
@@ -200,7 +200,7 @@ mod hook_tests {
         let code = run_hook_in_test("", None);
         assert_eq!(code, 0, "must exit 0 on empty stdin");
 
-        let path = swab_rs::events::events_path();
+        let path = swab::events::events_path();
         let content = std::fs::read_to_string(&path).unwrap_or_default();
         let lines: Vec<_> = content.split('\n').filter(|l| !l.is_empty()).collect();
         assert_eq!(lines.len(), 0, "no line appended on empty stdin");
@@ -215,7 +215,7 @@ mod hook_tests {
         let code = run_hook_in_test(input, None);
         assert_eq!(code, 0);
 
-        let path = swab_rs::events::events_path();
+        let path = swab::events::events_path();
         let content = std::fs::read_to_string(&path).unwrap_or_default();
         let record: serde_json::Value = serde_json::from_str(content.trim()).expect("valid JSON");
         assert_eq!(record["session_id"], "camel-sess", "camelCase must be picked up");
@@ -230,7 +230,7 @@ mod hook_tests {
         let code = run_hook_in_test(input, None);
         assert_eq!(code, 0, "must exit 0 on missing cwd");
 
-        let path = swab_rs::events::events_path();
+        let path = swab::events::events_path();
         let content = std::fs::read_to_string(&path).unwrap_or_default();
         let lines: Vec<_> = content.split('\n').filter(|l| !l.is_empty()).collect();
         assert_eq!(lines.len(), 0, "event dropped when cwd missing: {content:?}");
@@ -246,7 +246,7 @@ mod hook_tests {
         let code = run_hook_in_test(input, None);
         assert_eq!(code, 0);
 
-        let path = swab_rs::events::events_path();
+        let path = swab::events::events_path();
         let content = std::fs::read_to_string(&path).unwrap_or_default();
         let record: serde_json::Value = serde_json::from_str(content.trim()).expect("valid JSON");
         assert_eq!(record["cwd"], "/tmp/proj");
@@ -291,7 +291,7 @@ mod hook_tests {
             session_id: Some("sess-direct".into()),
             event: Some("prompt".into()),
         };
-        let events_path = swab_rs::events::events_path();
+        let events_path = swab::events::events_path();
         let result = run_hook(input, &events_path);
         assert!(result.is_ok(), "run_hook must succeed: {:?}", result);
 
@@ -307,7 +307,7 @@ mod hook_tests {
     #[test]
     fn run_hook_drops_empty_cwd() {
         let _guard = TempEventsFile::new(None);
-        let events_path = swab_rs::events::events_path();
+        let events_path = swab::events::events_path();
         let result = run_hook(
             HookInput {
                 cwd: Some("".into()),

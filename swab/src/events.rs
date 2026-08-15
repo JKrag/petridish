@@ -225,12 +225,12 @@ mod tests {
 
     /// Test helper: write `contents` to a unique temp file and return the path.
     /// Each call gets its own subdir, so concurrent tests don't clobber one
-    /// another's state via the shared `~/.tmp/swab_rs_test_events/*` layout.
+    /// another's state via the shared `~/.tmp/swab_test_events/*` layout.
     fn with_tmp(name: &str, contents: &str) -> PathBuf {
         use std::sync::atomic::{AtomicU64, Ordering};
         static CTR: AtomicU64 = AtomicU64::new(0);
         let id = CTR.fetch_add(1, Ordering::Relaxed);
-        let dir = std::env::temp_dir().join(format!("swab_rs_test_events_{id}"));
+        let dir = std::env::temp_dir().join(format!("swab_test_events_{id}"));
         std::fs::create_dir_all(&dir).unwrap_or_else(|_| {
             // Another thread may have created it first; that's fine.
         });

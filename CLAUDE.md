@@ -5,14 +5,14 @@ activity, and aggregates into `~/.petridish/projects.json`.
 
 **Two languages, split by role — not a partial migration, a deliberate split:**
 
-- **`swab-rs/`** (Rust) is the scanner: everything that *writes* `projects.json`. Binaries
+- **`swab/`** (Rust) is the scanner: everything that *writes* `projects.json`. Binaries
   `swab` (CLI: `scan`/`list`/`path`/`doctor`/`config`) and `swab-hook` (fast hook path,
   appends to `events.ndjson`). This fully replaced the original Python scanner
   (`src/petridish/{cli,config,discovery,git,events,scan,hook}.py` +
   `sensors/{claude,copilot,quota}.py`, all deleted) after a from-scratch port proved
-  field-equivalent (`swab-rs/scripts/diff_check.sh`) and then measurably faster (gix
+  field-equivalent (`swab/scripts/diff_check.sh`) and then measurably faster (gix
   in-process git access beats both a CLI-subprocess and a git2/libgit2 backend on real
-  benchmarks — see `swab-rs/src/git.rs`'s module doc comment for the full history).
+  benchmarks — see `swab/src/git.rs`'s module doc comment for the full history).
 - **`src/petridish/`** (Python) is now read-side only: `schema.py` is the shared contract
   every frontend parses `projects.json` through (`Radar`/`Project` dataclasses,
   `read_json`), `tui.py`/`tui_state.py`/`screens.py` are the `petri` dashboard,
@@ -27,23 +27,23 @@ historical record) for everything still true regardless of implementation.
 
 ## Stack & layout
 
-- **`swab-rs/`**: Rust, `gix` (pure-Rust git, no libgit2/C dependency) + `clap` + `serde` +
-  `chrono` + `regex` + `toml`. Source in `swab-rs/src/`, sensors in
-  `swab-rs/src/sensors/`, tests inline (`#[cfg(test)] mod tests`) in each module. Verified
-  via `cargo test` plus `swab-rs/scripts/diff_check.sh` (a differential oracle — no longer
+- **`swab/`**: Rust, `gix` (pure-Rust git, no libgit2/C dependency) + `clap` + `serde` +
+  `chrono` + `regex` + `toml`. Source in `swab/src/`, sensors in
+  `swab/src/sensors/`, tests inline (`#[cfg(test)] mod tests`) in each module. Verified
+  via `cargo test` plus `swab/scripts/diff_check.sh` (a differential oracle — no longer
   has a Python scanner to diff against, so treat its fixture-based golden comparisons and
   real regression tests as the correctness bar instead).
 - **`src/petridish/`**: Python 3.12+, stdlib only, for everything that remains here.
   `pytest` is the sole dev dependency. Do not add runtime dependencies to this side — the
   zero-deps constraint is what keeps the TUI/menubar/installer trivially verifiable with no
-  env setup. (This constraint never applied to `swab-rs/` — Rust dependencies there are
-  fine, pinned in `swab-rs/Cargo.toml`.)
-- Tests in `tests/` (Python, pytest) and `swab-rs/src/**/*.rs` (Rust, inline `#[test]`).
+  env setup. (This constraint never applied to `swab/` — Rust dependencies there are
+  fine, pinned in `swab/Cargo.toml`.)
+- Tests in `tests/` (Python, pytest) and `swab/src/**/*.rs` (Rust, inline `#[test]`).
 
 ## Non-negotiable invariants
 
 These encode findings verified on the real machine. Violating one produces code that passes
-tests and is still wrong. Invariants 1-5 apply to `swab-rs/`, the only thing still writing
+tests and is still wrong. Invariants 1-5 apply to `swab/`, the only thing still writing
 `projects.json`; invariant 6 has been superseded (see note).
 
 1. **Single writer.** Only `swab scan` writes `projects.json`, via temp-file + atomic
@@ -58,7 +58,7 @@ tests and is still wrong. Invariants 1-5 apply to `swab-rs/`, the only thing sti
 5. **Sensors degrade, never abort.** A failing sensor yields `null` fields; the tick still
    writes a complete file.
 6. ~~**`git` calls use `subprocess.run` with `check=False` and a 5s timeout.**~~ Superseded:
-   `swab-rs/src/git.rs` now calls `gix` in-process (no subprocess, no timeout construct) for
+   `swab/src/git.rs` now calls `gix` in-process (no subprocess, no timeout construct) for
    everything except nothing — there's no CLI fallback left at all. The invariant this
    protected still holds in spirit: a git failure degrades to `GitState { is_repo: false,
    .. }`, never a panic or an exception, enforced by `gix::open`'s `Result` and `?`-free
@@ -66,10 +66,10 @@ tests and is still wrong. Invariants 1-5 apply to `swab-rs/`, the only thing sti
 
 ## Testing
 
-**Rust (`swab-rs/`)**: real fixtures, not mocks — `git init` actual repos in tmpdirs with
+**Rust (`swab/`)**: real fixtures, not mocks — `git init` actual repos in tmpdirs with
 pinned author/date env vars, real fixture transcript files, cross-verified against the real
 `git` CLI's own porcelain output where behavior is subtle (see `git.rs`'s status-parity
-regression tests). `cargo test -- --test-threads=1` from `swab-rs/` must exit 0 (parallel
+regression tests). `cargo test -- --test-threads=1` from `swab/` must exit 0 (parallel
 test threads currently share `HOME` env-var mutation across some Python-side fixture tests
 only — not a Rust issue, but run single-threaded out of habit if in doubt).
 

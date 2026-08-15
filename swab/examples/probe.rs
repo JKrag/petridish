@@ -1,6 +1,6 @@
 //! Per-function ground-truth probe — the Rust half of parity_check.sh's oracle.
 //!
-//! Mirrors `swab-rs/scripts/py_probe.py` subcommand-for-subcommand: reads one JSON object
+//! Mirrors `swab/scripts/py_probe.py` subcommand-for-subcommand: reads one JSON object
 //! of arguments from stdin, prints one JSON result to stdout. Exists so modules R2-R7 have
 //! an external (Python-backed) correctness gate before the full aggregator (R8) makes
 //! `diff_check.sh`'s whole-scan comparison possible. Do not add subcommands here without
@@ -10,8 +10,8 @@ use serde_json::{json, Value};
 use std::collections::{HashMap, HashSet};
 use std::io::Read;
 use std::path::PathBuf;
-use swab_rs::config::Config;
-use swab_rs::{discovery, events, git, schema, sensors};
+use swab::config::Config;
+use swab::{discovery, events, git, schema, sensors};
 
 fn read_stdin_json() -> Value {
     let mut buf = String::new();

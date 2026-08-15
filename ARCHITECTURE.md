@@ -2,13 +2,13 @@
 
 Successor to `docs/archive/IMPLEMENTATION_PLAN.md` for everything in that document that's
 still true regardless of implementation language. That plan was written for an all-Python
-build; the scanner is now Rust (`swab-rs/`) and `petri` (the TUI) is slated for a Go or
+build; the scanner is now Rust (`swab/`) and `petri` (the TUI) is slated for a Go or
 Rust rewrite next. This document captures what any implementation — in any language — must
 honor: empirical findings about the real environment, the architecture and its
 single-writer invariant, the `projects.json` wire schema, the discovery/authorship-filter
 design, and forward-looking deferred work. Section numbers below intentionally mirror the
 archived plan's where the content survived unchanged, since several source files still
-reference specific sections by number (e.g. `swab-rs/src/discovery.rs`'s doc comments).
+reference specific sections by number (e.g. `swab/src/discovery.rs`'s doc comments).
 
 For current stack/invariants/testing conventions, see `CLAUDE.md`. For the original
 all-Python build history, see `docs/archive/IMPLEMENTATION_PLAN.md`.
@@ -186,7 +186,7 @@ onto the target. Readers therefore never observe a partial file and need no lock
 
 Not part of `projects.json`; it's the shape every sensor produces and the aggregator
 consumes. Illustrated below as field/type pairs, not tied to any language's syntax —
-`swab-rs`'s Rust sensors implement this same shape as a struct; a future reimplementation
+`swab`'s Rust sensors implement this same shape as a struct; a future reimplementation
 in any other language should too.
 
 ```
@@ -242,7 +242,7 @@ UI-framework calls), so the actual behavior is testable without driving a real t
 - **Row formatting:** same four columns and same agent-label / dirty-marker logic as
   `swab list`'s table (name, agent, branch, dirty marker). Don't duplicate that logic
   independently in two places if avoidable — share it with (or mirror it exactly against)
-  `swab-rs`'s `cli.rs`.
+  `swab`'s `cli.rs`.
 - **Detail panel:** path, branch, dirty file count, last commit time (and
   `mine_last_commit_at` if it differs), github url, agent state/active agent/session_id,
   last_activity_at.

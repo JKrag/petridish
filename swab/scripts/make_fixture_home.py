@@ -211,7 +211,7 @@ def build(root: Path) -> Path:
 
 
 if __name__ == "__main__":
-    target = Path(sys.argv[1]) if len(sys.argv) > 1 else Path(os.environ["TMPDIR"]) / "swab-rs-fixture"
+    target = Path(sys.argv[1]) if len(sys.argv) > 1 else Path(os.environ["TMPDIR"]) / "swab-fixture"
     if target.exists():
         import shutil
 

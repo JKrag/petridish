@@ -156,7 +156,7 @@ mod tests {
     impl Tmp {
         fn new(suffix: &str) -> Self {
             let path = std::env::temp_dir()
-                .join(format!("swab_rs_quota_test_{suffix}"));
+                .join(format!("swab_quota_test_{suffix}"));
             let _ = std::fs::remove_file(&path);
             Self { path }
         }

@@ -32,7 +32,7 @@ Repository = "https://github.com/JKrag/petridish"
 Issues = "https://github.com/JKrag/petridish/issues"
 
 # `swab`/`swab-hook` were Python entry points here until the scanner was fully
-# ported to Rust (`swab-rs/`, built via `cargo install --path swab-rs`) and
+# ported to Rust (`swab/`, built via `cargo install --path swab`) and
 # the Python originals (cli.py, hook.py, and everything they depended on —
 # config.py, discovery.py, git.py, events.py, scan.py, sensors/) were
 # deleted. `petri` (the TUI) stays Python — it only ever read `projects.json`

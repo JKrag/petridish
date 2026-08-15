@@ -26,7 +26,7 @@ SCHEMA_VERSION = 1
 
 #: `~/.petridish/` — the daemon's config/state directory. Shared across every
 #: frontend (the `petri` TUI, `menubar.py`, `installer.py`) and the Rust
-#: scanner (`swab-rs/`), which resolves the identical path independently on
+#: scanner (`swab/`), which resolves the identical path independently on
 #: its own side (`config::default_path()`).
 CONFIG_DIR = os.path.join(os.path.expanduser("~"), ".petridish")
 
@@ -254,7 +254,7 @@ class QuotaStateDict(TypedDict):
 class QuotaState:
     """Claude subscription usage, as last reported by Claude Code itself.
 
-    Sourced from ``~/.claude/last-status.json`` — see `swab-rs`'s
+    Sourced from ``~/.claude/last-status.json`` — see `swab`'s
     ``sensors::quota`` module. Account-global, not per-project: this
     belongs in a header, never in a project row.
 

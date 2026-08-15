@@ -1,5 +1,5 @@
-//! `swab` console entry point (the crate/directory is still named `swab-rs`, but this is
-//! the binary that fully replaced Python's `src/petridish/cli.py` — now deleted). Mirrors
+//! `swab` console entry point — the binary that fully replaced Python's
+//! `src/petridish/cli.py` (now deleted). Mirrors
 //! that module's `scan`/`list`/`path`/`doctor`/`config` subcommands (NOT `dash` — that
 //! pulled in TUI rendering code that stays Python, in `petridish.tui`).
 //!
@@ -669,7 +669,7 @@ mod tests {
     /// Test 1: `List` with a real fixture state file -> filtered/JSON output.
     #[test]
     fn list_with_real_fixture_state_file() {
-        let dir = std::env::temp_dir().join("swab_rs_test_list_basic");
+        let dir = std::env::temp_dir().join("swab_test_list_basic");
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         let state_path = dir.join("projects.json");
@@ -698,7 +698,7 @@ mod tests {
     /// Test 2: `List --bucket stale` -> only stale projects returned.
     #[test]
     fn list_bucket_filter() {
-        let dir = std::env::temp_dir().join("swab_rs_test_list_bucket");
+        let dir = std::env::temp_dir().join("swab_test_list_bucket");
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         let state_path = dir.join("projects.json");
@@ -726,7 +726,7 @@ mod tests {
     /// Test 3: `List` without `--all` excludes foreign projects.
     #[test]
     fn list_excludes_foreign_without_all() {
-        let dir = std::env::temp_dir().join("swab_rs_test_list_foreign");
+        let dir = std::env::temp_dir().join("swab_test_list_foreign");
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         let state_path = dir.join("projects.json");
@@ -763,7 +763,7 @@ mod tests {
     /// Test 4: `Path` with an exact-name match -> project.path printed.
     #[test]
     fn path_exact_name_match() {
-        let dir = std::env::temp_dir().join("swab_rs_test_path_exact");
+        let dir = std::env::temp_dir().join("swab_test_path_exact");
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         let state_path = dir.join("projects.json");
@@ -787,7 +787,7 @@ mod tests {
     /// Test 5: `Path` with a substring matching two projects -> most recent `last_activity_at` wins.
     #[test]
     fn path_substring_tiebreak_by_recency() {
-        let dir = std::env::temp_dir().join("swab_rs_test_path_substring");
+        let dir = std::env::temp_dir().join("swab_test_path_substring");
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         let state_path = dir.join("projects.json");
@@ -833,7 +833,7 @@ mod tests {
     /// Test 6: `Path` with no match -> non-zero exit, nothing on stdout.
     #[test]
     fn path_no_match() {
-        let dir = std::env::temp_dir().join("swab_rs_test_path_nomatch");
+        let dir = std::env::temp_dir().join("swab_test_path_nomatch");
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         let state_path = dir.join("projects.json");
@@ -861,7 +861,7 @@ mod tests {
     /// substring-of-path fallback tier; an earlier Rust version had no such tier at all.
     #[test]
     fn path_matches_via_path_substring_not_name() {
-        let dir = std::env::temp_dir().join("swab_rs_test_path_via_path");
+        let dir = std::env::temp_dir().join("swab_test_path_via_path");
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         let state_path = dir.join("projects.json");
@@ -886,7 +886,7 @@ mod tests {
     /// `cli.py::_cmd_path`'s `query.lower() in p.name.lower()`.
     #[test]
     fn path_name_match_is_case_insensitive() {
-        let dir = std::env::temp_dir().join("swab_rs_test_path_case_insensitive");
+        let dir = std::env::temp_dir().join("swab_test_path_case_insensitive");
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         let state_path = dir.join("projects.json");
@@ -932,7 +932,7 @@ mod tests {
     /// as failed, overall non-zero exit.
     #[test]
     fn doctor_with_broken_config() {
-        let dir = std::env::temp_dir().join("swab_rs_test_doctor_broken");
+        let dir = std::env::temp_dir().join("swab_test_doctor_broken");
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
 
@@ -971,7 +971,7 @@ mod tests {
         //   <dir>/.petridish/projects.json — fresh state
         //   <dir>/.claude/settings.json  — contains the HOOK_MARKER
         //   <dir>/repos                    — real directory (resolved from $HOME/repos)
-        let dir = std::env::temp_dir().join("swab_rs_test_doctor_healthy");
+        let dir = std::env::temp_dir().join("swab_test_doctor_healthy");
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::create_dir_all(dir.join(".petridish")).unwrap();
@@ -1020,7 +1020,7 @@ mod tests {
     /// Test 9: Daemon log rotation — a log file over 5MB gets truncated, a small one is untouched.
     #[test]
     fn daemon_log_rotation_over_threshold() {
-        let dir = std::env::temp_dir().join("swab_rs_test_rotate");
+        let dir = std::env::temp_dir().join("swab_test_rotate");
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
 
@@ -1061,7 +1061,7 @@ mod tests {
     // ── Test 10: daemon.log missing -> rotation is a no-op, never fails ─
     #[test]
     fn daemon_log_missing_no_op() {
-        let dir = std::env::temp_dir().join("swab_rs_test_rotate_missing");
+        let dir = std::env::temp_dir().join("swab_test_rotate_missing");
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
 

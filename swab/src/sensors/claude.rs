@@ -249,7 +249,7 @@ mod tests {
     }
     impl Tmp {
         fn new(suffix: &str) -> Self {
-            let path = std::env::temp_dir().join(format!("swab_rs_claude_sensor_{suffix}"));
+            let path = std::env::temp_dir().join(format!("swab_claude_sensor_{suffix}"));
             let _ = fs::remove_dir_all(&path);
             fs::create_dir_all(&path).expect("mktemp");
             Self { path }
