@@ -1,6 +1,7 @@
-//! `swab-rs` console entry point. Mirrors the `scan`/`list`/`path`/`doctor`/`config`
-//! subcommands of `src/petridish/cli.py` (NOT `dash` — that pulls in TUI rendering code
-//! that is explicitly out of scope for this port).
+//! `swab` console entry point (the crate/directory is still named `swab-rs`, but this is
+//! the binary that fully replaced Python's `src/petridish/cli.py` — now deleted). Mirrors
+//! that module's `scan`/`list`/`path`/`doctor`/`config` subcommands (NOT `dash` — that
+//! pulled in TUI rendering code that stays Python, in `petridish.tui`).
 //!
 //! Each subcommand is implemented as a standalone function (e.g. `fn cmd_scan`) that
 //! returns an exit code and writes to a caller-supplied `io::Write` sink. This makes the
@@ -11,7 +12,7 @@ use std::io::Write;
 use std::path::PathBuf;
 
 #[derive(Parser)]
-#[command(name = "swab-rs")]
+#[command(name = "swab")]
 pub struct Cli {
     /// Path to the state file (default: ~/.petridish/projects.json).
     #[arg(long, global = true)]
@@ -35,7 +36,7 @@ pub enum Command {
         #[arg(long)]
         json: bool,
     },
-    /// Resolve the best-matching project path by name/substring (enables `cd $(swab-rs path x)`).
+    /// Resolve the best-matching project path by name/substring (enables `cd $(swab path x)`).
     /// Tie-break by most recent last_activity_at.
     Path { query: String },
     /// Health checks: config loads, roots exist, state file present/fresh (<24h), hook
@@ -149,7 +150,7 @@ pub fn cmd_list(
     if !state_path.is_file() {
         let _ = writeln!(
             out,
-            "no state file at {}; run 'swab-rs scan' first",
+            "no state file at {}; run 'swab scan' first",
             state_path.display()
         );
         return Ok(1);
@@ -192,7 +193,7 @@ pub fn cmd_list(
 }
 
 /// `path`: resolve QUERY against the cached Radar's projects. Single-writer output:
-/// if a match is found, print only the project path (so `cd $(swab-rs path x)` works);
+/// if a match is found, print only the project path (so `cd $(swab path x)` works);
 /// if not, emit an error to *stderr-equivalent* sink and return 1.
 ///
 /// Priority: exact name match (if exactly one); else case-insensitive substring of name
@@ -208,7 +209,7 @@ pub fn cmd_path(
     if !state_path.is_file() {
         let _ = writeln!(
             out,
-            "no state file at {}; run 'swab-rs scan' first",
+            "no state file at {}; run 'swab scan' first",
             state_path.display()
         );
         return Ok(1);
@@ -582,7 +583,7 @@ pub fn main() {
     match result {
         Ok(code) => std::process::exit(code),
         Err(e) => {
-            let _ = writeln!(std::io::stderr(), "swab-rs: {e}");
+            let _ = writeln!(std::io::stderr(), "swab: {e}");
             std::process::exit(1);
         }
     }

@@ -1,12 +1,12 @@
 """petridish — local monitoring daemon for macOS.
 
-Crawls configured project roots, tracks git state and AI-agent activity, and
-aggregates into ``~/.petridish/projects.json``.
-
-Public surface is intentionally small: ``load_config`` in
-``petridish.config`` is the only entry point for the daemon core; everything else
-is consumed from ``petridish.scan``. The CLI and the hook are thin wrappers written
-in later modules (M8, M6).
+The scanner that crawls project roots, tracks git state and AI-agent activity, and writes
+``~/.petridish/projects.json`` is `swab-rs` (Rust, ``swab-rs/`` at the repo root) — see
+``swab-rs/src/git.rs``'s module doc comment for why (gix beats both a CLI-subprocess and a
+git2 backend on real measurements). This package is now the **read side** only: `petridish.schema`
+is the shared contract every frontend (`petri`, `menubar.py`) parses ``projects.json``
+through, and `petridish.installer` wires up the launchd job + Claude Code hook that invoke
+the Rust binaries.
 """
 
 __version__ = "0.1.0"

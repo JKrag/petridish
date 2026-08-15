@@ -6,7 +6,7 @@ use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 
 /// Literal marker string appended to hook `command` entries in `~/.claude/settings.json`;
-/// shared with `swab-rs doctor`'s hook-detection.
+/// shared with `swab doctor`'s hook-detection.
 pub const HOOK_MARKER: &str = "# petridish";
 
 #[derive(Debug, Clone, PartialEq)]
