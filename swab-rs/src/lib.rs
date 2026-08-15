@@ -3,6 +3,7 @@ pub mod config;
 pub mod discovery;
 pub mod events;
 pub mod git;
+pub mod git_gix;
 pub mod schema;
 pub mod scan;
 pub mod sensors;
