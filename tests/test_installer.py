@@ -16,12 +16,14 @@ from __future__ import annotations
 import json
 import os
 import stat
+import subprocess
 import sys
+import tempfile
 from pathlib import Path
 
 import pytest
 
-from petridish.schema import HOOK_MARKER
+from petridish.schema import Project, Radar, read_json, utcnow, HOOK_MARKER
 from petridish.installer import (
     InstallError,
     add_hook_entries,
@@ -33,6 +35,7 @@ from petridish.installer import (
     load_job,
     load_settings,
     remove_marker_entries,
+    render_menubar_plugin,
     render_plist,
     resolve_binary,
     serialize_settings,
@@ -41,6 +44,7 @@ from petridish.installer import (
     write_default_config,
     write_settings_atomic,
 )
+from petridish.menubar import render_menubar
 
 
 # ---------------------------------------------------------------------------
@@ -428,3 +432,144 @@ def test_uninstall_does_not_restore_from_backup_over_unrelated_edits(tmp_path, m
     final = json.loads(settings_path.read_text(encoding="utf-8"))
     assert final["hooks"]["SessionStart"][0]["hooks"][0]["command"] == "unrelated-new-tool-hook"
     assert not has_marker(final)
+
+
+# ---------------------------------------------------------------------------
+# Menubar plugin template (M10)
+# ---------------------------------------------------------------------------
+# Exercises the plugin-script template (resources/petridish_menubar.30s.py)
+# end-to-end: shebang substitution, missing-resource error, and two subprocess
+# "sensors degrade, never abort" paths against a real filesystem read.
+
+
+def _make_minimal_radar_json():
+    """Hand-write a valid minimal Radar JSON (no projects, no quota)."""
+    return Radar(
+        updated_at=utcnow(),
+        scan_duration_ms=0,
+        schema_version=1,
+    ).to_json(indent=2)
+
+
+def test_render_menubar_plugin_substitutes_shebang():
+    """__PYTHON_SHEBANG__ is replaced with python_executable and no XML escaping occurs."""
+    rendered = render_menubar_plugin(python_executable="/usr/bin/python3")
+
+    assert rendered.startswith("#!/usr/bin/python3")
+    assert "__PYTHON_SHEBANG__" not in rendered
+    # The template file isn't referenced by path — the substitution is on a
+    # placeholder, so verify the replacement happened correctly.
+    assert "petridish menu-bar plugin for xbar/SwiftBar." in rendered
+
+
+def test_render_menubar_plugin_missing_template_raises(tmp_path):
+    with pytest.raises(InstallError, match="template not found"):
+        render_menubar_plugin(
+            python_executable="/usr/bin/python3",
+            resources_dir=tmp_path / "nowhere",
+        )
+
+
+def _subprocess_plugin(tmp_path, monkeypatch, fake_home: Path):
+    """Helper that writes a rendered plugin script to a temp file, makes it
+    executable, and runs it as a subprocess. Returns the CompletedProcess."""
+    import shutil
+
+    python_executable = sys.executable
+    rendered = render_menubar_plugin(python_executable=python_executable)
+
+    script_path = tmp_path / "petridish_menubar.30s.py"
+    script_path.write_text(rendered, encoding="utf-8")
+    script_path.chmod(script_path.stat().st_mode | stat.S_IEXEC)
+
+    # The rendered script imports petridish.schema, so set PYTHONPATH so the
+    # import resolves in the subprocess. Use an absolute path for the src dir.
+    src_dir = Path(__file__).resolve().parent.parent / "src"
+    src_dir.mkdir(parents=True, exist_ok=True)
+    env = dict(os.environ)
+    env["PYTHONPATH"] = f"{src_dir}:{env.get('PYTHONPATH', '')}"
+    env["HOME"] = str(fake_home)
+
+    return subprocess.run(
+        [python_executable, str(script_path)],
+        capture_output=True,
+        text=True,
+        timeout=10,
+        check=False,
+        env=env,
+    )
+
+
+def test_plugin_degrades_when_projects_json_missing(tmp_path, monkeypatch):
+    """Invariant 5: a failing sensor yields null fields; tick still writes.
+    For the plugin: missing projects.json must not raise — degrade to a
+    fallback line instead."""
+    monkeypatch.setattr(sys, "platform", "darwin")
+
+    fake_home = tmp_path / "home"
+    fake_home.mkdir()
+
+    plugin_result = _subprocess_plugin(tmp_path, monkeypatch, fake_home)
+
+    assert plugin_result.returncode == 0, (
+        f"plugin crashed with exit {plugin_result.returncode}: "
+        f"stdout={plugin_result.stdout!r}\nstderr={plugin_result.stderr!r}"
+    )
+    stdout = plugin_result.stdout
+    assert "missing or unreadable" in stdout
+    assert "projects.json" in stdout
+    # No traceback lines — every failure must degrade to the fallback string.
+    assert "Traceback" not in stdout
+    assert "KeyboardInterrupt" not in stdout
+
+
+def test_plugin_degrades_when_projects_json_malformed(tmp_path, monkeypatch):
+    """Corrupt JSON must not raise — sensors degrade, never abort (invariant 5)."""
+    monkeypatch.setattr(sys, "platform", "darwin")
+
+    fake_home = tmp_path / "home"
+    projects_path = fake_home / ".petridish" / "projects.json"
+    projects_path.parent.mkdir(parents=True, exist_ok=True)
+    projects_path.write_text("this is not json {{{", encoding="utf-8")
+
+    plugin_result = _subprocess_plugin(tmp_path, monkeypatch, fake_home)
+
+    assert plugin_result.returncode == 0, (
+        f"plugin crashed with exit {plugin_result.returncode}: "
+        f"stdout={plugin_result.stdout!r}\nstderr={plugin_result.stderr!r}"
+    )
+    stdout = plugin_result.stdout
+    assert "missing or unreadable" in stdout
+    assert "Traceback" not in stdout
+    assert "KeyboardInterrupt" not in stdout
+
+
+def test_plugin_stdout_matches_render_menubar_directly(tmp_path, monkeypatch):
+    """The plugin's stdout is byte-identical to render_menubar(radar) computed
+    in-process — proving the script runs the library, not some shim."""
+    monkeypatch.setattr(sys, "platform", "darwin")
+
+    # Build a valid Radar via the library so the expected output is grounded.
+    radar = Radar(
+        updated_at=utcnow(),
+        scan_duration_ms=12,
+        schema_version=1,
+        projects=(Project(id="p1", name="p1", path="/abs/project/p1", category="repos"),),
+    )
+    expected = render_menubar(radar)
+
+    # Write the radar to disk under a fake $HOME so the plugin can read it.
+    fake_home = tmp_path / "home"
+    fake_home.mkdir()
+    projects_path = fake_home / ".petridish" / "projects.json"
+    projects_path.parent.mkdir(parents=True, exist_ok=True)
+    projects_path.write_text(radar.to_json(indent=2), encoding="utf-8")
+
+    plugin_result = _subprocess_plugin(tmp_path, monkeypatch, fake_home)
+
+    assert plugin_result.returncode == 0
+    assert plugin_result.stdout.rstrip() == expected, (
+        f"plugin output differs from render_menubar:\n"
+        f"expected: {expected!r}\n"
+        f"got:      {plugin_result.stdout!r}"
+    )

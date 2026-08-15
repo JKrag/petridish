@@ -239,6 +239,47 @@ def render_plist(
     )
 
 
+def render_menubar_plugin(*, python_executable: str, resources_dir: Path | None = None) -> str:
+    """Render the menubar xbar/SwiftBar plugin script with the correct shebang.
+
+    Reads ``resources/petridish_menubar.30s.py`` and substitutes the
+    ``__PYTHON_SHEBANG__`` placeholder with ``python_executable``. No XML
+    escaping is needed — this is a plain script, not a plist.
+
+    Raises :class:`InstallError` if the template file is missing from the
+    given ``resources_dir`` or the installed package's resources/.
+    """
+    template_filename = "petridish_menubar.30s.py"
+    text = _read_menubar_template(template_filename, resources_dir)
+    return text.replace("__PYTHON_SHEBANG__", python_executable)
+
+
+def _read_menubar_template(filename: str, resources_dir: Path | None) -> str:
+    """Read the menubar plugin template text.
+
+    Mirrors the layout of :func:`_read_plist_template`: ``resources_dir`` is a
+    plain filesystem override used by tests; otherwise the file is read via
+    :mod:`importlib.resources`, anchored on the installed ``petridish``
+    package. Raises :class:`InstallError` if the template is missing.
+    """
+    if resources_dir is not None:
+        template_path = resources_dir / filename
+        if not template_path.is_file():
+            raise InstallError(f"template not found at {template_path}")
+        return template_path.read_text(encoding="utf-8")
+
+    import importlib.resources
+
+    traversable = importlib.resources.files("petridish").joinpath("resources", filename)
+    if not traversable.is_file():
+        raise InstallError(
+            f"template {filename!r} not found in the installed "
+            "petridish package's resources/ (expected it to ship as package "
+            "data — see [tool.setuptools.package-data] in pyproject.toml)."
+        )
+    return traversable.read_text(encoding="utf-8")
+
+
 def write_plist(plist_path: Path, content: str) -> None:
     plist_path.parent.mkdir(parents=True, exist_ok=True)
     plist_path.write_text(content, encoding="utf-8")

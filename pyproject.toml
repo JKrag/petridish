@@ -45,7 +45,7 @@ petri = "petridish.tui:main"
 where = ["src"]
 
 [tool.setuptools.package-data]
-petridish = ["resources/*.plist"]
+petridish = ["resources/*.plist", "resources/*.py"]
 
 # Type checking is a dev-only gate — it adds no runtime dependency, so the
 # stdlib-only rule for `src/petridish/` is untouched. The annotations were
