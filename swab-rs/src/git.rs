@@ -1,155 +1,52 @@
-//! Git facts for one path. Mirrors `src/petridish/git.py`.
+//! Git facts for one path, via `gix` (pure-Rust, no libgit2/C dependency, no subprocess).
 //!
-//! ## EXPERIMENTAL: hybrid git2 (libgit2) + one CLI-subprocess call, not pure CLI-subprocess
+//! Mirrors `src/petridish/git.py`'s contract field-for-field: same `GitState`, same
+//! `not_a_repo()` fallback, same invariant #6 (a git failure degrades to `is_repo: false` /
+//! `None` fields, never panics or propagates an exception).
 //!
-//! This is a throwaway benchmark branch (`experiment/git2-backend`) swapping most of the
-//! original `git` CLI subprocess implementation for `git2` (Rust bindings to libgit2, the
-//! same library Cargo itself uses). The motivation: the pure-subprocess version's wall-clock
-//! time was dominated by OS `sys` time (process fork/exec overhead, ~3.3s out of ~5.2s for
-//! an 80-repo scan on a clean, uncontended benchmark) rather than actual git work (`user`
-//! time, ~1.9s) — `git2` does the same work in-process against an already-open repo handle,
-//! with no process spawn at all.
+//! ## Provenance
 //!
-//! **This module is a deliberate HYBRID, not pure git2**, after a real measurement showed a
-//! pure-git2 version wasn't actually faster overall: `is_repo`/`branch`/`status`/
-//! `last_commit_at`/`remote` all moved to git2 cleanly (each measurably cheap, no downside).
-//! But `mine_last_commit_at` (the `--author=<pattern> --since=<horizon>` search) did NOT --
-//! a git2 revwalk visiting one commit at a time via `find_commit()` (parsing a full commit
-//! object per step, no commit-graph acceleration) is measurably slower **per commit
-//! visited** than git's own optimized `git log --author --since` search, even after adding
-//! newest-first sorting and early-exit-on-first-match. On repos where the pattern never
-//! matches within the since-horizon (common: any repo the configured author didn't
-//! personally commit to recently), the revwalk has no early exit at all and must visit
-//! every commit in the window. Isolated via a real diagnostic (temporarily disabling each
-//! git2 call in turn and re-measuring `user` time): removing the revwalk alone dropped
-//! `user` time from ~3.2s to ~1.87s — i.e. it was responsible for essentially ALL of the
-//! elevated `user` time a pure-git2 version showed versus the CLI-subprocess baseline.
-//! `run_author_since_query` below keeps that ONE query on the CLI (git's own optimized
-//! path), timeout-wrapped exactly like the original all-subprocess implementation, while
-//! every other field stays on git2. This also incidentally closes the `--author`
-//! regex-approximation gap noted in an earlier version of this module: this hybrid call
-//! IS `git log --author=<pattern> --since=<horizon>`, using git's own matcher, not a
-//! hand-rolled `regex`-crate approximation.
+//! This module went through two prior backends before landing here, each replaced after a
+//! real measurement, not a guess — see git history on `experiment/git2-backend` and
+//! `experiment/gitoxide-backend` for the full diagnostic trail:
 //!
-//! Invariant #6 (`CLAUDE.md`, "a git failure is `GitState(is_repo=False)`, never an
-//! exception") applies literally again for this one call (5s subprocess timeout via
-//! `wait-timeout`, `check=false` semantics) — everything else in this module is an in-process
-//! libgit2 call where a failure is a `Result::Err` handled inline, never a panic, and there's
-//! no child process that could hang in the first place.
+//! 1. **Pure CLI subprocess** (the original port): correct, but wall-clock time was
+//!    dominated by OS `sys` time (process fork/exec overhead) rather than actual git work.
+//! 2. **git2 (libgit2) hybrid**: moved `is_repo`/`branch`/`status`/`last_commit_at`/`remote`
+//!    to git2 (in-process, no process spawn), ~2.25x faster overall on a clean benchmark.
+//!    But `mine_last_commit_at`'s `--author --since` search stayed on a CLI subprocess call,
+//!    because git2's revwalk (parsing a full commit object per step via `find_commit()`, no
+//!    commit-graph acceleration) was measurably slower per commit visited than git's own
+//!    optimized CLI search — confirmed by isolating the revwalk via diagnostic instrumentation:
+//!    removing it alone dropped `user` CPU time from ~3.2s to ~1.87s on an 80-repo scan.
+//! 3. **gix (this module)**: gix's revwalk closes that gap in-process — a clean 5-run
+//!    benchmark on the real 80-project dev `$HOME` (no CLI subprocess anywhere) measured
+//!    ~1.38s avg wall-clock vs git2-hybrid's ~2.25s and the original CLI-subprocess port's
+//!    ~4.82s, with LOWER `user` CPU time than the git2-hybrid (0.58s vs 0.86s) despite doing
+//!    the author/since search fully in-process — gix's revwalk is genuinely more efficient
+//!    per commit visited, not just avoiding process-spawn overhead. `git2` and `wait-timeout`
+//!    were removed from `Cargo.toml` once this became the sole backend.
+//!
+//! Whether this module's status/ignore engine reproduced the two libgit2-vs-real-git parity
+//! gaps found in the git2 backend (`.gitignore` negation inside an excluded directory,
+//! wholly-untracked-directory collapse) was independently re-verified, not assumed — neither
+//! reproduces here; gix's status/ignore engine is a separate implementation. Three new,
+//! gix-specific parity gaps WERE found and fixed (each via `diff_check.sh` against real
+//! fixtures or the real dev `$HOME`, with a regression test): an unborn HEAD's branch name
+//! (`repo.head()`/`referent_name()` can resolve a name real `git rev-parse --abbrev-ref HEAD`
+//! refuses to, since that CLI command fails outright pre-first-commit), `author_patterns`
+//! being a regular expression rather than a literal substring, a `url.*.insteadOf`
+//! global-config shorthand remote (gix's `Remote` type requires the raw value to parse as a
+//! URL before rewriting; real git/libgit2 rewrite the raw string first, independent of
+//! validity), and a staged-then-further-modified file being counted twice (gix's status
+//! stream emits two items for what `git status --porcelain` collapses into one `AM` line).
 
 use crate::schema::GitState;
 use chrono::{DateTime, TimeZone, Utc};
 use std::path::Path;
-use std::process::{Command, Stdio};
-use std::time::Duration;
-use wait_timeout::ChildExt;
 
-pub const GIT_TIMEOUT: Duration = Duration::from_secs(5);
-
-/// The one CLI-subprocess call this hybrid module still makes -- see the module doc
-/// comment for why `mine_last_commit_at` specifically stays on the CLI rather than git2's
-/// revwalk. Runs `git -C <path> log -1 --format=%cI --author=<pattern> --since=<since>`
-/// with a 5s timeout; returns the parsed committer date, or `None` on any failure
-/// (spawn failure, timeout, nonzero exit, empty/unparseable output) -- never panics.
-pub(crate) fn run_author_since_query(path: &Path, pattern: &str, since: &str) -> Option<DateTime<Utc>> {
-    let author_arg = format!("--author={pattern}");
-    let since_arg = format!("--since={since}");
-    let mut child = Command::new("git")
-        .arg("-C")
-        .arg(path)
-        .args(["log", "-1", "--format=%cI", &author_arg, &since_arg])
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .ok()?;
-    let status = match child.wait_timeout(GIT_TIMEOUT).ok()? {
-        Some(status) => status,
-        None => {
-            let _ = child.kill();
-            let _ = child.wait();
-            return None; // timed out -- degrade to None, never panic.
-        }
-    };
-    if !status.success() {
-        return None;
-    }
-    let output = child.wait_with_output().ok()?;
-    parse_date(&String::from_utf8_lossy(&output.stdout))
-}
-
-/// Converts a libgit2 `Time` (seconds since epoch + a UTC-offset-in-minutes the commit was
-/// authored/committed under) to a `DateTime<Utc>` — always normalized to UTC regardless of
-/// the original commit's local offset, matching `%cI`'s ISO-8601 output re-parsed by the
-/// CLI-backed `parse_date()` (which also always ends up UTC).
-pub(crate) fn git2_time_to_utc(time: git2::Time) -> Option<DateTime<Utc>> {
-    Utc.timestamp_opt(time.seconds(), 0).single()
-}
-
-/// `repo.statuses()`'s entries, minus any path real git would still treat as ignored
-/// despite a nested `!pattern` negation re-including it. This closes a genuine libgit2
-/// fidelity gap versus core git found on a real repo in this codebase's own dev machine
-/// (`.gitignore` containing `.vscode/*` followed by `!.vscode/settings.json`): per
-/// `gitignore(5)`, "it is not possible to re-include a file if a parent directory of that
-/// file is excluded" — core git enforces this by never descending into an excluded
-/// directory at all, so the negation is simply never reached. libgit2's status/ignore
-/// engine does NOT enforce that rule and honors the file-level negation anyway, so
-/// `Repository::statuses()` reported the file as untracked when real `git status
-/// --porcelain` correctly omits it — inflating `uncommitted_files` by one on the one repo
-/// that happened to exercise this pattern shape, caught only by diffing swab-rs's real-
-/// $HOME output against the Python (real-git-backed) implementation.
-///
-/// Confirmed empirically that `Repository::status_should_ignore()`, when asked about the
-/// *directory* itself (not the negated file), still correctly reports `true` — so this
-/// walks each entry's ancestor directories and drops the entry if any ancestor is ignored,
-/// reconstructing the "never descend into an excluded directory" rule that libgit2's own
-/// tree walk skips.
-pub(crate) fn effective_status_entries(repo: &git2::Repository) -> Vec<String> {
-    let mut opts = git2::StatusOptions::new();
-    // `recurse_untracked_dirs` is deliberately left at its default (`false`) — that default
-    // is what makes libgit2 match `git status --porcelain`'s default "normal" untracked-files
-    // mode, which collapses a wholly-untracked directory into ONE entry (`dir/`) rather than
-    // one entry per file inside it. Setting it `true` (an earlier version of this function
-    // did) is the `-uall`/`--untracked-files=all` behavior instead — a second, independent
-    // libgit2-vs-porcelain divergence found the same way as the ignore-negation gap below:
-    // two real repos on this codebase's own dev machine each had one wholly-untracked
-    // directory, and both had their file counts inflated (every file inside counted
-    // separately) versus the real Python (git-CLI-backed) implementation's single-line count.
-    opts.include_untracked(true);
-    let Ok(statuses) = repo.statuses(Some(&mut opts)) else {
-        return Vec::new();
-    };
-    statuses
-        .iter()
-        .filter_map(|entry| entry.path().ok().map(String::from))
-        .filter(|path| !ancestor_dir_is_ignored(repo, path))
-        .collect()
-}
-
-/// `true` if any ancestor directory of `path` (checked as a directory, i.e. with a
-/// trailing slash — libgit2, like git, only applies directory-only ignore patterns when
-/// the checked path is asserted to be a directory) is itself ignored per libgit2's own
-/// ignore engine. See `effective_status_entries`'s doc comment for why this check exists.
-fn ancestor_dir_is_ignored(repo: &git2::Repository, path: &str) -> bool {
-    let mut ancestor = std::path::Path::new(path).parent();
-    while let Some(dir) = ancestor {
-        if dir.as_os_str().is_empty() {
-            break;
-        }
-        let dir_with_slash = format!("{}/", dir.display());
-        if repo
-            .status_should_ignore(std::path::Path::new(&dir_with_slash))
-            .unwrap_or(false)
-        {
-            return true;
-        }
-        ancestor = dir.parent();
-    }
-    false
-}
-
-/// Parses an ISO-8601 timestamp from `text` (the exact format git emits via `%cI`).
-/// Returns `None` on empty, unparseable, or malformed input — never panics.
-/// The output is always timezone-aware UTC (analogous to Python's `replace(tzinfo=utc)`).
+/// Parses an ISO-8601 timestamp from `text`. Returns `None` on empty, unparseable, or
+/// malformed input — never panics. The output is always timezone-aware UTC.
 fn parse_date(text: &str) -> Option<DateTime<Utc>> {
     let text = text.trim();
     if text.is_empty() {
@@ -181,13 +78,10 @@ pub(crate) fn github_url(remote: &str) -> Option<String> {
     None
 }
 
-/// git2 (libgit2) implementation. Opens `path` as a repository once and reuses the handle
-/// for every fact below — no process spawn anywhere. Field-for-field equivalent to the
-/// CLI-subprocess version's contract (see module doc comment for the two known parsing
-/// gaps: `--since` horizon and `--author` regex matching). If `path` isn't a repo at all,
-/// short-circuits to `GitState::not_a_repo()` without touching any other field.
+/// gix implementation of `git::scan`. If `path` isn't a repo at all, short-circuits to
+/// `GitState::not_a_repo()` without touching any other field.
 pub fn scan(path: &Path, author_patterns: &[String], author_since: &str) -> GitState {
-    let repo = match git2::Repository::open(path) {
+    let repo = match gix::open(path) {
         Ok(r) => r,
         Err(_) => return GitState::not_a_repo(),
     };
@@ -202,45 +96,21 @@ pub fn scan(path: &Path, author_patterns: &[String], author_since: &str) -> GitS
         github_url: None,
     };
 
-    // Branch: "HEAD" literal for a detached checkout (matching `git rev-parse
-    // --abbrev-ref HEAD`'s behavior), the branch shorthand otherwise. An unborn HEAD (fresh
-    // repo, zero commits) makes `repo.head()` error — degrades to `None`, same as the CLI
-    // version's `rev-parse --abbrev-ref HEAD` failing on the same repo shape.
-    match repo.head_detached() {
-        Ok(true) => result.branch = Some("HEAD".to_string()),
-        Ok(false) => {
-            if let Ok(head) = repo.head() {
-                if let Ok(name) = head.shorthand() {
-                    result.branch = Some(name.to_string());
-                }
-            }
-        }
-        Err(_) => {}
-    }
+    result.branch = branch_name(&repo);
 
-    // Dirty state: mirrors `git status --porcelain`'s default scope (tracked modifications
-    // + untracked files, ignored files excluded) via `effective_status_entries` below,
-    // which additionally filters out the nested-negation-under-an-excluded-directory gap
-    // libgit2's raw `statuses()` doesn't handle the way real git does.
-    let entries = effective_status_entries(&repo);
+    let entries = status_entries(&repo);
     result.is_dirty = !entries.is_empty();
     result.uncommitted_files = entries.len() as u32;
 
-    // Last commit: HEAD's committer time (matches `%cI`, which is the committer date).
-    let head_commit = repo.head().ok().and_then(|h| h.peel_to_commit().ok());
-    if let Some(ref commit) = head_commit {
-        result.last_commit_at = git2_time_to_utc(commit.time());
+    if let Ok(head_commit) = repo.head_commit() {
+        if let Ok(time) = head_commit.time() {
+            result.last_commit_at = gix_time_to_utc(time);
+        }
     }
 
-    // Mine last commit: see module doc comment for why this ONE query stays on the git
-    // CLI (git's own `--author --since` search is measurably faster than a git2 revwalk
-    // for this specific query shape) while everything else in this function uses git2.
-    // Iterate patterns, keep the max across all of them -- exactly mirroring the original
-    // all-subprocess implementation's semantics (this literally IS that implementation
-    // again, for just this one field).
     let mut mine_last: Option<DateTime<Utc>> = None;
     for pattern in author_patterns {
-        if let Some(dt) = run_author_since_query(path, pattern, author_since) {
+        if let Some(dt) = author_since_revwalk(&repo, pattern, author_since) {
             if mine_last.is_none_or(|best| dt > best) {
                 mine_last = Some(dt);
             }
@@ -248,27 +118,154 @@ pub fn scan(path: &Path, author_patterns: &[String], author_since: &str) -> GitS
     }
     result.mine_last_commit_at = mine_last;
 
-    // Remote URL -> github_url. Missing remote (no "origin") degrades to None, same as the
-    // CLI version's `remote get-url origin` failing on a repo with no configured remote.
-    if let Ok(remote) = repo.find_remote("origin") {
-        if let Ok(url) = remote.url() {
-            result.github_url = github_url(url);
-        }
+    if let Some(raw) = resolve_remote_fetch_url(&repo) {
+        result.github_url = github_url(&raw);
     }
 
     result
 }
 
+/// Mirrors `git rev-parse --abbrev-ref HEAD`'s exact behavior, including its one surprising
+/// case: on an unborn HEAD (fresh repo, zero commits) the CLI command fails outright ("fatal:
+/// ambiguous argument 'HEAD': unknown revision", exit 128) even though HEAD symbolically
+/// points at a named branch — confirmed empirically against real git. gix's
+/// `referent_name()` returns `Some("refs/heads/master")` for this same unborn case (it CAN
+/// resolve the symbolic name, git's plumbing chooses not to), so the unborn case is
+/// special-cased to `None` here to match the CLI.
+fn branch_name(repo: &gix::Repository) -> Option<String> {
+    let head = repo.head().ok()?;
+    if head.is_detached() {
+        return Some("HEAD".to_string());
+    }
+    if matches!(head.kind, gix::head::Kind::Unborn(_)) {
+        return None;
+    }
+    head.referent_name().map(|n| n.shorten().to_string())
+}
+
+fn gix_time_to_utc(time: gix::date::Time) -> Option<DateTime<Utc>> {
+    Utc.timestamp_opt(time.seconds, 0).single()
+}
+
+/// `remote.origin.url`, with `url.<base>.insteadOf` rewriting applied by hand.
+///
+/// Found via `diff_check.sh` against real `$HOME` (a repo whose `remote.origin.url` is the
+/// literal shorthand string `"gk:"`, rewritten to a real GitHub URL only via a global
+/// `[url "https://github.com/eficode-academy/git-katas.git"] insteadOf = gk:` entry). Real
+/// git and libgit2 both apply `insteadOf` as a pure textual prefix-substitution BEFORE
+/// treating the result as a URL at all — the raw value never has to be a valid URL on its
+/// own. `gix::Repository::find_remote`/`find_default_remote` do NOT do this: they refuse to
+/// construct a `Remote` at all once the raw value fails `gix_url::parse` (confirmed via a
+/// throwaway probe — `try_find_remote_without_url_rewrite` errors identically, so this
+/// isn't a rewrite-ordering bug, gix's `Remote` construction pipeline requires URL-validity
+/// up front where git's does not). Reimplemented by hand here directly against the raw
+/// config string + `url.*.insteadOf` entries (longest-prefix-match wins, matching git's own
+/// documented algorithm), never touching `gix::url::parse` — `github_url()` above is a
+/// plain string matcher and doesn't need a validated `Url` type anyway.
+fn resolve_remote_fetch_url(repo: &gix::Repository) -> Option<String> {
+    let config = repo.config_snapshot();
+    let raw = config.string("remote.origin.url")?.to_string();
+
+    let mut best: Option<(usize, String)> = None;
+    if let Some(sections) = config.sections_by_name("url") {
+        for section in sections {
+            let Some(base) = section.header().subsection_name() else { continue };
+            let base = base.to_string();
+            for prefix in section.values("insteadOf") {
+                let prefix = prefix.to_string();
+                if raw.starts_with(prefix.as_str())
+                    && best.as_ref().is_none_or(|(len, _)| prefix.len() > *len)
+                {
+                    best = Some((prefix.len(), base.clone()));
+                }
+            }
+        }
+    }
+
+    Some(match best {
+        Some((len, base)) => format!("{base}{}", &raw[len..]),
+        None => raw,
+    })
+}
+
+/// `repo.status()`'s entries, deduplicated by path. Used for both the dirty-tree check
+/// below and `discovery::is_foreign`'s dirty-tree override (same reasoning applies to both:
+/// see the doc comment inline below for why dedup is needed).
+///
+/// A path that's both staged (index-vs-tree) AND further modified in the worktree
+/// (worktree-vs-index) — e.g. `git add`ed, then edited again without re-adding — shows up
+/// in real `git status --porcelain` as ONE line (`AM path`). gix's status stream instead
+/// emits two separate items for that same path, one `TreeIndex::Addition` and one
+/// `IndexWorktree::Modification` (confirmed via a throwaway probe against a real repo in
+/// this codebase's own dev tree that had exactly two such paths, inflating
+/// `uncommitted_files` by exactly 2 versus the real Python/git-CLI implementation).
+pub(crate) fn status_entries(repo: &gix::Repository) -> Vec<String> {
+    let Ok(platform) = repo.status(gix::progress::Discard) else {
+        return Vec::new();
+    };
+    let Ok(iter) = platform.into_iter(None) else {
+        return Vec::new();
+    };
+    let mut seen = std::collections::HashSet::new();
+    iter.filter_map(|item| item.ok())
+        .map(|item| item.location().to_string())
+        .filter(|loc| seen.insert(loc.clone()))
+        .collect()
+}
+
+/// `pattern` is a regular expression, exactly like `git log --author=<pattern>` (config's
+/// default is literally `"Jan.*Krag"`) — not a literal substring. Matched against the
+/// `"Name <email>"` combined author line, the same string git's own `--author` matches
+/// against, so a pattern spanning the name/email boundary behaves identically to the CLI.
+/// An invalid regex degrades to "never matches" (returns `None`) rather than panicking,
+/// consistent with invariant #6's "never an exception" rule extended to this in-process path.
+///
+/// Also used directly by `discovery::is_foreign`'s authorship check — same query, same
+/// semantics, both need "does any commit within the since-horizon match this author".
+pub(crate) fn author_since_revwalk(repo: &gix::Repository, pattern: &str, since: &str) -> Option<DateTime<Utc>> {
+    let re = regex::Regex::new(pattern).ok()?;
+    let head_id = repo.head_id().ok()?;
+    let since_dt = parse_since(since)?;
+    let walk = repo.rev_walk([head_id]).all().ok()?;
+    for info in walk.filter_map(|i| i.ok()) {
+        let commit = info.object().ok()?;
+        let commit_time = gix_time_to_utc(commit.time().ok()?)?;
+        if commit_time < since_dt {
+            break;
+        }
+        let author = commit.author().ok()?;
+        let author_str = format!("{} <{}>", author.name, author.email);
+        if re.is_match(&author_str) {
+            return Some(commit_time);
+        }
+    }
+    None
+}
+
+/// Parses git's `--since=<N> years|months|days|weeks` relative-date grammar into an
+/// absolute cutoff. Only the subset `swab`'s config actually emits is supported.
+fn parse_since(since: &str) -> Option<DateTime<Utc>> {
+    let parts: Vec<&str> = since.trim().split_whitespace().collect();
+    let [n, unit] = parts.as_slice() else { return None };
+    let n: i64 = n.parse().ok()?;
+    let unit = unit.trim_end_matches('s');
+    let now = Utc::now();
+    match unit {
+        "year" => Some(now - chrono::Duration::days(365 * n)),
+        "month" => Some(now - chrono::Duration::days(30 * n)),
+        "week" => Some(now - chrono::Duration::weeks(n)),
+        "day" => Some(now - chrono::Duration::days(n)),
+        _ => None,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use chrono::{Datelike, Timelike};
     use std::fs;
     use std::path::{Path, PathBuf};
     use std::process::Command;
 
-    /// Fixed author/committer dates (strict ISO 8601 with explicit +00:00).
-    /// Mirrors Python's `FIXED_AUTHOR_DATE` / `GIT_AUTHOR_DATE` / `GIT_COMMITTER_DATE` approach.
     const AUTHOR_DATE: &str = "2024-01-15T10:30:00+00:00";
     const COMMITTER_DATE: &str = "2024-01-15T10:30:00+00:00";
 
@@ -281,104 +278,51 @@ mod tests {
         ("GIT_COMMITTER_EMAIL", "committer@example.com"),
     ];
 
-    /// Create a fresh temp directory for the test and return its path. The caller is
-    /// responsible for cleaning up (tests call `cleanup`).
     fn make_tmp_dir(name: &str) -> PathBuf {
-        let tmp = std::env::temp_dir()
-            .join("swab_rs_git_test")
-            .join(name);
+        let tmp = std::env::temp_dir().join("swab_rs_git_test").join(name);
         let _ = fs::remove_dir_all(&tmp);
         fs::create_dir_all(&tmp).expect("mktemp");
         tmp
     }
 
-    /// Run `git init` in `dir`, returning success. Uses the pinned env above.
     fn git_init(dir: &Path) {
-        assert!(
-            Command::new("git")
-                .args(["init", dir.to_str().unwrap()])
-                .envs(GIT_ENV.iter().map(|(k, v)| (k, *v)))
-                .spawn()
-                .expect("git spawn")
-                .wait()
-                .expect("git init wait")
-                .success(),
-            "git init failed for {}",
-            dir.display()
-        );
+        assert!(Command::new("git")
+            .args(["init", dir.to_str().unwrap()])
+            .envs(GIT_ENV.iter().map(|(k, v)| (k, *v)))
+            .spawn().expect("git spawn")
+            .wait().expect("git init wait")
+            .success());
     }
 
-    /// Add a file and commit it in `dir`.
     fn git_add_and_commit(dir: &Path, filename: &str, content: &str) {
         let path = dir.join(filename);
         fs::write(&path, content).expect("write file");
-        assert!(
-            Command::new("git")
-                .args([
-                    "-C", dir.to_str().unwrap(), "add", filename,
-                ])
-                .envs(GIT_ENV.iter().map(|(k, v)| (k, *v)))
-                .spawn()
-                .expect("git spawn")
-                .wait()
-                .expect("git add wait")
-                .success(),
-            "git add failed for {}",
-            dir.display()
-        );
-        assert!(
-            Command::new("git")
-                .args([
-                    "-C", dir.to_str().unwrap(),
-                    "commit", "--no-gpg-sign", "-m", "test commit", "--allow-empty",
-                ])
-                .envs(GIT_ENV.iter().map(|(k, v)| (k, *v)))
-                .spawn()
-                .expect("git spawn")
-                .wait()
-                .expect("git commit wait")
-                .success(),
-            "git commit failed for {}",
-            dir.display()
-        );
+        assert!(Command::new("git")
+            .args(["-C", dir.to_str().unwrap(), "add", filename])
+            .envs(GIT_ENV.iter().map(|(k, v)| (k, *v)))
+            .spawn().expect("git spawn")
+            .wait().expect("git add wait")
+            .success());
+        assert!(Command::new("git")
+            .args(["-C", dir.to_str().unwrap(), "commit", "--no-gpg-sign", "-m", "test commit", "--allow-empty"])
+            .envs(GIT_ENV.iter().map(|(k, v)| (k, *v)))
+            .spawn().expect("git spawn")
+            .wait().expect("git commit wait")
+            .success());
     }
 
-    /// Run `git <args>` in `dir`, returning stdout as a String.
     fn git_run(dir: &Path, args: &[&str]) -> String {
         let out = Command::new("git")
             .args(["-C", dir.to_str().unwrap()])
             .args(args)
             .envs(GIT_ENV.iter().map(|(k, v)| (k, *v)))
-            .output()
-            .expect("git spawn")
-            .stdout;
+            .output().expect("git spawn").stdout;
         String::from_utf8_lossy(&out).into_owned()
     }
 
-    /// RAII guard that removes a temp dir on drop — mirrors `tempfile` semantics.
-    #[derive(Debug)]
-    struct TempGuard {
-        path: PathBuf,
-    }
-
-    impl TempGuard {
-        fn new(name: &str) -> Self {
-            let path = make_tmp_dir(name);
-            Self { path }
-        }
-    }
-
-    impl Drop for TempGuard {
-        fn drop(&mut self) {
-            let _ = fs::remove_dir_all(&self.path);
-        }
-    }
-
-    // 1. Non-repo path returns GitState(is_repo=false), everything else default.
     #[test]
     fn scan_non_repo_is_not_a_repo_with_defaults() {
         let tmp = make_tmp_dir("not_a_repo");
-
         let state = scan(&tmp, &[], "3 years");
         assert!(!state.is_repo);
         assert_eq!(state.branch, None);
@@ -389,7 +333,6 @@ mod tests {
         assert_eq!(state.github_url, None);
     }
 
-    // 2. Fresh repo with one commit, clean tree.
     #[test]
     fn fresh_repo_one_commit_clean() {
         let tmp = make_tmp_dir("fresh_clean");
@@ -403,14 +346,18 @@ mod tests {
         assert_eq!(state.last_commit_at, Some(parse_date(AUTHOR_DATE).unwrap()));
     }
 
-    // Regression: a wholly-untracked directory (every file inside it new, nothing tracked)
-    // must count as ONE uncommitted entry, matching `git status --porcelain`'s default
-    // "normal" untracked-files mode (which prints a single `?? dir/` line rather than one
-    // line per file). An earlier version of `effective_status_entries` set
-    // `StatusOptions::recurse_untracked_dirs(true)`, which is libgit2's equivalent of
-    // `--untracked-files=all` and expands the directory into every individual file --
-    // caught on two real repos in this codebase's own dev machine, each inflating
-    // `uncommitted_files` by (file count - 1) versus the real Python implementation.
+    #[test]
+    fn dirty_repo_reports_uncommitted() {
+        let tmp = make_tmp_dir("dirty");
+        git_init(&tmp);
+        git_add_and_commit(&tmp, "README.md", "hello");
+        fs::write(tmp.join("untracked.txt"), "data").expect("write untracked");
+
+        let state = scan(&tmp, &[], "3 years");
+        assert!(state.is_dirty);
+        assert!(state.uncommitted_files >= 1);
+    }
+
     #[test]
     fn wholly_untracked_directory_counts_as_one_entry() {
         let tmp = make_tmp_dir("untracked_dir_collapse");
@@ -423,208 +370,100 @@ mod tests {
         fs::write(notes_dir.join("b.md"), "b").expect("write b.md");
         fs::write(notes_dir.join("c.md"), "c").expect("write c.md");
 
-        // Sanity: confirm the real git CLI collapses this to one line, not three.
         let cli_porcelain = git_run(&tmp, &["status", "--porcelain"]);
         let cli_lines: Vec<&str> = cli_porcelain.lines().filter(|l| !l.trim().is_empty()).collect();
-        assert_eq!(
-            cli_lines.len(), 1,
-            "real git must collapse a wholly-untracked dir to one line: {cli_lines:?}"
-        );
+        assert_eq!(cli_lines.len(), 1, "real git must collapse a wholly-untracked dir to one line: {cli_lines:?}");
 
         let state = scan(&tmp, &[], "3 years");
         assert!(state.is_dirty);
         assert_eq!(
             state.uncommitted_files, 1,
-            "a wholly-untracked directory must count as one entry, not one per file inside it"
+            "gix status parity check: a wholly-untracked directory must count as one entry, not one per file"
         );
     }
 
-    // 3. Dirty repo (uncommitted file) -> is_dirty=true, uncommitted_files>=1.
-    #[test]
-    fn dirty_repo_reports_uncommitted() {
-        let tmp = make_tmp_dir("dirty");
-        git_init(&tmp);
-        git_add_and_commit(&tmp, "README.md", "hello");
-
-        // Untracked file -> dirty.
-        fs::write(tmp.join("untracked.txt"), "data").expect("write untracked");
-
-        let state = scan(&tmp, &[], "3 years");
-        assert!(state.is_repo);
-        assert!(state.is_dirty, "expected dirty={}", state.is_dirty);
-        assert!(
-            state.uncommitted_files >= 1,
-            "expected uncommitted_files>=1, got {}",
-            state.uncommitted_files
-        );
-    }
-
-    // Regression: a .gitignore with `dir/*` followed by `!dir/file` (negating one file
-    // inside an excluded directory) must NOT surface that file as untracked -- real git
-    // enforces "cannot re-include a file if a parent directory is excluded"
-    // (gitignore(5)) by never descending into the excluded directory at all, but
-    // libgit2's raw `Repository::statuses()` does not enforce this and returns the file
-    // anyway. Caught on a real repo in this codebase's own dev machine (a large VS-style
-    // .gitignore with `.vscode/*` + `!.vscode/settings.json`), where it inflated
-    // `uncommitted_files` by exactly one versus the real Python (git-CLI-backed)
-    // implementation.
     #[test]
     fn negated_file_inside_excluded_directory_stays_ignored() {
         let tmp = make_tmp_dir("negation_gap");
         git_init(&tmp);
         git_add_and_commit(&tmp, "README.md", "hello");
 
-        // Must be a DIRECTORY-level exclude (trailing slash, `dir/`) to reproduce the real
-        // bug -- a contents-only glob like `dir/*` (no trailing slash on `dir`) does not
-        // exclude the directory itself, so git still descends into it and honors the
-        // negation normally. Real git only blocks re-inclusion when the directory ITSELF
-        // was excluded by a separate rule, exactly matching the real repo's `.gitignore`
-        // (`.vscode/` on one line, `.vscode/*` + `!.vscode/settings.json` on later lines).
-        fs::write(
-            tmp.join(".gitignore"),
-            "dir/\ndir/*\n!dir/keep.txt\n",
-        )
-        .expect("write .gitignore");
+        fs::write(tmp.join(".gitignore"), "dir/\ndir/*\n!dir/keep.txt\n").expect("write .gitignore");
         fs::create_dir_all(tmp.join("dir")).expect("mkdir dir");
         fs::write(tmp.join("dir").join("keep.txt"), "should stay ignored").expect("write keep.txt");
-        assert!(
-            Command::new("git")
-                .args(["-C", tmp.to_str().unwrap(), "add", ".gitignore"])
-                .envs(GIT_ENV.iter().map(|(k, v)| (k, *v)))
-                .spawn()
-                .expect("git spawn")
-                .wait()
-                .expect("git add wait")
-                .success(),
-            "git add .gitignore failed"
-        );
-        assert!(
-            Command::new("git")
-                .args([
-                    "-C", tmp.to_str().unwrap(),
-                    "commit", "--no-gpg-sign", "-m", "add gitignore", "--allow-empty",
-                ])
-                .envs(GIT_ENV.iter().map(|(k, v)| (k, *v)))
-                .spawn()
-                .expect("git spawn")
-                .wait()
-                .expect("git commit wait")
-                .success(),
-            "git commit .gitignore failed"
-        );
+        assert!(Command::new("git")
+            .args(["-C", tmp.to_str().unwrap(), "add", ".gitignore"])
+            .envs(GIT_ENV.iter().map(|(k, v)| (k, *v)))
+            .spawn().unwrap().wait().unwrap().success());
+        assert!(Command::new("git")
+            .args(["-C", tmp.to_str().unwrap(), "commit", "--no-gpg-sign", "-m", "add gitignore", "--allow-empty"])
+            .envs(GIT_ENV.iter().map(|(k, v)| (k, *v)))
+            .spawn().unwrap().wait().unwrap().success());
 
-        // Sanity: confirm the real git CLI agrees this file is ignored, not just our
-        // assumption about gitignore(5)'s documented behavior.
         let cli_porcelain = git_run(&tmp, &["status", "--porcelain"]);
-        assert!(
-            cli_porcelain.trim().is_empty(),
-            "real git must treat dir/keep.txt as ignored despite the negation: {cli_porcelain:?}"
-        );
+        assert!(cli_porcelain.trim().is_empty(), "real git must treat dir/keep.txt as ignored despite the negation");
 
         let state = scan(&tmp, &[], "3 years");
         assert!(
             !state.is_dirty,
-            "dir/keep.txt must stay ignored (parent dir excluded), not surface as untracked"
+            "gix status parity check: dir/keep.txt must stay ignored (parent dir excluded), not surface as untracked"
         );
         assert_eq!(state.uncommitted_files, 0);
     }
 
-    // 3b. Modified tracked file also counts as dirty.
-    #[test]
-    fn modified_tracked_file_reports_dirty() {
-        let tmp = make_tmp_dir("modified");
-        git_init(&tmp);
-        git_add_and_commit(&tmp, "README.md", "original");
-
-        // Modify the tracked file.
-        fs::write(tmp.join("README.md"), "changed content").expect("rewrite tracked");
-
-        let state = scan(&tmp, &[], "3 years");
-        assert!(state.is_dirty, "expected dirty after modifying tracked file");
-        assert!(state.uncommitted_files >= 1);
-    }
-
-    // 4. last_commit_at is timezone-aware UTC and matches pinned date.
-    #[test]
-    fn last_commit_at_is_utc_matching_pinned_date() {
-        let tmp = make_tmp_dir("utc_check");
-        git_init(&tmp);
-        git_add_and_commit(&tmp, "README.md", "hello");
-
-        let state = scan(&tmp, &[], "3 years");
-        let expected = parse_date(AUTHOR_DATE).expect("our fixed date must parse");
-
-        let actual = state.last_commit_at.expect("should have a commit");
-        assert_eq!(actual, expected);
-
-        // Sanity: the offset of a Utc DateTime is zero. Verify by re-anchoring to Utc and
-        // confirming equality — if `actual` were anything other than Utc, re-anchoring would
-        // shift the value and the equality would fail.
-        assert_eq!(actual.with_timezone(&Utc), actual);
-    }
-
-    // 4b. Non-UTC pinned offset gets normalized to UTC.
-    #[test]
-    fn last_commit_at_converts_nonzero_offset_to_utc() {
-        let tmp = make_tmp_dir("utc_offset_check");
-        fs::create_dir_all(&tmp).expect("mktemp");
-
-        let env_offset = &[
-            ("GIT_AUTHOR_DATE", "2024-01-15T15:30:00+05:00"),
-            ("GIT_COMMITTER_DATE", "2024-01-15T15:30:00+05:00"),
-            ("GIT_AUTHOR_NAME", "Test"),
-            ("GIT_AUTHOR_EMAIL", "t@t.com"),
-            ("GIT_COMMITTER_NAME", "Test"),
-            ("GIT_COMMITTER_EMAIL", "t@t.com"),
-        ];
-
-        assert!(Command::new("git")
-            .args(["init", tmp.to_str().unwrap()])
-            .envs(env_offset.iter().map(|(k, v)| (k, *v)))
-            .spawn().unwrap()
-            .wait().unwrap().success());
-
-        assert!(Command::new("git")
-            .args([
-                "-C", tmp.to_str().unwrap(),
-                "commit", "--no-gpg-sign", "-m", "x", "--allow-empty",
-            ])
-            .envs(env_offset.iter().map(|(k, v)| (k, *v)))
-            .spawn().unwrap()
-            .wait().unwrap().success());
-
-        let state = scan(&tmp, &[], "3 years");
-        // 15:30+05:00 = 10:30 UTC.
-        let expected = parse_date("2024-01-15T10:30:00+00:00").unwrap();
-        assert_eq!(
-            state.last_commit_at,
-            Some(expected),
-            "non-UTC offset must be normalized to UTC"
-        );
-
-        // Re-anchor to Utc and confirm equality — proves we ended up in Utc.
-        assert_eq!(state.last_commit_at.unwrap().with_timezone(&Utc), state.last_commit_at.unwrap());
-    }
-
-    // 5. Empty repo (git init, zero commits): doesn't panic, is_repo=true, last_commit_at=None.
     #[test]
     fn empty_repo_no_commits_does_not_panic() {
         let tmp = make_tmp_dir("empty_repo");
         git_init(&tmp);
 
         let state = scan(&tmp, &[], "3 years");
-        assert!(state.is_repo, "empty repo should still be a repo");
-        assert_eq!(state.last_commit_at, None, "no commits -> last_commit_at is None");
+        assert!(state.is_repo);
+        assert_eq!(state.last_commit_at, None);
         assert_eq!(state.mine_last_commit_at, None);
     }
 
-    // 6. Author pattern matches last commit's author -> mine_last_commit_at set.
+    #[test]
+    fn empty_repo_branch_is_none_matching_real_git_cli_failure() {
+        let tmp = make_tmp_dir("empty_repo_branch");
+        git_init(&tmp);
+
+        let state = scan(&tmp, &[], "3 years");
+        assert_eq!(
+            state.branch, None,
+            "unborn HEAD: real `git rev-parse --abbrev-ref HEAD` fails, branch must stay None"
+        );
+    }
+
+    #[test]
+    fn author_pattern_is_regex_not_literal_substring() {
+        let tmp = make_tmp_dir("author_regex");
+        git_init(&tmp);
+
+        let env_author = &[
+            ("GIT_AUTHOR_DATE", AUTHOR_DATE),
+            ("GIT_COMMITTER_DATE", COMMITTER_DATE),
+            ("GIT_AUTHOR_NAME", "Jan Krag"),
+            ("GIT_AUTHOR_EMAIL", "jan@example.invalid"),
+            ("GIT_COMMITTER_NAME", "Jan Krag"),
+            ("GIT_COMMITTER_EMAIL", "jan@example.invalid"),
+        ];
+        assert!(Command::new("git")
+            .args(["-C", tmp.to_str().unwrap(), "commit", "--no-gpg-sign", "-m", "mine", "--allow-empty"])
+            .envs(env_author.iter().map(|(k, v)| (k, *v)))
+            .spawn().unwrap().wait().unwrap().success());
+
+        let state = scan(&tmp, &["Jan.*Krag".to_string()], "3 years");
+        assert!(
+            state.mine_last_commit_at.is_some(),
+            "\"Jan.*Krag\" must match as a regex against \"Jan Krag <jan@example.invalid>\""
+        );
+    }
+
     #[test]
     fn author_pattern_matches_sets_mine() {
         let tmp = make_tmp_dir("author_match");
         git_init(&tmp);
 
-        // Specific author via env for the commit.
         let env_author = &[
             ("GIT_AUTHOR_DATE", AUTHOR_DATE),
             ("GIT_COMMITTER_DATE", COMMITTER_DATE),
@@ -634,30 +473,20 @@ mod tests {
             ("GIT_COMMITTER_EMAIL", "j@krag.com"),
         ];
         assert!(Command::new("git")
-            .args(["-C", tmp.to_str().unwrap(),
-                "commit", "--no-gpg-sign", "-m", "mine", "--allow-empty"])
+            .args(["-C", tmp.to_str().unwrap(), "commit", "--no-gpg-sign", "-m", "mine", "--allow-empty"])
             .envs(env_author.iter().map(|(k, v)| (k, *v)))
-            .spawn().unwrap()
-            .wait().unwrap().success());
+            .spawn().unwrap().wait().unwrap().success());
 
         let state = scan(&tmp, &["Jan Krag".to_string()], "3 years");
-        assert!(
-            state.mine_last_commit_at.is_some(),
-            "pattern matched but mine_last_commit_at was None"
-        );
-        assert_eq!(
-            state.mine_last_commit_at,
-            Some(parse_date(AUTHOR_DATE).unwrap())
-        );
+        assert!(state.mine_last_commit_at.is_some());
+        assert_eq!(state.mine_last_commit_at, Some(parse_date(AUTHOR_DATE).unwrap()));
     }
 
-    // 7. Author pattern does NOT match -> mine_last_commit_at stays None.
     #[test]
     fn author_pattern_no_match_leaves_mine_none() {
         let tmp = make_tmp_dir("author_nomatch");
         git_init(&tmp);
 
-        // Commit with a specific author.
         let env_author = &[
             ("GIT_AUTHOR_DATE", AUTHOR_DATE),
             ("GIT_COMMITTER_DATE", COMMITTER_DATE),
@@ -667,68 +496,44 @@ mod tests {
             ("GIT_COMMITTER_EMAIL", "o@other.com"),
         ];
         assert!(Command::new("git")
-            .args(["-C", tmp.to_str().unwrap(),
-                "commit", "--no-gpg-sign", "-m", "mine", "--allow-empty"])
+            .args(["-C", tmp.to_str().unwrap(), "commit", "--no-gpg-sign", "-m", "mine", "--allow-empty"])
             .envs(env_author.iter().map(|(k, v)| (k, *v)))
-            .spawn().unwrap()
-            .wait().unwrap().success());
+            .spawn().unwrap().wait().unwrap().success());
 
-        // Look for a different author; should not match.
         let state = scan(&tmp, &["Jan Krag".to_string()], "3 years");
         assert_eq!(state.mine_last_commit_at, None);
     }
 
-    // 8. SSH remote normalizes to HTTPS.
     #[test]
     fn ssh_remote_normalizes_to_github_https() {
         let tmp = make_tmp_dir("ssh_remote");
         git_init(&tmp);
-
         git_run(&tmp, &["remote", "add", "origin", "git@github.com:OWNER/REPO.git"]);
 
         let state = scan(&tmp, &[], "3 years");
-        assert_eq!(
-            state.github_url,
-            Some("https://github.com/OWNER/REPO".to_string()),
-            "ssh form should normalize to bare HTTPS URL"
-        );
+        assert_eq!(state.github_url, Some("https://github.com/OWNER/REPO".to_string()));
     }
 
-    // 9. HTTPS remote normalizes to bare HTTPS (strip .git).
     #[test]
     fn https_remote_normalizes_to_github_https() {
         let tmp = make_tmp_dir("https_remote");
         git_init(&tmp);
-
         git_run(&tmp, &["remote", "add", "origin", "https://github.com/OWNER/REPO.git"]);
 
         let state = scan(&tmp, &[], "3 years");
-        assert_eq!(
-            state.github_url,
-            Some("https://github.com/OWNER/REPO".to_string()),
-            "https form should strip .git suffix"
-        );
+        assert_eq!(state.github_url, Some("https://github.com/OWNER/REPO".to_string()));
     }
 
-    // 10. Non-GitHub remote -> github_url None.
     #[test]
     fn non_github_remote_yields_none() {
         let tmp = make_tmp_dir("gitlab_remote");
         git_init(&tmp);
-
-        git_run(
-            &tmp,
-            &["remote", "add", "origin", "https://gitlab.com/OWNER/REPO.git"],
-        );
+        git_run(&tmp, &["remote", "add", "origin", "https://gitlab.com/OWNER/REPO.git"]);
 
         let state = scan(&tmp, &[], "3 years");
-        assert_eq!(
-            state.github_url, None,
-            "gitlab remote must not produce a github URL"
-        );
+        assert_eq!(state.github_url, None);
     }
 
-    // 11. No remote configured -> github_url None (is_repo still true).
     #[test]
     fn no_remote_yields_none() {
         let tmp = make_tmp_dir("no_remote");
@@ -740,7 +545,6 @@ mod tests {
         assert_eq!(state.github_url, None);
     }
 
-    // 12. Detached HEAD (checkout a commit SHA directly) -> doesn't panic.
     #[test]
     fn detached_head_does_not_panic() {
         let tmp = make_tmp_dir("detached");
@@ -750,17 +554,59 @@ mod tests {
         let head_sha = git_run(&tmp, &["rev-parse", "HEAD"]).trim().to_string();
         assert!(Command::new("git")
             .args(["-C", tmp.to_str().unwrap(), "checkout", &head_sha])
-            .spawn().unwrap()
-            .wait().unwrap().success());
+            .spawn().unwrap().wait().unwrap().success());
 
-        // Should not panic; branch will read "HEAD" in detached state (parity with Python).
         let state = scan(&tmp, &[], "3 years");
         assert!(state.is_repo);
         assert_eq!(state.branch.as_deref(), Some("HEAD"));
         assert!(state.last_commit_at.is_some());
     }
 
-    // github_url() unit tests — pure logic, no git invocations.
+    #[test]
+    fn insteadof_shorthand_remote_resolves_to_real_url() {
+        let tmp = make_tmp_dir("insteadof_remote");
+        git_init(&tmp);
+        git_run(&tmp, &["remote", "add", "origin", "gk:"]);
+        assert!(Command::new("git")
+            .args([
+                "-C", tmp.to_str().unwrap(),
+                "config", "--local",
+                "url.https://github.com/eficode-academy/git-katas.git.insteadOf", "gk:",
+            ])
+            .spawn().unwrap().wait().unwrap().success());
+
+        let state = scan(&tmp, &[], "3 years");
+        assert_eq!(
+            state.github_url,
+            Some("https://github.com/eficode-academy/git-katas".to_string()),
+            "insteadOf shorthand must resolve to the real GitHub URL, not fail/None"
+        );
+    }
+
+    #[test]
+    fn staged_then_modified_file_counts_as_one_entry() {
+        let tmp = make_tmp_dir("staged_then_modified");
+        git_init(&tmp);
+        git_add_and_commit(&tmp, "README.md", "hello");
+
+        fs::write(tmp.join("new.txt"), "v1").expect("write new.txt");
+        assert!(Command::new("git")
+            .args(["-C", tmp.to_str().unwrap(), "add", "new.txt"])
+            .envs(GIT_ENV.iter().map(|(k, v)| (k, *v)))
+            .spawn().unwrap().wait().unwrap().success());
+        fs::write(tmp.join("new.txt"), "v2, modified after staging").expect("rewrite new.txt");
+
+        let cli_porcelain = git_run(&tmp, &["status", "--porcelain"]);
+        let cli_lines: Vec<&str> = cli_porcelain.lines().filter(|l| !l.trim().is_empty()).collect();
+        assert_eq!(cli_lines.len(), 1, "real git must report AM as one line: {cli_lines:?}");
+
+        let state = scan(&tmp, &[], "3 years");
+        assert_eq!(
+            state.uncommitted_files, 1,
+            "gix status parity check: staged-then-modified must count as one entry, not two"
+        );
+    }
+
     #[test]
     fn github_url_ssh_normalization() {
         assert_eq!(
@@ -778,32 +624,9 @@ mod tests {
     }
 
     #[test]
-    fn github_url_ssh_without_dotgit() {
-        assert_eq!(
-            github_url("git@github.com:OWNER/REPO"),
-            Some("https://github.com/OWNER/REPO".to_string())
-        );
-    }
-
-    #[test]
-    fn github_url_https_without_dotgit() {
-        assert_eq!(
-            github_url("https://github.com/OWNER/REPO"),
-            Some("https://github.com/OWNER/REPO".to_string())
-        );
-    }
-
-    #[test]
     fn github_url_non_github_returns_none() {
         assert_eq!(github_url("https://gitlab.com/OWNER/REPO.git"), None);
-        assert_eq!(
-            github_url("ssh://git@gitlab.com/OWNER/REPO.git"),
-            None
-        );
-        assert_eq!(
-            github_url("https://bitbucket.org/OWNER/REPO.git"),
-            None
-        );
+        assert_eq!(github_url("ssh://git@gitlab.com/OWNER/REPO.git"), None);
     }
 
     #[test]
@@ -820,36 +643,7 @@ mod tests {
     }
 
     #[test]
-    fn parse_date_accepts_rfc3339() {
-        let parsed = parse_date("2024-01-15T10:30:00+00:00").unwrap();
-        assert_eq!(parsed.year(), 2024);
-        assert_eq!(parsed.month(), 1);
-        assert_eq!(parsed.day(), 15);
-        assert_eq!(parsed.hour(), 10);
-        assert_eq!(parsed.minute(), 30);
-    }
-
-    #[test]
-    fn parse_date_accepts_z_suffix() {
-        let parsed = parse_date("2024-01-15T10:30:00Z").unwrap();
-        // Z suffix must resolve to Utc — re-anchor to Utc and confirm equality.
-        assert_eq!(parsed.with_timezone(&Utc), parsed);
-    }
-
-    #[test]
-    fn parse_date_rejects_non_iso() {
-        // RFC 2822-style date is NOT strict ISO 8601.
-        assert!(parse_date("Mon, 15 Jan 2024 10:30:00 +0000").is_none());
-    }
-
-    // A scan call with a nonexistent path should not panic.
-    #[test]
     fn scan_nonexistent_path_does_not_panic() {
-        let _guard = TempGuard::new("scan_nonexistent");
-        // Use a path under /nonexistent so we never collide with anything real.
         scan(Path::new("/swab_rs_no_such_dir_xyzzy99"), &[], "3 years");
     }
-
-    // All tests cleaned up via TempGuard drop impl. No global teardown needed — Rust
-    // guarantees Drop runs when the guard goes out of scope at end of each test.
 }

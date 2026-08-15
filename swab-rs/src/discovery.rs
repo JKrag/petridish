@@ -248,13 +248,13 @@ pub fn resolve_root(cwd: &Path, config: &Config) -> PathBuf {
 /// regardless of authorship. A non-repo path is never foreign (`false`). An empty
 /// `author_patterns` list means everything is foreign (`true`) for any repo.
 ///
-/// EXPERIMENTAL git2 (libgit2) backend — see `git.rs`'s module doc comment for the
-/// `experiment/git2-backend` benchmark branch context and the known `--since`/`--author`
-/// parsing gaps versus the original CLI-subprocess implementation.
+/// gix-backed — see `git.rs`'s module doc comment for the full backend history. Reuses
+/// `git::status_entries`/`git::author_since_revwalk` directly rather than duplicating the
+/// gix status/ignore-parity and regex-author-matching logic those functions already encode.
 pub fn is_foreign(path: &Path, config: &Config) -> bool {
     // Pre-check: confirm this is actually a git repo before running any authorship logic.
-    // A failed `Repository::open` degrades to "not a repo" (never foreign) per contract.
-    let Ok(repo) = git2::Repository::open(path) else {
+    // A failed `gix::open` degrades to "not a repo" (never foreign) per contract.
+    let Ok(repo) = gix::open(path) else {
         return false;
     };
 
@@ -265,27 +265,16 @@ pub fn is_foreign(path: &Path, config: &Config) -> bool {
     }
 
     // Dirty-tree check (Rust-specific reversal of Python's order, per spec): any status
-    // entry is positive evidence of active work, overriding authorship. Uses
-    // `crate::git::effective_status_entries` (not a raw `statuses()` call) so this check
-    // is subject to the same libgit2-ignore-negation fix as `git::scan`'s dirty check —
-    // see that function's doc comment for why a raw call would be wrong here too.
-    {
-        if !crate::git::effective_status_entries(&repo).is_empty() {
-            return false;
-        }
+    // entry is positive evidence of active work, overriding authorship.
+    if !crate::git::status_entries(&repo).is_empty() {
+        return false;
     }
 
     // Authorship check: any pattern matching a commit within the since-horizon means NOT
-    // foreign. No pattern matches -> foreign. Uses `crate::git::run_author_since_query`
-    // (the git-CLI-backed hybrid call, NOT a git2 revwalk) for the same reason `git::scan`
-    // does — see that module's doc comment: a git2 revwalk visiting every commit one at a
-    // time is measurably slower per commit than git's own `--author --since` search,
-    // especially on repos where no commit matches within the window and the walk (with no
-    // early exit at all, unlike the CLI's own optimized search) would have to visit every
-    // commit in the horizon before giving up. A query failure/timeout on one pattern just
-    // means "no match for this one" — continue to the next pattern, never bail out.
+    // foreign. No pattern matches -> foreign. A query failure on one pattern just means "no
+    // match for this one" — continue to the next pattern, never bail out.
     for pattern in &config.author_patterns {
-        if crate::git::run_author_since_query(path, pattern, &config.author_since).is_some() {
+        if crate::git::author_since_revwalk(&repo, pattern, &config.author_since).is_some() {
             return false; // matching commit -> not foreign.
         }
     }
