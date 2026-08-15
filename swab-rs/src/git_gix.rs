@@ -99,10 +99,8 @@ pub fn scan(path: &Path, author_patterns: &[String], author_since: &str) -> GitS
     }
     result.mine_last_commit_at = mine_last;
 
-    if let Some(Ok(remote)) = repo.find_default_remote(gix::remote::Direction::Fetch) {
-        if let Some(url) = remote.url(gix::remote::Direction::Fetch) {
-            result.github_url = github_url(&url.to_bstring().to_string());
-        }
+    if let Some(raw) = resolve_remote_fetch_url(&repo) {
+        result.github_url = github_url(&raw);
     }
 
     result
@@ -116,6 +114,47 @@ pub fn scan(path: &Path, author_patterns: &[String], author_since: &str) -> GitS
 /// resolve the symbolic name, git's plumbing chooses not to), so the unborn case must be
 /// special-cased to `None` here or this diverges from both git.rs (git2, which also returns
 /// `None` here since `repo.head()` errors on unborn) and the Python CLI-subprocess original.
+/// `remote.origin.url`, with `url.<base>.insteadOf` rewriting applied by hand.
+///
+/// Found via `diff_check.sh` against real `$HOME` (a repo whose `remote.origin.url` is the
+/// literal shorthand string `"gk:"`, rewritten to a real GitHub URL only via a global
+/// `[url "https://github.com/eficode-academy/git-katas.git"] insteadOf = gk:` entry). Real
+/// git and libgit2 both apply `insteadOf` as a pure textual prefix-substitution BEFORE
+/// treating the result as a URL at all -- the raw value never has to be a valid URL on its
+/// own. `gix::Repository::find_remote`/`find_default_remote` do NOT do this: they refuse to
+/// construct a `Remote` at all once the raw value fails `gix_url::parse` (confirmed via a
+/// throwaway probe -- `try_find_remote_without_url_rewrite` errors identically, so this
+/// isn't a rewrite-ordering bug, gix's `Remote` construction pipeline requires URL-validity
+/// up front where git's does not). Reimplemented by hand here directly against the raw
+/// config string + `url.*.insteadOf` entries (longest-prefix-match wins, matching git's own
+/// documented algorithm), never touching `gix::url::parse` -- `github_url()` below is a
+/// plain string matcher and doesn't need a validated `Url` type anyway.
+fn resolve_remote_fetch_url(repo: &gix::Repository) -> Option<String> {
+    let config = repo.config_snapshot();
+    let raw = config.string("remote.origin.url")?.to_string();
+
+    let mut best: Option<(usize, String)> = None;
+    if let Some(sections) = config.sections_by_name("url") {
+        for section in sections {
+            let Some(base) = section.header().subsection_name() else { continue };
+            let base = base.to_string();
+            for prefix in section.values("insteadOf") {
+                let prefix = prefix.to_string();
+                if raw.starts_with(prefix.as_str())
+                    && best.as_ref().is_none_or(|(len, _)| prefix.len() > *len)
+                {
+                    best = Some((prefix.len(), base.clone()));
+                }
+            }
+        }
+    }
+
+    Some(match best {
+        Some((len, base)) => format!("{base}{}", &raw[len..]),
+        None => raw,
+    })
+}
+
 fn branch_name(repo: &gix::Repository) -> Option<String> {
     let head = repo.head().ok()?;
     if head.is_detached() {
@@ -131,6 +170,14 @@ fn gix_time_to_utc(time: gix::date::Time) -> Option<DateTime<Utc>> {
     Utc.timestamp_opt(time.seconds, 0).single()
 }
 
+/// A path that's both staged (index-vs-tree) AND further modified in the worktree
+/// (worktree-vs-index) -- e.g. `git add`ed, then edited again without re-adding -- shows up
+/// in real `git status --porcelain` as ONE line (`AM path`). gix's status stream instead
+/// emits two separate items for that same path, one `TreeIndex::Addition` and one
+/// `IndexWorktree::Modification` (confirmed via a throwaway probe against a real repo in
+/// this codebase's own dev tree that had exactly two such paths, inflating
+/// `uncommitted_files` by exactly 2 versus the real Python/git-CLI implementation). Dedup by
+/// path here to collapse back to porcelain's one-line-per-path semantics.
 fn status_entries(repo: &gix::Repository) -> Vec<String> {
     let Ok(platform) = repo.status(gix::progress::Discard) else {
         return Vec::new();
@@ -138,8 +185,10 @@ fn status_entries(repo: &gix::Repository) -> Vec<String> {
     let Ok(iter) = platform.into_iter(None) else {
         return Vec::new();
     };
+    let mut seen = std::collections::HashSet::new();
     iter.filter_map(|item| item.ok())
         .map(|item| item.location().to_string())
+        .filter(|loc| seen.insert(loc.clone()))
         .collect()
 }
 
@@ -477,6 +526,64 @@ mod tests {
         assert!(state.is_repo);
         assert_eq!(state.branch.as_deref(), Some("HEAD"));
         assert!(state.last_commit_at.is_some());
+    }
+
+    // Regression: found via diff_check.sh against real $HOME (a repo whose
+    // remote.origin.url was a global-config `insteadOf` shorthand, "gk:"). gix's
+    // find_remote/find_default_remote refuse to construct a Remote at all once the raw
+    // value fails gix_url::parse -- "gk:" alone is not a valid URL, so this never gets a
+    // chance to rewrite. Real git/libgit2 apply insteadOf as a pure textual prefix
+    // substitution BEFORE the result is ever treated as a URL. resolve_remote_fetch_url
+    // reimplements that by hand.
+    #[test]
+    fn insteadof_shorthand_remote_resolves_to_real_url() {
+        let tmp = make_tmp_dir("insteadof_remote");
+        git_init(&tmp);
+        git_run(&tmp, &["remote", "add", "origin", "gk:"]);
+        assert!(Command::new("git")
+            .args([
+                "-C", tmp.to_str().unwrap(),
+                "config", "--local",
+                "url.https://github.com/eficode-academy/git-katas.git.insteadOf", "gk:",
+            ])
+            .spawn().unwrap().wait().unwrap().success());
+
+        let state = scan(&tmp, &[], "3 years");
+        assert_eq!(
+            state.github_url,
+            Some("https://github.com/eficode-academy/git-katas".to_string()),
+            "insteadOf shorthand must resolve to the real GitHub URL, not fail/None"
+        );
+    }
+
+    // Regression: found via diff_check.sh against real $HOME. A path that's staged
+    // (index-vs-tree Addition) AND further modified in the worktree (worktree-vs-index
+    // Modification) without re-staging -- real git status --porcelain's "AM" line -- must
+    // count as ONE uncommitted entry. gix's status stream emits it as two separate items;
+    // status_entries() must dedup by path.
+    #[test]
+    fn staged_then_modified_file_counts_as_one_entry() {
+        let tmp = make_tmp_dir("staged_then_modified");
+        git_init(&tmp);
+        git_add_and_commit(&tmp, "README.md", "hello");
+
+        fs::write(tmp.join("new.txt"), "v1").expect("write new.txt");
+        assert!(Command::new("git")
+            .args(["-C", tmp.to_str().unwrap(), "add", "new.txt"])
+            .envs(GIT_ENV.iter().map(|(k, v)| (k, *v)))
+            .spawn().unwrap().wait().unwrap().success());
+        // Modify again AFTER staging, without re-adding -> real git reports "AM new.txt".
+        fs::write(tmp.join("new.txt"), "v2, modified after staging").expect("rewrite new.txt");
+
+        let cli_porcelain = git_run(&tmp, &["status", "--porcelain"]);
+        let cli_lines: Vec<&str> = cli_porcelain.lines().filter(|l| !l.trim().is_empty()).collect();
+        assert_eq!(cli_lines.len(), 1, "real git must report AM as one line: {cli_lines:?}");
+
+        let state = scan(&tmp, &[], "3 years");
+        assert_eq!(
+            state.uncommitted_files, 1,
+            "gix status parity check: staged-then-modified must count as one entry, not two"
+        );
     }
 
     #[test]
