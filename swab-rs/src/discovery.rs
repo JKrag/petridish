@@ -1,6 +1,6 @@
 //! Project crawl, monorepo-collapse, and authorship filter. Mirrors `src/petridish/discovery.py`.
 //!
-//! Two invariants live here and must not regress (verbatim from `IMPLEMENTATION_PLAN.md` §0):
+//! Two invariants live here and must not regress (verbatim from `ARCHITECTURE.md` §0):
 //! - F2: "The directory slug is not reversibly decodable ... Never parse the dirname for a
 //!   path." `resolve_root` only ever walks the real filesystem, never a Claude-projects slug.
 //! - F9: "`cwd` varies within a single transcript ... every raw cwd must be resolved up to

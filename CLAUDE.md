@@ -20,9 +20,10 @@ activity, and aggregates into `~/.petridish/projects.json`.
   Code hook (invoking the Rust binaries by name via `shutil.which`). None of these write
   `projects.json` — they only ever read it.
 
-**Read `IMPLEMENTATION_PLAN.md` before writing any Python code in `src/petridish/`.** It's
-the original scanner spec, superseded for the scanner itself (that's `swab-rs/` now) but
-still the reference for `schema.py`'s wire contract and the frontends' read-side behavior.
+**Read `ARCHITECTURE.md` before writing any code, in either language.** It's the
+language-agnostic architecture/findings/schema doc — supersedes
+`docs/archive/IMPLEMENTATION_PLAN.md` (the original all-Python build spec, kept only as a
+historical record) for everything still true regardless of implementation.
 
 ## Stack & layout
 

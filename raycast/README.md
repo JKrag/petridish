@@ -2,8 +2,8 @@
 
 Reads `~/.petridish/projects.json` (written by `swab scan`) and renders it as
 a Raycast list, grouped by `active` / `in_flight` / `stale` / `cold`. Read-only
-— never writes that file. See `IMPLEMENTATION_PLAN.md` §9 in the repo root for
-the design notes and known gaps.
+— never writes that file. See `ARCHITECTURE.md` §7 in the repo root for a summary, or
+`docs/archive/IMPLEMENTATION_PLAN.md` §9 for the full original design notes and known gaps.
 
 ## Setup
 

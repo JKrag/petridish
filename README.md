@@ -95,9 +95,12 @@ cold       old-experiment   idle                   main
 
 ## Docs
 
-- `DESIGN.md` — architecture, distribution plan (§7)
-- `IMPLEMENTATION_PLAN.md` — authoritative build spec, module-by-module (supersedes DESIGN.md on
-  conflict)
+- `ARCHITECTURE.md` — language-agnostic architecture, empirical findings, and the
+  `projects.json` schema; the current authoritative reference
+- `DESIGN.md` — original system design document (superseded by `ARCHITECTURE.md` where the
+  two disagree, kept as historical context)
+- `docs/archive/IMPLEMENTATION_PLAN.md` — the original all-Python build spec, archived once
+  the scanner was ported to Rust
 - `CLAUDE.md` — non-negotiable invariants for anyone changing this code
 
 ## License

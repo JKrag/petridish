@@ -161,7 +161,7 @@ def pad_row(row: list[str], widths: list[int]) -> str:
 # ---------------------------------------------------------------------------
 
 #: schema.py's AGENT_STATES is ("working", "recent", "idle") — that's the
-#: full granularity the sensors currently produce (see IMPLEMENTATION_PLAN.md
+#: full granularity the sensors currently produce (see ARCHITECTURE.md
 #: F3: liveness is mtime-recency based, no finer state machine from
 #: transcripts alone). A tool like pixtuoid showing reading/editing/thinking
 #: is reading richer hook events this project doesn't sense yet.

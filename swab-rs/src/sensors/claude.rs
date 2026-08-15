@@ -1,6 +1,6 @@
 //! Claude Code transcript sensor. Mirrors `src/petridish/sensors/claude.py`.
 //! The primary implementation of invariants #2–#4 (`CLAUDE.md`) — read these verbatim
-//! findings from `IMPLEMENTATION_PLAN.md` §0 before writing this module's logic:
+//! findings from `ARCHITECTURE.md` §0 before writing this module's logic:
 //!
 //! - F2: slug is not reversibly decodable — `cwd` is read from JSONL content, NEVER the
 //!   `~/.claude/projects/<slug>/` dirname.

@@ -2,7 +2,7 @@
 
 This module is the shared contract: the daemon writes it, every frontend reads
 it, and each sensor produces :class:`AgentSignal` values that the aggregator
-folds into :class:`Project` records.  See ``IMPLEMENTATION_PLAN.md`` §4.
+folds into :class:`Project` records.  See ``ARCHITECTURE.md`` §4.
 
 Two rules matter more than the rest:
 

@@ -1,5 +1,5 @@
 //! VS Code Copilot sensor. Mirrors `src/petridish/sensors/copilot.py`.
-//! Per `IMPLEMENTATION_PLAN.md` §0 finding F6: `workspaceStorage/<hash>/` dirs containing a
+//! Per `ARCHITECTURE.md` §0 finding F6: `workspaceStorage/<hash>/` dirs containing a
 //! `chatSessions/` subdir are attributable via the sibling `workspace.json`'s
 //! `{"folder": "file://..."}` URI — percent-decoded (e.g. `%20` -> space), not string-sliced.
 
