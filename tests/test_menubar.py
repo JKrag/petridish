@@ -16,7 +16,10 @@ def test_worked_example_matches_exact_string():
     """The literal worked example in the spec, asserted as one exact string.
 
     Keeping this as a single equality — rather than line-by-line — makes any
-    regression in header/footer/format immediately obvious.
+    regression in header/footer/format immediately obvious. ``alpha`` has a
+    live AI session, so it surfaces at the flat top level (not nested under
+    "Active") and is excluded from the "Active" bucket entirely -- since
+    alpha was the only active project, no "Active" header appears at all.
     """
     alpha = Project(
         name="alpha", path="/p/alpha", category="demo", id="id-alpha",
@@ -38,8 +41,8 @@ def test_worked_example_matches_exact_string():
     expected = (
         "🧫 1/2\n"
         "---\n"
-        "Active\n"
-        '--alpha · main ✎3 ● | href="file:///p/alpha"\n'
+        'alpha · main ✎3 ● | href="file:///p/alpha"\n'
+        "---\n"
         "Cold\n"
         '--beta | href="file:///p/beta"\n'
         "---\n"
@@ -222,6 +225,86 @@ def test_path_with_space_is_quoted_in_href():
     )
     line = next(line for line in render_menubar(radar).splitlines() if line.startswith("--spacey"))
     assert line == '--spacey | href="file:///p/has space/repo"'
+
+
+# ---------------------------------------------------------------------------
+# 10. Live-session restructure: any project with agent.state == "working"
+#     surfaces flat at the top level, regardless of its status bucket, and
+#     is excluded from that bucket's submenu so it never appears twice.
+# ---------------------------------------------------------------------------
+
+def test_working_project_surfaces_at_top_level_from_any_bucket():
+    """A working project in the 'stale' bucket still surfaces at the flat
+    top level, not nested under a 'Stale' header — and 'Stale' still shows
+    its other (non-working) members normally."""
+    working_but_stale = Project(id="t-10", category="demo",
+        name="urgent", path="/p/urgent", status_bucket="stale",
+        git=GitState(is_repo=True, branch="main"),
+        agent=AgentState(state="working"),
+    )
+    idle_stale = Project(id="t-11", category="demo",
+        name="quiet", path="/p/quiet", status_bucket="stale",
+        agent=AgentState(state="idle"),
+    )
+    radar = Radar(
+        updated_at=datetime(2026, 1, 1, 0, 0, 0, tzinfo=timezone.utc),
+        projects=(working_but_stale, idle_stale),
+    )
+    expected = (
+        "🧫 1/2\n"
+        "---\n"
+        'urgent · main ● | href="file:///p/urgent"\n'
+        "---\n"
+        "Stale\n"
+        '--quiet | href="file:///p/quiet"\n'
+        "---\n"
+        "Refresh | refresh=true"
+    )
+    assert render_menubar(radar) == expected
+
+
+def test_no_live_projects_omits_top_level_section_and_divider():
+    """With nobody working, the output is unchanged from the pre-restructure
+    shape: no flat top-level entries, no extra divider before the first
+    bucket header."""
+    project = Project(id="t-12", category="demo",
+        name="idle-one", path="/p/idle-one", status_bucket="active",
+        agent=AgentState(state="idle"),
+    )
+    radar = Radar(
+        updated_at=datetime(2026, 1, 1, 0, 0, 0, tzinfo=timezone.utc),
+        projects=(project,),
+    )
+    expected = (
+        "🧫 0/1\n"
+        "---\n"
+        "Active\n"
+        '--idle-one | href="file:///p/idle-one"\n'
+        "---\n"
+        "Refresh | refresh=true"
+    )
+    assert render_menubar(radar) == expected
+
+
+def test_all_projects_working_omits_bucket_sections_and_mid_divider():
+    """When every project is working, there are no bucket sections at all —
+    just the flat top-level list, with no dangling mid-divider."""
+    project = Project(id="t-13", category="demo",
+        name="only-one", path="/p/only-one", status_bucket="active",
+        agent=AgentState(state="working"),
+    )
+    radar = Radar(
+        updated_at=datetime(2026, 1, 1, 0, 0, 0, tzinfo=timezone.utc),
+        projects=(project,),
+    )
+    expected = (
+        "🧫 1/1\n"
+        "---\n"
+        'only-one ● | href="file:///p/only-one"\n'
+        "---\n"
+        "Refresh | refresh=true"
+    )
+    assert render_menubar(radar) == expected
 
 
 if __name__ == "__main__":  # pragma: no cover
