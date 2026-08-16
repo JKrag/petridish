@@ -10,7 +10,12 @@ Output format — four sections joined with ``\\n``:
 2. Project sections, ordered by bucket (active → in_flight → stale → cold);
    each bucket emits a header followed by one line per project, sorted by
    ``project.name``.  Projects that are not in any of the four buckets are
-   dropped — ``STATUS_BUCKETS`` is the universe of emitable labels.
+   dropped — ``STATUS_BUCKETS`` is the universe of emitable labels. Each
+   project line's ``href`` value is double-quoted (``href="file://..."``) —
+   xbar/SwiftBar split a line's ``key=value`` parameters on whitespace, so an
+   unquoted value containing a space (a project path like
+   ``~/Downloads/Kubernetes handin_639180485``) breaks xbar's own parser with
+   a "malformed parameters: missing equals" error and disables the plugin.
 3. Footer divider and a manual-refresh link.
 
 An entirely empty radar produces the same four-section shape with a single
@@ -85,7 +90,7 @@ def render_menubar(radar: Radar) -> str:
                 continue
             lines.append(label)
             for project in sorted(bucket_projects, key=lambda p: p.name):
-                lines.append(f"--{_project_label(project)} | href=file://{project.path}")
+                lines.append(f'--{_project_label(project)} | href="file://{project.path}"')
 
     lines.append("---")
     lines.append("Refresh | refresh=true")

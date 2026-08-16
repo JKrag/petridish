@@ -39,9 +39,9 @@ def test_worked_example_matches_exact_string():
         "🧫 1/2\n"
         "---\n"
         "Active\n"
-        "--alpha · main ✎3 ● | href=file:///p/alpha\n"
+        '--alpha · main ✎3 ● | href="file:///p/alpha"\n'
         "Cold\n"
-        "--beta | href=file:///p/beta\n"
+        '--beta | href="file:///p/beta"\n'
         "---\n"
         "Refresh | refresh=true"
     )
@@ -141,7 +141,7 @@ def test_clean_repo_no_pencil_marker():
     )
     line = next(line for line in render_menubar(radar).splitlines() if line.startswith("--repo"))
     assert "✎" not in line
-    assert line.endswith(" | href=file:///p/repo")
+    assert line.endswith(' | href="file:///p/repo"')
 
 
 # ---------------------------------------------------------------------------
@@ -181,7 +181,7 @@ def test_non_repo_no_branch_segment():
     # The body of the label is just "nogit" — no ` · ` separator anywhere in
     # the project line.
     assert " · " not in line
-    assert line == "--nogit | href=file:///p/nogit"
+    assert line == '--nogit | href="file:///p/nogit"'
 
 
 # ---------------------------------------------------------------------------
@@ -200,6 +200,28 @@ def test_idle_project_no_working_dot():
     )
     line = next(line for line in render_menubar(radar).splitlines() if line.startswith("--idle"))
     assert "●" not in line
+
+
+# ---------------------------------------------------------------------------
+# 9. A path containing a space is quoted in the href — xbar/SwiftBar split a
+#    line's key=value parameters on whitespace, so an unquoted value with a
+#    space (e.g. "~/Downloads/Kubernetes handin_639180485") breaks xbar's own
+#    parser ("malformed parameters: missing equals") and disables the plugin.
+#    Confirmed against a real xbar install, not just a spec reading.
+# ---------------------------------------------------------------------------
+
+def test_path_with_space_is_quoted_in_href():
+    project = Project(id="t-9", category="demo",
+        name="spacey", path="/p/has space/repo", status_bucket="active",
+        git=GitState(is_repo=False),
+        agent=AgentState(state="idle"),
+    )
+    radar = Radar(
+        updated_at=datetime(2026, 1, 1, 0, 0, 0, tzinfo=timezone.utc),
+        projects=(project,),
+    )
+    line = next(line for line in render_menubar(radar).splitlines() if line.startswith("--spacey"))
+    assert line == '--spacey | href="file:///p/has space/repo"'
 
 
 if __name__ == "__main__":  # pragma: no cover

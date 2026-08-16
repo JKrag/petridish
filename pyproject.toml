@@ -40,6 +40,7 @@ Issues = "https://github.com/JKrag/petridish/issues"
 # needed to change.
 [project.scripts]
 petri = "petridish.tui:main"
+petridish-installer = "petridish.installer:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]
