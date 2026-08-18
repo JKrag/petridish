@@ -46,6 +46,68 @@ def group_by_bucket(
     return buckets
 
 
+def worktree_children(project: Project, projects: list[Project]) -> list[Project]:
+    """``.worktrees/<name>`` children of ``project`` among ``projects``.
+
+    A child is any project whose ``parent_path`` equals ``project.path`` —
+    see the "Worktree project" glossary entry in ``CONTEXT.md`` and ADR-0001.
+    """
+    return [p for p in projects if p.parent_path == project.path]
+
+
+def running_layout(
+    visible: list[Project],
+) -> list[tuple[Project, list[Project]]]:
+    """Group the RUNNING section into ``(root, nested_children)`` pairs.
+
+    A project is a *root* if its own ``status_bucket`` is ``"active"``, OR
+    it has no active bucket of its own but has at least one worktree child
+    that IS active (the "a project is being worked on if a worktree is"
+    rollup from ADR-0001 — display-only, never written to ``status_bucket``).
+
+    A project is a *nested child* of a root — omitted from the top-level
+    list, listed under its parent's ``nested_children`` instead — when it is
+    itself active AND its ``parent_path`` matches a root that made it into
+    this same layout. An active worktree whose parent did NOT make it into
+    RUNNING stays a top-level root (nothing to nest it under).
+
+    Callers still owe the roots list a call to :func:`sort_for_dashboard`
+    (and each root's ``nested_children`` too, if order matters) — this
+    function only decides membership and parent/child grouping, not order,
+    matching the rest of this module's "pure state, caller renders" split.
+    """
+    active = [p for p in visible if p.status_bucket == "active"]
+    active_paths = {p.path for p in active}
+
+    rolled_in = [
+        p
+        for p in visible
+        if p.path not in active_paths
+        and any(c.status_bucket == "active" for c in worktree_children(p, visible))
+    ]
+
+    roots = active + rolled_in
+    root_paths = {p.path for p in roots}
+
+    nested_paths = {
+        p.path for p in active if p.parent_path and p.parent_path in root_paths
+    }
+
+    layout: list[tuple[Project, list[Project]]] = []
+    for root in roots:
+        if root.path in nested_paths:
+            continue
+        children = [c for c in worktree_children(root, visible) if c.path in nested_paths]
+        layout.append((root, children))
+    return layout
+
+
+def worktree_count(project: Project, projects: list[Project]) -> int:
+    """Total worktree children of ``project``, any bucket — for the
+    non-RUNNING-section "N worktrees" annotation (ADR-0001)."""
+    return len(worktree_children(project, projects))
+
+
 def filter_projects(
     projects: list[Project],
     query: str,

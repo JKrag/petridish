@@ -39,8 +39,11 @@ from petridish.tui_state import (
     is_stale,
     move,
     pad_row,
+    running_layout,
     selected_project,
     SelectionState,
+    worktree_children,
+    worktree_count,
 )
 
 # ---------------------------------------------------------------------------
@@ -56,12 +59,15 @@ def _project(
     dirty: bool = False,
     agent_state: str = "idle",
     active_agent: str | None = None,
+    path: str | None = None,
+    parent_path: str | None = None,
 ) -> Project:
     return Project(
         id=f"id-{name}",
         name=name,
-        path=f"/fake/{name}",
+        path=path or f"/fake/{name}",
         category="personal",
+        parent_path=parent_path,
         is_foreign=foreign,
         git=GitState(
             is_repo=True,
@@ -105,6 +111,100 @@ def test_group_by_bucket_excludes_foreign_projects():
     grouped = group_by_bucket(projs)
     assert grouped["active"] == [_project("me", status_bucket="active")]
     assert len(grouped["active"]) == 1
+
+
+# ---------------------------------------------------------------------------
+# worktree_children / running_layout / worktree_count (ADR-0001)
+# ---------------------------------------------------------------------------
+
+def test_worktree_children_matches_on_parent_path():
+    parent = _project("parent", path="/repos/parent")
+    child = _project(
+        "child", path="/repos/parent/.worktrees/child", parent_path="/repos/parent"
+    )
+    unrelated = _project("unrelated", path="/repos/other")
+    assert worktree_children(parent, [parent, child, unrelated]) == [child]
+    assert worktree_children(unrelated, [parent, child, unrelated]) == []
+
+
+def test_running_layout_nests_an_active_child_under_its_active_parent():
+    parent = _project("parent", path="/repos/parent", status_bucket="active")
+    child = _project(
+        "child",
+        path="/repos/parent/.worktrees/child",
+        parent_path="/repos/parent",
+        status_bucket="active",
+    )
+    layout = running_layout([parent, child])
+    assert layout == [(parent, [child])]
+
+
+def test_running_layout_rolls_a_non_active_parent_in_via_an_active_child():
+    parent = _project("parent", path="/repos/parent", status_bucket="stale")
+    child = _project(
+        "child",
+        path="/repos/parent/.worktrees/child",
+        parent_path="/repos/parent",
+        status_bucket="active",
+    )
+    layout = running_layout([parent, child])
+    assert layout == [(parent, [child])]
+
+
+def test_running_layout_leaves_an_active_child_flat_when_its_parent_is_absent():
+    # Parent directory was never itself discovered as a Project.
+    child = _project(
+        "child",
+        path="/repos/parent/.worktrees/child",
+        parent_path="/repos/parent",
+        status_bucket="active",
+    )
+    layout = running_layout([child])
+    assert layout == [(child, [])]
+
+
+def test_running_layout_leaves_a_non_active_child_out_entirely():
+    parent = _project("parent", path="/repos/parent", status_bucket="active")
+    child = _project(
+        "child",
+        path="/repos/parent/.worktrees/child",
+        parent_path="/repos/parent",
+        status_bucket="cold",
+    )
+    layout = running_layout([parent, child])
+    assert layout == [(parent, [])]
+
+
+def test_running_layout_never_changes_status_bucket():
+    parent = _project("parent", path="/repos/parent", status_bucket="stale")
+    child = _project(
+        "child",
+        path="/repos/parent/.worktrees/child",
+        parent_path="/repos/parent",
+        status_bucket="active",
+    )
+    running_layout([parent, child])
+    assert parent.status_bucket == "stale"
+    assert child.status_bucket == "active"
+
+
+def test_worktree_count_counts_all_children_regardless_of_their_bucket():
+    parent = _project("parent", path="/repos/parent", status_bucket="stale")
+    children = [
+        _project(
+            f"child-{i}",
+            path=f"/repos/parent/.worktrees/child-{i}",
+            parent_path="/repos/parent",
+            status_bucket=b,
+        )
+        for i, b in enumerate(["active", "cold", "cold"])
+    ]
+    assert worktree_count(parent, [parent, *children]) == 3
+
+
+def test_worktree_count_is_zero_for_a_project_with_no_children():
+    parent = _project("parent", path="/repos/parent")
+    assert worktree_count(parent, [parent]) == 0
 
 
 def test_group_by_bucket_empty_list_has_all_four_keys():

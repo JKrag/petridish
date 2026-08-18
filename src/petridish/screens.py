@@ -26,6 +26,7 @@ status pane.
 
 from __future__ import annotations
 
+from dataclasses import replace as dc_replace
 from datetime import datetime
 
 from petridish.schema import Project, QuotaState, Radar, to_utc
@@ -40,7 +41,9 @@ from petridish.tui_state import (
     group_by_bucket,
     has_agent,
     pad_row,
+    running_layout,
     sort_for_dashboard,
+    worktree_count,
 )
 
 #: Bucket labels as they appear on screen.
@@ -419,7 +422,18 @@ def render_dashboard(
     """
     visible = _visible(radar)
     buckets = group_by_bucket(visible)
-    running = sort_for_dashboard(buckets["active"], now=now)
+
+    # RUNNING membership + parent/child grouping (ADR-0001): a project with an
+    # active worktree child counts as running even if its own bucket doesn't,
+    # and an active worktree nests under a root that's also in this section
+    # rather than appearing as its own flat row. Display-only — status_bucket
+    # itself is never touched.
+    layout = running_layout(visible)
+    roots_sorted = sort_for_dashboard([root for root, _children in layout], now=now)
+    children_by_root = {root.path: children for root, children in layout}
+    running_flat = roots_sorted + [
+        c for root in roots_sorted for c in children_by_root[root.path]
+    ]
 
     lines = _header(
         radar, now=now, width=width, title="dashboard", n_projects=len(visible)
@@ -427,16 +441,26 @@ def render_dashboard(
 
     # "RUNNING" overstates it when nothing has an agent — the section is then
     # just the most recently touched projects.
-    label = "RUNNING" if any(has_agent(p) for p in running) else "RECENT"
+    label = "RUNNING" if any(has_agent(p) for p in running_flat) else "RECENT"
     note = "quietest first" + (" · compact" if density == "compact" else "")
-    lines += _section(label, len(running), width, note=note)
+    lines += _section(label, len(running_flat), width, note=note)
 
-    if not running:
+    # Build the ordered, display-named sequence once: roots first (suffixed
+    # with their parent's basename if they're a worktree that didn't get a
+    # parent row to nest under), each followed by its own sorted, indented
+    # worktree children.
+    display: list[Project] = []
+    for root in roots_sorted:
+        display.append(_worktree_display_name(root, nested=False))
+        for child in sort_for_dashboard(children_by_root[root.path], now=now):
+            display.append(_worktree_display_name(child, nested=True))
+
+    if not display:
         lines.append(" nothing active")
     elif density == "compact":
-        name_w = min(18, max((len(p.name) for p in running), default=4))
-        branch_w = min(15, max((len(p.git.branch or "-") for p in running), default=6))
-        for project in running:
+        name_w = min(18, max((len(p.name) for p in display), default=4))
+        branch_w = min(15, max((len(p.git.branch or "-") for p in display), default=6))
+        for project in display:
             lines.append(
                 format_compact_row(
                     project, now=now, width=width, name_w=name_w, branch_w=branch_w
@@ -444,13 +468,13 @@ def render_dashboard(
             )
         lines.append("")
     else:
-        for project in running:
+        for project in display:
             lines += format_card(project, now=now, width=width, home=home)
 
     in_flight = buckets["in_flight"]
     if in_flight:
         lines += _section("IN FLIGHT", len(in_flight), width, rule_above=True)
-        lines += _git_rows(in_flight, now=now, width=width)
+        lines += _git_rows(in_flight, now=now, width=width, visible=visible)
         lines.append("")
 
     rest = buckets["stale"] + buckets["cold"]
@@ -463,9 +487,11 @@ def render_dashboard(
             note=f"COLD {n_cold}" if n_cold else "",
             rule_above=True,
         )
-        lines += _git_rows(buckets["stale"], now=now, width=width)
+        lines += _git_rows(buckets["stale"], now=now, width=width, visible=visible)
         if n_cold:
-            names = " · ".join(p.name for p in buckets["cold"])
+            names = " · ".join(
+                _worktree_name_with_count(p, visible) for p in buckets["cold"]
+            )
             lines.append(_fit(f"   {names}", width))
 
     lines.append("─" * width)
@@ -473,14 +499,49 @@ def render_dashboard(
     return _clip(lines, width=width, height=height)
 
 
-def _git_rows(projects: list[Project], *, now: datetime, width: int) -> list[str]:
+def _parent_basename(parent_path: str) -> str:
+    """Last path component of a ``parent_path`` string, for display."""
+    return parent_path.rstrip("/").rsplit("/", 1)[-1] or parent_path
+
+
+def _worktree_display_name(project: Project, *, nested: bool) -> Project:
+    """Copy of ``project`` with its ``name`` rewritten for RUNNING-section
+    display (ADR-0001) — nothing else changes, so glyphs/labels/agent data
+    read off the copy are unaffected. A no-op copy (name unchanged) for any
+    project that isn't a worktree, so non-worktree output is unaffected."""
+    if nested:
+        return dc_replace(project, name=f"  └─ {project.name}")
+    if project.parent_path:
+        return dc_replace(
+            project, name=f"{project.name} (in {_parent_basename(project.parent_path)})"
+        )
+    return project
+
+
+def _worktree_name_with_count(project: Project, visible: list[Project]) -> str:
+    """``project.name``, plus a "· N worktrees" note when it has any
+    worktree children (any bucket) — the non-RUNNING-section annotation from
+    ADR-0001. No note when there are none, so non-worktree names round-trip."""
+    n = worktree_count(project, visible)
+    return f"{project.name} · {n} worktrees" if n else project.name
+
+
+def _git_rows(
+    projects: list[Project], *, now: datetime, width: int, visible: list[Project] | None = None
+) -> list[str]:
     """One line per project, git-centric — no agent column.
 
     Safe by construction for ``in_flight``: ``_bucket()`` returns ``"active"``
     whenever the agent state is working or recent, *before* it looks at age, so
     an in-flight project can never have a running agent. The column width that
     would carry agent state is spent on commit age instead.
+
+    ``visible`` (defaults to just ``projects`` if omitted) is the pool
+    searched for worktree children when annotating a row with "· N worktrees"
+    (ADR-0001) — a project's worktree children can live in any bucket, not
+    just this row's own.
     """
+    pool = visible if visible is not None else projects
     rows: list[str] = []
     for project in sorted(projects, key=lambda p: p.name):
         branch = _fit(project.git.branch or "-", 15).ljust(15)
@@ -491,6 +552,9 @@ def _git_rows(projects: list[Project], *, now: datetime, width: int) -> list[str
         )
         gh = "gh" if project.git.github_url else "—"
         left = f"   {_fit(project.name, 20).ljust(20)} {branch} {_dirty(project).rjust(4)}"
+        n = worktree_count(project, pool)
+        if n:
+            left += f"  · {n} worktrees"
         rows.append(_split(left, f"commit {commit.rjust(4)}   {gh}", width).rstrip())
     return rows
 

@@ -48,12 +48,14 @@ def _p(
     path: str | None = None,
     activity_s: float | None = None,
     foreign: bool = False,
+    parent_path: str | None = None,
 ) -> Project:
     return Project(
         id=f"id-{name}",
         name=name,
         path=path or f"{HOME}/repos/JKrag/{name}",
         category="JKrag",
+        parent_path=parent_path,
         is_foreign=foreign,
         status_bucket=bucket,
         git=GitState(
@@ -183,6 +185,106 @@ def test_dashboard_section_is_labelled_running_when_any_project_has_an_agent():
     )
     lines = render_dashboard(radar, now=NOW, width=78, height=40, home=HOME)
     assert lines[2].startswith(" RUNNING")
+
+
+# ---------------------------------------------------------------------------
+# 2b. Dashboard, worktree grouping (ADR-0001).
+# ---------------------------------------------------------------------------
+
+def test_worktree_nests_under_its_parent_when_both_are_running():
+    parent_path = f"{HOME}/repos/JKrag/catshow-searcher"
+    radar = _radar(
+        _p("catshow-searcher", path=parent_path, silence_s=30, agent="a", session="s"),
+        _p(
+            "afk-calendar-date-cluster",
+            path=f"{parent_path}/.worktrees/afk-calendar-date-cluster",
+            parent_path=parent_path,
+            silence_s=10,
+            agent="a",
+            session="s",
+        ),
+    )
+    lines = render_dashboard(radar, now=NOW, width=100, height=40, home=HOME)
+    names = [ln for ln in lines if "catshow-searcher" in ln or "└─" in ln]
+    assert any("catshow-searcher" in ln and "(in " not in ln for ln in names)
+    assert any("└─ afk-calendar-date-cluster" in ln for ln in names)
+    # The child must not ALSO appear as its own flat top-level row.
+    assert not any(
+        ln.strip().startswith("○ afk-calendar-date-cluster")
+        or ln.strip().startswith("● afk-calendar-date-cluster")
+        for ln in lines
+    )
+
+
+def test_worktree_gets_parent_suffix_when_its_parent_is_not_a_tracked_project():
+    # The parent directory was never itself discovered as a Project (e.g.
+    # outside any configured root) — only its worktree child is in `radar`.
+    # An active child always rolls an EXISTING parent into RUNNING (see the
+    # rollup test below), so this fallback path only fires when there's no
+    # parent row at all to nest under.
+    parent_path = f"{HOME}/repos/JKrag/catshow-searcher"
+    radar = _radar(
+        _p(
+            "afk-calendar-date-cluster",
+            path=f"{parent_path}/.worktrees/afk-calendar-date-cluster",
+            parent_path=parent_path,
+            silence_s=10,
+            agent="a",
+            session="s",
+        ),
+    )
+    lines = render_dashboard(radar, now=NOW, width=100, height=40, home=HOME)
+    assert any(
+        "afk-calendar-date-cluster (in catshow-searcher)" in ln for ln in lines
+    )
+    assert not any("└─" in ln for ln in lines)
+
+
+def test_active_worktree_rolls_its_stale_parent_into_running():
+    parent_path = f"{HOME}/repos/JKrag/catshow-searcher"
+    radar = _radar(
+        _p("catshow-searcher", path=parent_path, bucket="stale", commit_h=800),
+        _p(
+            "afk-calendar-date-cluster",
+            path=f"{parent_path}/.worktrees/afk-calendar-date-cluster",
+            parent_path=parent_path,
+            bucket="active",
+            silence_s=10,
+            agent="a",
+            session="s",
+        ),
+    )
+    lines = render_dashboard(radar, now=NOW, width=100, height=40, home=HOME)
+    # Parent shows up as a RUNNING root card (no "(in ...)" suffix — it's not
+    # itself a worktree), with its child nested directly beneath it.
+    assert any(ln.strip().startswith("○ catshow-searcher") for ln in lines)
+    assert any("└─ afk-calendar-date-cluster" in ln for ln in lines)
+    # The parent's own status_bucket is untouched by the rollup (display-only).
+    from petridish.tui_state import group_by_bucket
+    buckets = group_by_bucket(list(radar.projects))
+    assert any(p.name == "catshow-searcher" for p in buckets["stale"])
+    assert not any(p.name == "catshow-searcher" for p in buckets["active"])
+
+
+def test_non_running_bucket_annotates_parent_with_worktree_count():
+    parent_path = f"{HOME}/repos/JKrag/catshow-searcher"
+    radar = _radar(
+        _p("catshow-searcher", path=parent_path, bucket="stale", commit_h=800),
+        *[
+            _p(
+                f"task-{i}",
+                path=f"{parent_path}/.worktrees/task-{i}",
+                parent_path=parent_path,
+                bucket="cold",
+                commit_h=2000,
+            )
+            for i in range(3)
+        ],
+    )
+    lines = render_dashboard(radar, now=NOW, width=100, height=40, home=HOME)
+    assert any(
+        "catshow-searcher" in ln and "· 3 worktrees" in ln for ln in lines
+    )
 
 
 # ---------------------------------------------------------------------------
