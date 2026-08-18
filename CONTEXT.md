@@ -34,3 +34,23 @@ A project discovered under a configured root that isn't attributable to the
 user (see the authorship filter, `ARCHITECTURE.md` §2) — `is_foreign`
 on `Project`. Hidden by default in both `swab list` and `petri`; no `--all`
 equivalent toggle in `petri` v1.
+
+## Worktree project
+
+A `Project` whose resolved path contains a `.worktrees/<name>` segment —
+i.e. it was created under the `.worktrees/` convention shared by the
+`worktree-provision`/`feature-branch`/`using-git-worktrees` skills, not an
+ad-hoc `git worktree add` elsewhere on disk. Tracked as its own independent
+`Project` (own git state, own agent signals, own `status_bucket`) — never
+collapsed into its parent, because `resolve_root` deliberately stops at the
+first `.git` it finds (a worktree has its own) rather than walking up.
+`parent_path` on `Project` points back at the containing project's resolved
+path; `null` for everything else. Its own activity (commits, uncommitted
+files, agent sessions run with cwd inside it) never marks the parent active
+— they share only the underlying object database (`commondir`), not working
+directory, index, or branch. See ADR-0001 for why detection is a path
+convention rather than git-native, and why the "parent counts as active if
+a worktree child is active" rule lives only in `petri`'s display logic, not
+in the `status_bucket` written to `projects.json`.
+_Avoid_: "nested project", "sub-project" — a worktree project is a peer
+`Project` entry, not contained inside its parent's own entry.
