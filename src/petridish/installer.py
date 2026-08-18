@@ -318,11 +318,30 @@ def _default_runner(args: list[str]) -> "subprocess.CompletedProcess[str]":
     )
 
 
-def load_job(plist_path: Path, uid: int, runner: Runner = _default_runner) -> None:
-    """Register the plist with launchd. Tolerates "already loaded"."""
+def load_job(
+    plist_path: Path,
+    uid: int,
+    runner: Runner = _default_runner,
+    label: str = PLIST_LABEL,
+) -> None:
+    """Register the plist with launchd, replacing any stale registration.
+
+    EALREADY means launchd already has a job under this label loaded — but
+    from *its* in-memory definition, which may point at a binary that has
+    since moved or been removed (e.g. after a `swab` rebuild/reinstall).
+    Just returning here — the old behavior — left that stale definition
+    running forever; every subsequent reinstall would rewrite the plist file
+    on disk but launchd would keep executing the old program path. Boot the
+    stale job out first so the fresh plist actually takes effect.
+    """
     result = runner(["launchctl", "bootstrap", f"gui/{uid}", str(plist_path)])
-    if result.returncode in (0, 5):  # 5 = EALREADY
+    if result.returncode == 0:
         return
+    if result.returncode == 5:  # EALREADY
+        runner(["launchctl", "bootout", f"gui/{uid}/{label}"])
+        result = runner(["launchctl", "bootstrap", f"gui/{uid}", str(plist_path)])
+        if result.returncode == 0:
+            return
     # Fallback for systems/domains where bootstrap semantics differ.
     fallback = runner(["launchctl", "load", "-w", str(plist_path)])
     if fallback.returncode != 0:

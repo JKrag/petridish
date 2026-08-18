@@ -281,16 +281,25 @@ def test_resolve_binary_returns_absolute_path(tmp_path, monkeypatch):
 # launchd wrapper: tolerate "already loaded" / "not loaded"
 # ---------------------------------------------------------------------------
 
-def test_load_job_treats_already_loaded_as_success(tmp_path):
+def test_load_job_reloads_stale_job_on_already_loaded(tmp_path):
+    # Regression test: EALREADY used to be treated as success outright, which
+    # left launchd running its old in-memory job definition (stale binary
+    # path) even though the plist file on disk had just been rewritten.
     calls = []
 
     def runner(args):
         calls.append(args)
-        return _FakeCompleted(returncode=5)  # EALREADY
+        if args[1] == "bootstrap" and len(calls) == 1:
+            return _FakeCompleted(returncode=5)  # EALREADY
+        return _FakeCompleted(returncode=0)
 
-    load_job(tmp_path / "x.plist", uid=501, runner=runner)
+    load_job(tmp_path / "x.plist", uid=501, runner=runner, label="com.petridish.daemon")
 
-    assert calls == [["launchctl", "bootstrap", "gui/501", str(tmp_path / "x.plist")]]
+    assert calls == [
+        ["launchctl", "bootstrap", "gui/501", str(tmp_path / "x.plist")],
+        ["launchctl", "bootout", "gui/501/com.petridish.daemon"],
+        ["launchctl", "bootstrap", "gui/501", str(tmp_path / "x.plist")],
+    ]
 
 
 def test_load_job_falls_back_to_load_dash_w(tmp_path):
