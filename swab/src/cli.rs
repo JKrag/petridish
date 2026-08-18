@@ -506,9 +506,20 @@ fn _print_table(projects: &[&crate::schema::Project], out: &mut dyn Write) -> st
             Some(b) => b.clone(),
             None => "-".to_string(),
         };
+        let name_cell = match &p.parent_path {
+            Some(parent) => format!(
+                "{} (in {})",
+                p.name,
+                std::path::Path::new(parent)
+                    .file_name()
+                    .map(|f| f.to_string_lossy().to_string())
+                    .unwrap_or(parent.clone())
+            ),
+            None => p.name.clone(),
+        };
         rows.push(vec![
             status_bucket_str(&p.status_bucket).to_string(),
-            p.name.clone(),
+            name_cell,
             agent_label,
             branch,
             dirty.to_string(),
@@ -755,6 +766,58 @@ mod tests {
         assert_eq!(code, 0);
         let captured = cap.as_str();
         assert!(captured.contains("foreign-proj"), "with --all must include foreign: {captured}");
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Test 3.5: table 'name' column formats worktree projects with parent_path.
+    #[test]
+    fn list_table_name_cell_shows_worktree_parent() {
+        let dir = std::env::temp_dir().join("swab_test_list_name_cell");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let state_path = dir.join("projects.json");
+
+        let mut radar = test_radar(vec![
+            test_project(
+                "afk-calendar-date-cluster",
+                "/tmp/xyz/afk-calendar-date-cluster",
+                StatusBucket::Active,
+                false,
+            ),
+            test_project(
+                "worktree-proj",
+                "/tmp/xyz/sibling",
+                StatusBucket::Active,
+                false,
+            ),
+        ]);
+
+        // Override the 'worktree-proj' row in-place with a parent_path to make it a worktree.
+        let projects = radar
+            .projects
+            .iter_mut()
+            .find(|p| p.name == "worktree-proj")
+            .expect("worktree-proj must exist");
+        projects.parent_path = Some("/Users/jan/repos/catshow-searcher".to_string());
+
+        write_fixture_radar(&state_path, radar.clone());
+
+        let mut cap = Capture::new();
+        let code = cmd_list(&state_path, None, false, false, &mut cap).unwrap();
+        assert_eq!(code, 0);
+
+        let captured = cap.as_str();
+        // worktree project must show parent basename in name cell.
+        assert!(
+            captured.contains("worktree-proj (in catshow-searcher)"),
+            "worktree name cell must include parent basename: {captured}"
+        );
+        // normal (non-worktree) project must NOT show the worktree marker.
+        assert!(
+            !captured.contains("afk-calendar-date-cluster (in "),
+            "non-worktree must not show (in ...): {captured}"
+        );
 
         let _ = std::fs::remove_dir_all(&dir);
     }
