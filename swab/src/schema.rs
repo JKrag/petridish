@@ -140,6 +140,8 @@ pub struct Project {
     pub name: String,
     pub path: String,
     pub category: String,
+    #[serde(default)]
+    pub parent_path: Option<String>,
     pub is_foreign: bool,
     pub git: GitState,
     pub agent: AgentState,

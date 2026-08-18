@@ -214,11 +214,56 @@ fn build_project(
 
     let id = sha1_id(&resolved_str);
 
+    // parent_path: if the resolved path contains a segment literally equal to `.worktrees`
+    // anywhere, parent_path is the string form of the path components BEFORE that segment.
+    // Otherwise None. This captures the "this is a .worktrees/<name> child project" relationship
+    // — used by frontends to display parent project linkage.
+    let parent_path: Option<String> = {
+        // Check if the path contains a `.worktrees` component. If so, the parent_path is the
+        // path up to (and including) the parent directory of `.worktrees`. For example:
+        //   resolved = /tmp/foo/.worktrees/bar
+        //   parent_path = Some("/tmp/foo")
+        // We use `Path::components()` to check for `.worktrees`, then use `Path::parent()`
+        // to get the parent directory of `.worktrees` (which is the parent of the last
+        // component before `.worktrees`).
+        if resolved.components().any(|c| c.as_os_str() == ".worktrees") {
+            // Find the parent of `.worktrees` by walking up from the path.
+            // We need to get the directory that contains `.worktrees`, which is the
+            // parent of the last component of the path (since `.worktrees` is the
+            // second-to-last component in our path).
+            // Actually, we need to get the parent of the directory that contains `.worktrees`.
+            // Let's use a different approach: find the index of `.worktrees` in the
+            // components and reconstruct the path.
+            let components: Vec<String> = resolved
+                .components()
+                .map(|c| c.as_os_str().to_string_lossy().into_owned())
+                .collect();
+            let idx = components.iter().position(|c| c == ".worktrees");
+            if let Some(i) = idx {
+                if i == 0 {
+                    None // `.worktrees` is the first component (no meaningful parent).
+                } else {
+                    // Reconstruct the path by taking all components before `.worktrees`.
+                    let mut parent_path = PathBuf::new();
+                    for component in components.iter().take(i) {
+                        parent_path.push(component.as_str());
+                    }
+                    Some(parent_path.to_string_lossy().into_owned())
+                }
+            } else {
+                None
+            }
+        } else {
+            None
+        }
+    };
+
     schema::Project {
         id,
         name,
         path: resolved_str,
         category,
+        parent_path,
         is_foreign: foreign,
         git: git_state,
         agent,
@@ -1026,5 +1071,102 @@ mod tests {
         assert_eq!(radar.projects.len(), 2);
         assert_eq!(radar.projects[0].name, "alpha_project");
         assert_eq!(radar.projects[1].name, "beta_project");
+    }
+
+    // ═══ parent_path: no .worktrees segment -> None. ════════════════════════════════
+
+    #[test]
+    fn parent_path_plain_path_no_worktrees_segment_is_none() {
+        let fixture = Tmp::new("parent_path_plain");
+        let repo = fixture.path.join("my_repo");
+        std::fs::create_dir_all(&repo).expect("mkdir repo");
+        std::fs::create_dir_all(repo.join(".git")).expect("mkdir .git");
+
+        let paths = ScanPaths::for_home(&fixture.path);
+        let config = test_config(vec![repo.clone()]);
+        let radar = run_scan(&config, &paths);
+
+        assert_eq!(radar.projects.len(), 1, "expected one project");
+        assert_eq!(
+            radar.projects[0].parent_path, None,
+            "no .worktrees segment must yield parent_path = None"
+        );
+    }
+
+    // ═══ parent_path: /.worktrees/<name> -> Some(parent, no trailing slash). ══════════
+
+    #[test]
+    fn parent_path_worktrees_child_yields_correct_parent() {
+        let fixture = Tmp::new("parent_path_worktrees");
+        let parent = fixture.path.join("parent_repo");
+        std::fs::create_dir_all(&parent).expect("mkdir parent");
+        std::fs::create_dir_all(parent.join(".git")).expect("mkdir parent.git");
+
+        // Create the .worktrees/<task> child dir — this is the resolved root we'll scan.
+        let child = parent.join(".worktrees").join("my-task-name");
+        std::fs::create_dir_all(&child).expect("mkdir worktrees/task");
+        // A real git repo inside the worktree (so git::scan returns is_repo: true).
+        std::fs::create_dir_all(child.join(".git")).expect("mkdir worktree.git");
+
+        let paths = ScanPaths::for_home(&fixture.path);
+        let config = test_config(vec![child.clone()]);
+        let radar = run_scan(&config, &paths);
+
+        assert_eq!(radar.projects.len(), 1, "expected one project");
+        let p = &radar.projects[0];
+
+        // parent_path must be the string form of the path before .worktrees, joined with '/'.
+        // Canonicalize the expected value so macOS symlink resolution (`/var` -> `/private/var`)
+        // doesn't cause a spurious mismatch.
+        let canonical_parent = parent
+            .canonicalize()
+            .unwrap();
+        let expected = canonical_parent.to_str().unwrap();
+        assert_eq!(
+            p.parent_path.as_deref(),
+            Some(expected),
+            "worktrees child parent_path must be the path before .worktrees, got {:?}, expected {:?}",
+            p.parent_path,
+            expected
+        );
+    }
+
+    // ═══ serde: Project missing parent_path key deserializes to None. ═════════════════
+
+    #[test]
+    fn serde_project_missing_parent_path_key_deserializes_to_none() {
+        let json_no_parent = r#"{
+          "id": "aabbccdd1122",
+          "name": "test-project",
+          "path": "/Users/jan/repos/test-project",
+          "category": "dev",
+          "is_foreign": false,
+          "git": {
+            "is_repo": true,
+            "branch": "master",
+            "is_dirty": false,
+            "uncommitted_files": 0,
+            "last_commit_at": "2026-01-01T00:00:00Z",
+            "mine_last_commit_at": "2026-01-01T00:00:00Z",
+            "github_url": null
+          },
+          "agent": {
+            "state": "idle",
+            "active_agent": null,
+            "last_event": null,
+            "last_event_at": null,
+            "session_id": null
+          },
+          "last_activity_at": "2026-01-01T00:00:00Z",
+          "status_bucket": "cold"
+        }"#;
+
+        let project: schema::Project = serde_json::from_str(json_no_parent).expect(
+            "Project JSON missing parent_path key must deserialize successfully",
+        );
+        assert_eq!(
+            project.parent_path, None,
+            "missing parent_path key must deserialize as None"
+        );
     }
 }

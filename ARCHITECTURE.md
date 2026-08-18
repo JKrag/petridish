@@ -148,6 +148,7 @@ truncate the file. Capped defensively (5MB) in case the daemon isn't running.
       "name": "project-radar",
       "path": "/Users/jankrag/repos/JKrag/project-radar",
       "category": "JKrag",                     // parent dir name; overridable in config
+      "parent_path": null,                     // resolved path of the containing project if this is a .worktrees/<name> child; null otherwise
       "is_foreign": false,                     // §2 authorship filter
       "git": {
         "is_repo": true,
