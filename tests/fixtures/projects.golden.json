@@ -8,6 +8,7 @@
       "name": "project-radar",
       "path": "/Users/jankrag/repos/JKrag/project-radar",
       "category": "JKrag",
+      "parent_path": null,
       "is_foreign": false,
       "git": {
         "is_repo": true,

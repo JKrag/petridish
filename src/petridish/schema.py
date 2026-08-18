@@ -303,6 +303,7 @@ class ProjectDict(TypedDict):
     name: str
     path: str
     category: str
+    parent_path: str | None
     is_foreign: bool
     git: GitStateDict
     agent: AgentStateDict
@@ -318,6 +319,7 @@ class Project:
     name: str
     path: str
     category: str
+    parent_path: str | None = None
     is_foreign: bool = False
     git: GitState = field(default_factory=GitState)
     agent: AgentState = field(default_factory=AgentState)
@@ -330,6 +332,7 @@ class Project:
             "name": self.name,
             "path": self.path,
             "category": self.category,
+            "parent_path": self.parent_path,
             "is_foreign": self.is_foreign,
             "git": self.git.to_dict(),
             "agent": self.agent.to_dict(),
@@ -344,6 +347,7 @@ class Project:
             name=d["name"],
             path=d["path"],
             category=d["category"],
+            parent_path=d.get("parent_path"),
             is_foreign=d.get("is_foreign", False),
             git=GitState.from_dict(d.get("git") or {}),
             agent=AgentState.from_dict(d.get("agent") or {}),
