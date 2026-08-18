@@ -307,5 +307,155 @@ def test_all_projects_working_omits_bucket_sections_and_mid_divider():
     assert render_menubar(radar) == expected
 
 
+# ---------------------------------------------------------------------------
+# 11. parent_path is rendered as "{basename} / {project.name}" at the start
+#     of every project line, regardless of section.
+# ---------------------------------------------------------------------------
+
+def test_parent_path_prefix_shown_in_live_section():
+    """A project with a non-None parent_path shows the parent basename
+    followed by ' / ' and its own name at the start of the project line."""
+    project = Project(
+        id="t-14", category="demo",
+        name="child-repo", path="/p/child", status_bucket="active",
+        parent_path="/Users/jan/repos/worktrees",
+        git=GitState(is_repo=True, branch="feat-x"),
+        agent=AgentState(state="working"),
+    )
+    radar = Radar(
+        updated_at=datetime(2026, 1, 1, 0, 0, 0, tzinfo=timezone.utc),
+        projects=(project,),
+    )
+    # This project is working, so it surfaces at the flat top level, not in
+    # the "Active" bucket.  The parent basename "worktrees" followed by
+    # ' / ' and "child-repo" must appear at the start of the project line.
+    expected = (
+        "🧫 1/1\n"
+        "---\n"
+        'worktrees / child-repo · feat-x ● | href="file:///p/child"\n'
+        "---\n"
+        "Refresh | refresh=true"
+    )
+    assert render_menubar(radar) == expected
+
+
+def test_parent_path_prefix_shown_in_bucket_section():
+    """The same parent-prefix rule applies in a bucket (non-live) section —
+    reuse the exact same layout a live-session test builds with."""
+    parent_project = Project(
+        id="t-15a", category="demo",
+        name="child-repo", path="/p/child", status_bucket="cold",
+        parent_path="/Users/jan/repos/worktrees",
+        git=GitState(is_repo=True, branch="main"),
+        agent=AgentState(state="idle"),
+    )
+    other = Project(
+        id="t-15b", category="demo",
+        name="standalone", path="/p/standalone", status_bucket="cold",
+        agent=AgentState(state="idle"),
+    )
+    radar = Radar(
+        updated_at=datetime(2026, 1, 1, 0, 0, 0, tzinfo=timezone.utc),
+        projects=(parent_project, other),
+    )
+    expected = (
+        "🧫 0/2\n"
+        "---\n"
+        "Cold\n"
+        '--worktrees / child-repo · main | href="file:///p/child"\n'
+        '--standalone | href="file:///p/standalone"\n'
+        "---\n"
+        "Refresh | refresh=true"
+    )
+    assert render_menubar(radar) == expected
+
+
+# ---------------------------------------------------------------------------
+# 12. parent_path = None leaves the label as bare project.name — unchanged.
+# ---------------------------------------------------------------------------
+
+def test_no_parent_path_renders_bare_name():
+    """When parent_path is None the function is identical to the pre-change
+    behaviour: bare project.name, with the usual suffixes, no prefix."""
+    project = Project(
+        id="t-16", category="demo",
+        name="standalone", path="/p/standalone", status_bucket="active",
+        git=GitState(is_repo=True, branch="main", is_dirty=True, uncommitted_files=2),
+        agent=AgentState(state="idle"),
+    )
+    radar = Radar(
+        updated_at=datetime(2026, 1, 1, 0, 0, 0, tzinfo=timezone.utc),
+        projects=(project,),
+    )
+    # Verify the project line exists and contains no " / " inside the label
+    # (only in the bucket header/footer context, never in a name).
+    line = next(line for line in render_menubar(radar).splitlines()
+                if line.startswith("--standalone"))
+    assert line == '--standalone · main ✎2 | href="file:///p/standalone"'
+    # Also confirm via the bucket-not-present check: there's no live
+    # section header since it's not working, but "Active" must appear
+    # before the project line.
+    assert "Active" in render_menubar(radar)
+
+
+# ---------------------------------------------------------------------------
+# 13. parent-prefix combines with existing suffixes (branch, dirty, ●).
+# ---------------------------------------------------------------------------
+
+def test_parent_prefix_with_all_suffixes():
+    """A worktree project that is dirty and working must show both the
+    branch marker and the pencil marker alongside the parent-prefix."""
+    project = Project(
+        id="t-17", category="demo",
+        name="worktree-repo", path="/p/wr", status_bucket="active",
+        parent_path="/Users/jan/repos/catshow-searcher",
+        git=GitState(is_repo=True, branch="feat-x", is_dirty=True, uncommitted_files=3),
+        agent=AgentState(state="working"),
+    )
+    radar = Radar(
+        updated_at=datetime(2026, 1, 1, 0, 0, 0, tzinfo=timezone.utc),
+        projects=(project,),
+    )
+    # Both the "working" ● and the dirty ✎3 and branch markers should
+    # appear after "catshow-searcher / worktree-repo", and the project
+    # must surface at the flat top level.
+    expected = (
+        "🧫 1/1\n"
+        "---\n"
+        'catshow-searcher / worktree-repo · feat-x ✎3 ● | href="file:///p/wr"\n'
+        "---\n"
+        "Refresh | refresh=true"
+    )
+    assert render_menubar(radar) == expected
+
+
+def test_parent_prefix_combines_with_non_working_project():
+    """When the agent is not working, only branch + dirty suffixes apply;
+    the ● marker must not appear."""
+    project = Project(
+        id="t-18", category="demo",
+        name="cold-worktree", path="/p/cw", status_bucket="cold",
+        parent_path="/Users/jan/repos/monorepo",
+        git=GitState(is_repo=True, branch="develop", is_dirty=True, uncommitted_files=1),
+        agent=AgentState(state="idle"),
+    )
+    other = Project(
+        id="t-18b", category="demo",
+        name="other", path="/p/other", status_bucket="cold",
+        agent=AgentState(state="idle"),
+    )
+    radar = Radar(
+        updated_at=datetime(2026, 1, 1, 0, 0, 0, tzinfo=timezone.utc),
+        projects=(project, other),
+    )
+    # Parent-prefix + branch + dirty, no ●.  The ``--`` bucket prefix is
+    # added by the caller, then the label itself begins with the parent
+    # basename.  We assert the full bucket-row content.
+    line = next(line for line in render_menubar(radar).splitlines()
+                if "monorepo / cold-worktree" in line)
+    assert "monorepo / cold-worktree · develop ✎1" in line
+    assert "●" not in line
+
+
 if __name__ == "__main__":  # pragma: no cover
     sys.exit(__import__("pytest").main([__file__, "-v"]))

@@ -36,6 +36,8 @@ operates on the frozen :class:`Radar` dataclasses only.
 
 from __future__ import annotations
 
+import os
+
 from petridish.schema import Project, Radar, STATUS_BUCKETS
 
 _LABELS: tuple[str, ...] = (
@@ -48,17 +50,22 @@ _LABELS: tuple[str, ...] = (
 def _project_label(project: Project) -> str:
     """Format the ``--{label}`` prefix for one project line.
 
-    Fields are concatenated in this exact order: ``name``, optional `` · branch``
-    (only when the project is a git repo *and* has a branch), optional `` ✎N``
-    (only when dirty *and* there are uncommitted files), optional `` ●`` (only
-    when the agent reports ``working``).  The four components are joined with no
-    separator — each component carries its own leading space when present, and
-    the trailing `` | href=...`` is appended by the caller.
+    Fields are concatenated in this exact order: if ``parent_path`` is set the
+    leading text is ``{parent_basename} / {project.name}``; otherwise it is
+    bare ``project.name``.  Then optional `` · branch``, optional `` ✎N`` (only
+    when dirty *and* there are uncommitted files), and optional `` ●`` (only
+    when the agent reports ``working``) are appended.  The components are
+    joined with no separator — each component carries its own leading space
+    when present, and the trailing `` | href=...`` is appended by the caller.
     """
     git = project.git
     agent = project.agent
 
-    parts: list[str] = [project.name]
+    parts: list[str] = []
+    if project.parent_path is not None:
+        parts.append(os.path.basename(project.parent_path))
+        parts.append(" / ")
+    parts.append(project.name)
 
     if git.is_repo and git.branch:
         parts.append(" · " + git.branch)
