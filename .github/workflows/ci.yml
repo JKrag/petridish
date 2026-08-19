@@ -37,9 +37,28 @@ jobs:
       - name: Build wheel + sdist
         run: python3 -m pip install build && python3 -m build
 
+      # Checks that every console script pyproject DECLARES actually lands in
+      # the wheel's bin/ — the names are read from pyproject rather than
+      # hardcoded here, because a hardcoded list is how this step spent four
+      # days red: it kept invoking `bin/swab` long after `swab` became a Rust
+      # binary and left [project.scripts]. Reading the source of truth means a
+      # rename (petri -> petripy, say) can't desync the two.
       - name: Verify entry points resolve from the built wheel
         run: |
           python3 -m venv /tmp/petridish-ci-install
           /tmp/petridish-ci-install/bin/pip install dist/*.whl
-          /tmp/petridish-ci-install/bin/swab --help
+          python3 - <<'EOF'
+          import pathlib, sys, tomllib
+          scripts = tomllib.loads(
+              pathlib.Path("pyproject.toml").read_text()
+          )["project"]["scripts"]
+          assert scripts, "pyproject declares no console scripts"
+          missing = [
+              name for name in scripts
+              if not pathlib.Path(f"/tmp/petridish-ci-install/bin/{name}").exists()
+          ]
+          if missing:
+              sys.exit(f"declared but absent from the wheel: {missing}")
+          print(f"all {len(scripts)} declared entry points present: {sorted(scripts)}")
+          EOF
           /tmp/petridish-ci-install/bin/python3 -c "from petridish.installer import render_plist; render_plist(swab_abspath='/x/swab', log_path='/x/daemon.log')"
