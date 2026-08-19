@@ -191,6 +191,20 @@ The ambient monitor: "does anything need me?" across a fleet of unattended runs.
 - **Colour:** use ratatui's ANSI 16-colour names (`Color::Green`, `Color::Yellow`,
   …) rather than fixed RGB. The dashboard lives inside the user's themed terminal
   and should inherit it. No truecolor palette in v1.
+- **Glyphs must be portable, and this is a tested constraint, not a preference.**
+  Every non-ASCII character `petri` can put on screen must exist in Unicode 1.1
+  (1993). petripy shipped `⚠` (U+26A0, Unicode 4.0) as the stalled-run glyph and
+  it rendered as a **blank cell** on the macOS 14 CI runner — ncurses asks
+  `wcwidth()`, macOS's tables lag the standard, and an unknown codepoint becomes a
+  space. The alert the dashboard exists to surface was invisible, on green tests,
+  because every project's name also appears on its path row so every substring
+  assertion still passed. Fixed by moving to `▲` (U+25B2).
+  ratatui computes widths itself rather than delegating to `wcwidth`, so it will
+  not fail in exactly that way — which is the trap. Port the *gate*, not the
+  assumption: mirror `tests/test_glyph_portability.py` as a Rust test over an
+  allowlist of permitted characters, each justified, with a second test verifying
+  the allowlist's own claims by codepoint block. Then the layer-2 snapshots make
+  any substitution a visible diff rather than a silent gap.
 
 ---
 
