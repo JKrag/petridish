@@ -260,18 +260,45 @@ def _running_count(radar: Radar) -> int:
 
 
 def _put(stdscr, y: int, x: int, text: str, width: int, attr: int = 0) -> None:
-    """Write one clipped string, swallowing the edge-of-window error.
+    """Write one clipped string; degrade to a *shorter* row, never to no row.
 
-    ``addnstr`` raises when asked to write to the last cell of the last line,
-    which is a normal consequence of filling the screen — not a failure worth
-    losing a frame over.
+    ``addnstr`` raises when a cell refuses the write — writing to the last cell
+    of the last line is the textbook case, but a glyph whose display width the
+    terminal reckons as 2 does it too, by consuming the one column of slack
+    between the renderers' ``width - 1`` line length and the real window width.
+
+    Swallowing that error used to discard the **entire line**. That is the one
+    thing this screen must never do: every card's headline carries its name and
+    its ``⚠``/``●`` state glyph, so a dropped headline doesn't look like a bug,
+    it looks like a calm dashboard. (Observed for real: on CI's ncurses the
+    three RUNNING headlines vanished and the frame still read as plausible,
+    because each project's name also appears on its path row.)
+
+    So on failure, fall back to placing characters individually and skip only
+    the ones that are actually refused. A row that cannot fit comes out short;
+    it does not come out empty.
     """
     if y < 0 or x < 0 or width - x <= 0:
         return
-    try:
-        stdscr.addnstr(y, x, text, width - x - 1, attr)
-    except curses.error:
-        pass
+    avail = width - x - 1
+    if avail <= 0:
+        return
+
+    def write(col: int, chunk: str, limit: int) -> bool:
+        """One write; False if the terminal refused it. Single call site on
+        purpose — ``stdscr`` is untyped, so each distinct member access is its
+        own pyright diagnostic, and the fallback below would otherwise cost a
+        gratuitous point on the typecheck ratchet."""
+        try:
+            stdscr.addnstr(y, col, chunk, limit, attr)
+            return True
+        except curses.error:
+            return False
+
+    if write(x, text, avail):
+        return
+    for offset, ch in enumerate(text[:avail]):
+        write(x + offset, ch, 1)
 
 
 def _blit(

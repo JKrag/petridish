@@ -50,26 +50,45 @@ missing `⚠` glyph, one on a line-split assertion. A flaky layer is worse than 
 layer when nobody is watching: an unattended agent cannot tell a flake from a defect,
 so it either halts on a false failure or learns to ignore the layer.
 
-The failure mode is worth naming precisely, because the obvious guesses are wrong.
-It is not locale. The captured CI frame was
-`petri · dashboard … 6 projects … ════ … ──── … tab browser z density q quit` — the
-entire RUNNING section absent, i.e. a **partially-painted frame**. Both assertions
-are consistent with that: the `⚠` row was never painted, and the other test reads
-"lines" out of the raw pty byte stream, where segments are not screen rows at all
-under curses' incremental redraw (a trap `test_tui_pty.py`'s own docstring warns
-about). Compounding it, `⚠` is derived from silence at *render* time by design —
-`glyph_for` bypasses the stored `agent.state` so the glyph cannot disagree with the
-live counter beside it — while the fixture builds offsets from `datetime.now()`, so
-the assertion is wall-clock-dependent too.
+The failure mode is worth naming precisely, because every obvious guess was wrong.
+Not locale (ruled out empirically — no locale reproduces the observed signature of
+`·`/`═`/`─` present but `⚠` absent; they are all-or-nothing). Not a
+partially-painted frame either: the ellipsis in the captured CI frame was pytest's
+own repr truncation, not a missing section.
+
+What it actually was: **`tui._put` silently discarded an entire row.** It wrapped
+`addnstr` in `except curses.error: pass`, so when one cell refused the write the
+whole line vanished. The renderers are handed `width - 1`, leaving exactly one
+column of slack against the real window — enough for the ASCII path everywhere,
+and consumed by a glyph the terminal reckons as two columns wide. The three
+RUNNING headlines dropped, and because each project's name also appears on its
+path row, every substring the tests looked for was still present: the frame read
+as a calm dashboard. That is the precise failure this whole document exists to
+prevent — a screen that silently lies.
+
+Two lessons, both now enforced:
+
+1. **A renderer must degrade to less content, never to no content.** `_put` now
+   falls back to placing characters individually and skips only the cells
+   actually refused. Fixed in the same change as this ADR's revision.
+2. **Assert identity against the renderer, not substrings against a byte stream.**
+   The decisive new test reconstructs the terminal grid and compares it row-for-row
+   with `render_dashboard`'s own output for the same fixture and geometry —
+   `tui.py` is meant to be a dumb blitter, so identity is the honest contract.
+   Substring assertions provably could not catch this; the identity test catches it
+   on the first missing row and prints both screens.
+
+Building that reconstruction (`tests/test_tui_pty.py::_screen`) also settled two
+things the Rust layer would have had to rediscover: ncurses leans heavily on
+`\x1b[nG` (absolute column) for these wide rows, and a three-byte box-drawing
+character straddles `os.read` boundaries often enough to need an *incremental*
+UTF-8 decoder. Both cost a round of wrong output to find.
 
 Hence, for the Rust layer 3: assert against a **settled full-screen snapshot**
-(read until the stream quiesces, reconstruct the screen, then assert), inject a
-fixed clock, set the winsize explicitly, and pin `LANG`/`LC_ALL`. Any test that
-cannot be made deterministic that way does not belong in this layer.
-
-(Status of those two tests: red as of the last push, 2026-08-15. They pass locally
-on the current tree, which has twelve commits since, so they are not necessarily a
-live failure — but they are the reason this layer gets designed rather than copied.)
+(read until the stream quiesces, reconstruct the grid, compare against what the
+widget layer intended), inject a fixed clock, set the winsize explicitly, and pin
+`LANG`/`LC_ALL`. Any test that cannot be made deterministic that way does not
+belong in this layer.
 
 **Fixtures are authored deliberately, and the nasty one is the point.** The current
 corpus is a single-project `projects.golden.json`, which cannot exercise layout at
@@ -86,5 +105,4 @@ test runs against it.
 **`swab` has never been in CI.** `ci.yml` is Python-only — there is no `cargo test`
 in it or in the `Makefile`. That gap predates this work but is closed by it:
 `make check` grows `cargo test --workspace` and CI grows a Rust job, because an
-unattended agent needs exactly one command that is the entire truth. (Noted while
-writing this: CI on master-as-pushed is red, on the two PTY tests described above.)
+unattended agent needs exactly one command that is the entire truth.

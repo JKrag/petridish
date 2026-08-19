@@ -32,6 +32,7 @@ where the renderer is called directly; this file is about the loop.
 
 from __future__ import annotations
 
+import codecs
 import json
 import os
 import re
@@ -41,6 +42,9 @@ import time
 from datetime import datetime, timedelta, timezone
 
 import pytest
+
+from petridish.schema import read_json
+from petridish.screens import render_dashboard
 
 pytestmark = pytest.mark.skipif(
     not hasattr(os, "fork") or sys.platform not in ("darwin", "linux"),
@@ -130,10 +134,130 @@ def _plain(raw: str) -> str:
     """Strip escape sequences so assertions can be made on visible text.
 
     Deliberately crude: cursor-positioning codes are removed rather than
-    replayed, so adjacent fields run together. That is fine for substring
-    assertions and keeps this helper from becoming a terminal emulator.
+    replayed, so adjacent fields run together. Fine for "is this substring
+    anywhere on screen", and nothing else — see :func:`_screen` for why.
     """
     return _ANSI.sub("", raw)
+
+
+_CSI = re.compile(r"\x1b\[([0-9;?]*)([a-zA-Z])")
+#: Non-CSI escapes ncurses emits for this app. Length matters: ``\x1b(B`` is
+#: three bytes, ``\x1b=`` is two. Skipping a fixed two left a stray ``B``
+#: painted onto the grid, which is how a reconstruction quietly acquires
+#: characters the program never wrote.
+_ESC_OTHER = re.compile(r"\x1b(?:[()][0-9A-Za-z]|[=><78])")
+
+
+def _screen(raw: str, rows: int = ROWS, cols: int = COLS) -> list[str]:
+    """Replay ``raw`` into a character grid and return it as ``rows`` strings.
+
+    **Why this exists.** ``_plain`` throws cursor-positioning codes away, so the
+    result's ``splitlines()`` boundaries are wherever ncurses happened to emit a
+    ``\r`` or ``\n`` — an artifact of its cursor-movement *optimisation*, not of
+    the layout. Any assertion of the form "these two fields are/aren't on the
+    same line" made against that stream is really asserting on ncurses' choice
+    of escape sequences, and it flips between machines for no reason the test
+    can see. Two tests here did exactly that and failed on CI while passing
+    locally.
+
+    So: apply the positioning instead of discarding it, and assert on real rows.
+    Handles what ncurses actually emits for this app, established by counting
+    the sequences in a real session rather than guessed: absolute positioning
+    (``H``/``f``), absolute column (``G``, which ncurses uses constantly for
+    these wide rows), absolute row (``d``), relative moves (``A``–``D``),
+    erase-to-end-of-line (``K``), erase-display (``J``), CR, LF and BS. Colour,
+    mode switches, scroll regions and the alternate screen are ignored. It is
+    deliberately not a terminal emulator; if a future frame needs scroll regions
+    or wide-character cell accounting, that is the point to reach for a real
+    one rather than growing this.
+    """
+    grid = [[" "] * cols for _ in range(rows)]
+    row = col = 0
+
+    def clamp() -> None:
+        nonlocal row, col
+        row = max(0, min(rows - 1, row))
+        col = max(0, min(cols - 1, col))
+
+    i = 0
+    while i < len(raw):
+        ch = raw[i]
+        if ch == "\x1b":
+            m = _CSI.match(raw, i)
+            if m is None:
+                other = _ESC_OTHER.match(raw, i)
+                i = other.end() if other else i + 2
+                continue
+            params, final = m.group(1), m.group(2)
+            nums = [int(n) for n in params.split(";") if n.isdigit()]
+            if final in "Hf":
+                row = (nums[0] - 1) if nums else 0
+                col = (nums[1] - 1) if len(nums) > 1 else 0
+                clamp()
+            elif final == "A":
+                row -= nums[0] if nums else 1
+                clamp()
+            elif final == "B":
+                row += nums[0] if nums else 1
+                clamp()
+            elif final == "C":
+                col += nums[0] if nums else 1
+                clamp()
+            elif final == "D":
+                col -= nums[0] if nums else 1
+                clamp()
+            elif final == "G":
+                # CHA — absolute column. ncurses leans on this heavily for this
+                # app's wide rows; without it every right-hand field collapses
+                # leftwards against the field before it.
+                col = (nums[0] - 1) if nums else 0
+                clamp()
+            elif final == "d":
+                row = (nums[0] - 1) if nums else 0
+                clamp()
+            elif final == "K":
+                mode = nums[0] if nums else 0
+                if mode == 0:
+                    for c in range(col, cols):
+                        grid[row][c] = " "
+                elif mode == 1:
+                    for c in range(0, col + 1):
+                        grid[row][c] = " "
+                else:
+                    grid[row] = [" "] * cols
+            elif final == "J":
+                mode = nums[0] if nums else 0
+                if mode == 2:
+                    grid = [[" "] * cols for _ in range(rows)]
+                elif mode == 0:
+                    for c in range(col, cols):
+                        grid[row][c] = " "
+                    for r in range(row + 1, rows):
+                        grid[r] = [" "] * cols
+            i = m.end()
+            continue
+        if ch == "\r":
+            col = 0
+        elif ch == "\n":
+            row += 1
+            clamp()
+        elif ch == "\b":
+            col = max(0, col - 1)
+        elif ch == "\x07":
+            pass
+        else:
+            grid[row][col] = ch
+            col += 1
+            if col >= cols:
+                col = cols - 1
+        i += 1
+
+    return ["".join(r).rstrip() for r in grid]
+
+
+def _dump(screen: list[str]) -> str:
+    """A readable failure message: the whole reconstructed screen, numbered."""
+    return "\n".join(f"{i:3} |{line}|" for i, line in enumerate(screen))
 
 
 class _Petri:
@@ -143,6 +267,14 @@ class _Petri:
         self.state_path = state_path
         self.pid = -1
         self.fd = -1
+        #: Every byte the child has written, kept so :meth:`screen` can replay
+        #: the whole session into a grid. A frame is a full repaint, so
+        #: replaying everything yields the *latest* screen, not a smear.
+        self.raw = ""
+        #: Decoding must be *incremental*: a box-drawing character is three
+        #: bytes and lands astride an ``os.read`` boundary often enough to see
+        #: it. Decoding each chunk independently turns those into U+FFFD.
+        self._decoder = codecs.getincrementaldecoder("utf-8")("replace")
 
     def __enter__(self) -> _Petri:
         import pty
@@ -181,7 +313,37 @@ class _Petri:
             if not chunk:
                 break
             out += chunk
-        return _plain(out.decode("utf-8", "replace"))
+        decoded = self._decoder.decode(out)
+        self.raw += decoded
+        return _plain(decoded)
+
+    def settle(self, timeout: float = _FRAME_TIMEOUT_S, quiet: float = 0.3) -> list[str]:
+        """Read until the child stops writing, then return the screen it left.
+
+        A single timed ``read`` can return mid-repaint, which is how you end up
+        asserting against half a frame. This waits for ``quiet`` seconds of
+        silence (bounded by ``timeout``) so the grid is a settled screen.
+        """
+        end = time.time() + timeout
+        last_data = time.time()
+        while time.time() < end:
+            ready, _, _ = select.select([self.fd], [], [], 0.1)
+            if ready:
+                try:
+                    chunk = os.read(self.fd, 65536)
+                except OSError:
+                    break
+                if not chunk:
+                    break
+                self.raw += self._decoder.decode(chunk)
+                last_data = time.time()
+            elif time.time() - last_data >= quiet:
+                break
+        return self.screen()
+
+    def screen(self) -> list[str]:
+        """The reconstructed grid for everything written so far."""
+        return _screen(self.raw)
 
     def send(self, keys: bytes, timeout: float = _KEY_TIMEOUT_S) -> str:
         os.write(self.fd, keys)
@@ -255,33 +417,94 @@ def test_dashboard_orders_by_silence_and_flags_the_stalled_run(state_file):
 
     rtk (silent 47m) must be the first card and must carry the warning glyph;
     nono (silent 12s) must not.
+
+    Asserted on the reconstructed grid (:func:`_screen`), not the byte stream.
+    The previous version read "is ``⚠`` anywhere in the output" and "which
+    stream segment is it in", and failed on CI for a reason neither assertion
+    could show: a card's whole headline row had been silently dropped by
+    ``tui._put``, and every project name also appears on its path row, so the
+    frame still looked plausible. A headline row that vanishes is now a visible
+    failure with the screen printed next to it.
     """
     with _Petri(state_file) as petri:
-        frame = petri.read(_FRAME_TIMEOUT_S)
-        assert frame.index("rtk") < frame.index("project-radar") < frame.index("nono")
-        assert "⚠" in frame
-        stalled_line = next(ln for ln in frame.splitlines() if "⚠" in ln)
-        assert "rtk" in stalled_line
+        screen = petri.settle()
+        dump = _dump(screen)
+
+        headlines = [ln for ln in screen if "silent" in ln and "·" in ln]
+        assert len(headlines) == 3, f"expected 3 card headlines, got {len(headlines)}\n{dump}"
+
+        names = [ln for ln in screen if any(n in ln for n in ("rtk", "project-radar", "nono"))]
+        order = [next(n for n in ("rtk", "project-radar", "nono") if n in ln) for ln in names]
+        # Quietest first: rtk (47m), project-radar (4m), nono (12s). Each project
+        # occupies several rows, so compare first appearances.
+        first = [n for i, n in enumerate(order) if n not in order[:i]]
+        assert first == ["rtk", "project-radar", "nono"], f"wrong order: {first}\n{dump}"
+
+        stalled = [ln for ln in screen if "⚠" in ln]
+        assert len(stalled) == 1, f"expected exactly one ⚠ row, got {len(stalled)}\n{dump}"
+        assert "rtk" in stalled[0], f"⚠ is not on rtk's row\n{dump}"
+        assert not any("nono" in ln and "⚠" in ln for ln in screen), dump
+
+
+def test_blitter_puts_the_renderer_output_on_screen_verbatim(state_file):
+    """Every row the renderer produced arrives on screen unchanged.
+
+    This is the check the CI failure needed and nobody had written. ``tui.py``
+    is meant to be a dumb blitter — ``screens.py`` decides every column, and
+    ``_blit``/``_put`` only copy. So the honest assertion is identity, not
+    substrings: reconstruct the terminal and compare it row-for-row against
+    what ``render_dashboard`` returned for the same fixture and geometry.
+
+    Substring assertions could not catch what actually went wrong (``_put``
+    silently discarding a whole row when one cell refused the write) because
+    every project's name also appears on its path row, so the frame still
+    contained every string the tests looked for. Identity catches it on the
+    first row that goes missing, and prints both screens.
+    """
+    now = datetime.now(timezone.utc)
+    expected = render_dashboard(
+        read_json(state_file),
+        now=now,
+        width=COLS - 1,
+        height=ROWS,
+        home=os.path.expanduser("~"),
+    )
+    with _Petri(state_file) as petri:
+        actual = petri.settle()
+
+    for i, exp in enumerate(expected):
+        got = actual[i] if i < len(actual) else ""
+        assert exp.rstrip() == got.rstrip(), (
+            f"row {i} differs between renderer and screen\n"
+            f"  renderer |{exp.rstrip()}|\n"
+            f"  screen   |{got.rstrip()}|\n\n"
+            f"full screen:\n{_dump(actual)}"
+        )
 
 
 def test_z_toggles_density(state_file):
     """Three running projects default to roomy; z must switch to compact.
 
-    Asserted on the *shape of a row* rather than the word "compact": in roomy a
-    project's name and its last event are on different lines, and in compact
-    they are on the same one. That row is new to the frame, so curses writes it
-    whole — see the module docstring on incremental redraw.
+    Asserted on the *shape of a row*: in roomy a project's name and its last
+    event are on different screen rows, in compact they share one.
+
+    This assertion used to be made against ``_plain``'s output split on
+    newlines, which meant it was really asserting on where ncurses chose to
+    emit a ``\r`` while optimising cursor movement — it passed locally and
+    failed on CI with nothing in the diff to explain why. :func:`_screen`
+    replays the positioning so "same row" means the same row.
     """
     with _Petri(state_file) as petri:
-        roomy = petri.read(_FRAME_TIMEOUT_S)
+        roomy = petri.settle()
         assert not any(
-            "project-radar" in ln and "Edit tui.py" in ln for ln in roomy.splitlines()
-        ), "roomy should put the name and the event on separate lines"
+            "project-radar" in ln and "Edit tui.py" in ln for ln in roomy
+        ), f"roomy should put the name and the event on separate rows\n{_dump(roomy)}"
 
-        compact = petri.send(b"z", timeout=_FRAME_TIMEOUT_S)
+        os.write(petri.fd, b"z")
+        compact = petri.settle()
         assert any(
-            "project-radar" in ln and "Edit tui.py" in ln for ln in compact.splitlines()
-        ), f"z did not collapse to compact rows; got: {compact!r}"
+            "project-radar" in ln and "Edit tui.py" in ln for ln in compact
+        ), f"z did not collapse to compact rows\n{_dump(compact)}"
 
 
 def test_tab_switches_screens_both_ways(state_file):
