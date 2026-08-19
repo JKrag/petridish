@@ -1,0 +1,25 @@
+[package]
+name = "petri"
+version = "0.1.0"
+edition = "2024"
+
+[lib]
+name = "petri"
+path = "src/lib.rs"
+
+[[bin]]
+name = "petri"
+path = "src/main.rs"
+
+[dependencies]
+petridish-core = { path = "../petridish-core" }
+ratatui = "0.30"
+crossterm = "0.29"
+chrono = { version = "0.4", features = ["serde"] }
+serde = { version = "1", features = ["derive"] }
+toml = "0.8"
+
+# PTY end-to-end harness only (petri/SPEC.md §8 layer 3, ADR-0003). Not in
+# SPEC §10's runtime dependency list because it never ships in the binary.
+[dev-dependencies]
+portable-pty = "0.9"
