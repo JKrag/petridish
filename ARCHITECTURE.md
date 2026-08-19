@@ -212,66 +212,30 @@ work — see its own `README.md`). Still deferred: FastAPI/web UI · `ps`/`lsof`
 sensing for non-Claude CLIs (F8) · standalone Copilot CLI support if `~/.copilot/` ever
 appears for real (F5) · multi-root VS Code workspaces · resume-session / open-in-editor /
 open-GitHub actions from `petri` specifically (Raycast already has these; `petri` v1 stays
-read-only intentionally, see §6).
+read-only intentionally, see `petri/SPEC.md`).
 
 **Superseded:** the archived plan's D6 ("`petri` uses stdlib `curses`, not Textual", chosen
 to keep the Python build's zero-runtime-deps constraint) is moot now that `petri` itself is
-being ported off Python — a Go/Bubbletea or Rust/ratatui rewrite has its own dependency
-norms and isn't bound by that constraint. Revisit rendering-engine choice fresh in whichever
-language is picked.
+being reimplemented off Python. Rendering engine is now decided: **Rust + ratatui**, its own
+workspace crate (ADR-0002), spec in `petri/SPEC.md`. The stdlib-only rule was always
+`src/petridish/`-specific and never bound the Rust side.
 
 ---
 
-## 6. `petri` dashboard — behavior spec (for the next port)
+## 6. `petri` dashboard
 
-The following behavior contract is what any `petri` reimplementation (Go/Bubbletea,
-Rust/ratatui, or otherwise) needs to replicate — extracted from the original Python/curses
-build's spec, described here independent of that language's dataclasses/curses APIs.
-Read-only consumer of `~/.petridish/projects.json`; same single-writer invariant as every
-other frontend (§1) — never writes it. No launch/open actions in v1 (Raycast already covers
-those, §5).
+**Superseded — see `petri/SPEC.md`.**
 
-**State/rendering split.** Keep the "pure state, dumb renderer" split the Python build used
-— pure functions over the `Radar`/`Project` shapes (§4) and plain data (no direct
-UI-framework calls), so the actual behavior is testable without driving a real terminal:
+This section used to carry a behavior spec "for the next port". It described the
+Python/curses build incompletely (it omitted the quota bars, density switching,
+agent glyphs, silence countdown, worktree tree rollup and the Dashboard/Browser
+split that all actually shipped), and the Rust reimplementation deliberately changes
+some of what it did describe. `petri/SPEC.md` is the authoritative spec; the parity
+baseline is `petripy`'s running code, not any prose here.
 
-- **Grouping:** buckets in the fixed display order `active, in_flight, stale, cold`.
-  Excludes `is_foreign` projects (no `--all`-equivalent toggle in `petri` itself — that's
-  `swab list --all`'s job).
-- **Filtering:** case-insensitive substring match against `Project.name`. Empty query
-  returns the input unchanged.
-- **Row formatting:** same four columns and same agent-label / dirty-marker logic as
-  `swab list`'s table (name, agent, branch, dirty marker). Don't duplicate that logic
-  independently in two places if avoidable — share it with (or mirror it exactly against)
-  `swab`'s `cli.rs`.
-- **Detail panel:** path, branch, dirty file count, last commit time (and
-  `mine_last_commit_at` if it differs), github url, agent state/active agent/session_id,
-  last_activity_at.
-- **Selection movement:** moves up/down by a delta, **crossing section boundaries**
-  (skipping empty sections), clamped — never wraps — at the very top/bottom of the whole
-  list. Selecting nothing (empty filtered set) must be representable and handled without
-  crashing. Re-filtering must not crash if the previously-selected project got filtered
-  out — selection resets to the first available row.
-- **Staleness banner:** if the state file's `updated_at` is older than a threshold
-  (24h, matching `swab doctor`'s own freshness check), still render normally but show a
-  persistent banner — data degrades visibly, the screen never silently lies about
-  freshness.
-- **Missing state file:** before entering the interactive screen at all, check the file
-  exists; if not, print the same message `swab list`/`swab path` already use
-  (`"no state file at {path}; run 'swab scan' first"`) and exit 1 — no blank/broken screen.
-- **Auto-poll:** poll the state file's mtime on a short timer (~2–5s) and only re-read +
-  re-render when it changed. A plain stat-poll, not a file watcher — no new dependency
-  needed for this.
-- **Keybindings (v1 baseline):** `/` opens a type-ahead filter that live-filters as you
-  type, `Enter`/`Esc` closes it; arrow keys and `j`/`k` move selection; `q` quits. Tab (or
-  equivalent) switches between the grouped dashboard and a flat browser view.
-- **Resilience:** a too-small or resized terminal must not crash the program — clip or show
-  a "resize terminal" message instead.
-- **Verification is not just unit tests.** Whatever pure-function tests are feasible, plus
-  a mandatory human smoke test in a real terminal before considering this done — confirm
-  sections render, filtering works live, selection movement doesn't crash at boundaries,
-  and quit is clean. State this explicitly in any handoff rather than reporting green tests
-  as "done."
+Terminology (**Dashboard**, **Browser**, **petripy**, **state file** vs
+**preferences file**) is defined in `CONTEXT.md`. Decisions: ADR-0002 (crate
+layout), ADR-0003 (verification), ADR-0001 (worktree rollup, still current).
 
 ---
 
@@ -283,7 +247,7 @@ single-writer invariant as every other frontend. Full historical build notes (to
 quirks, decisions made without the user at the time, what's still placeholder like the
 icon) are preserved in `docs/archive/IMPLEMENTATION_PLAN.md` §9 if needed, but nothing
 there is stale — Raycast wasn't touched by the Python→Rust scanner work and isn't affected
-by any planned `petri` rewrite.
+by the `petri` reimplementation either.
 
 **Still deferred:** a second command mirroring `swab path <query>` (open the best-matching
 project directly, no list view). Store publishing (`ray publish`) — blocked on the
