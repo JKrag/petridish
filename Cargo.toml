@@ -1,0 +1,5 @@
+[workspace]
+# `petri` joins this list in S4 (petri/SPEC.md §9) once its crate exists —
+# a workspace member must exist on disk, so it can't be listed ahead of that.
+members = ["petridish-core", "swab"]
+resolver = "3"

@@ -13,12 +13,19 @@ activity, and aggregates into `~/.petridish/projects.json`.
   field-equivalent (`swab/scripts/diff_check.sh`) and then measurably faster (gix
   in-process git access beats both a CLI-subprocess and a git2/libgit2 backend on real
   benchmarks — see `swab/src/git.rs`'s module doc comment for the full history).
+- **`petridish-core/`** (Rust) is the schema + presentation layer shared between `swab`
+  and the incoming Rust `petri` TUI (`petri/SPEC.md`, ADR-0002): the serde wire types
+  (`Radar`/`Project`/`GitState`/... — moved out of `swab/src/schema.rs` to here) plus the
+  pure derivation helpers both frontends need (agent label, dirty marker, worktree cell,
+  bucket/activity strings). `swab` depends on it for these rather than owning them; it
+  does not depend on `swab`, so it cannot reach the writer.
 - **`src/petridish/`** (Python) is now read-side only: `schema.py` is the shared contract
   every frontend parses `projects.json` through (`Radar`/`Project` dataclasses,
-  `read_json`), `tui.py`/`tui_state.py`/`screens.py` are the `petri` dashboard,
-  `menubar.py` is the menu-bar frontend, `installer.py` wires up the launchd job + Claude
-  Code hook (invoking the Rust binaries by name via `shutil.which`). None of these write
-  `projects.json` — they only ever read it.
+  `read_json`), `tui.py`/`tui_state.py`/`screens.py` are `petripy`, the deprecated
+  Python TUI kept installed as a fallback while the Rust `petri` (`petri/SPEC.md`) earns
+  trust — see `CONTEXT.md`'s `petripy` entry, `menubar.py` is the menu-bar frontend,
+  `installer.py` wires up the launchd job + Claude Code hook (invoking the Rust binaries
+  by name via `shutil.which`). None of these write `projects.json` — they only ever read it.
 
 **Read `ARCHITECTURE.md` before writing any code, in either language.** It's the
 language-agnostic architecture/findings/schema doc — supersedes
@@ -27,18 +34,27 @@ historical record) for everything still true regardless of implementation.
 
 ## Stack & layout
 
+A cargo workspace at the repo root (`Cargo.toml`, members `petridish-core` + `swab` today;
+`petri` joins once its crate exists, `petri/SPEC.md` §2/§9 S4) sits alongside the Python
+package:
+
+- **`petridish-core/`**: Rust, `serde` + `chrono`. Schema types (`src/schema.rs`, moved from
+  `swab/src/schema.rs`) plus the shared `present` derivation helpers. No `swab` or `petri`
+  dependency — the compiler enforces that this crate can't reach the state-file writer.
 - **`swab/`**: Rust, `gix` (pure-Rust git, no libgit2/C dependency) + `clap` + `serde` +
-  `chrono` + `regex` + `toml`. Source in `swab/src/`, sensors in
-  `swab/src/sensors/`, tests inline (`#[cfg(test)] mod tests`) in each module. Verified
-  via `cargo test` plus `swab/scripts/diff_check.sh` (a differential oracle — no longer
-  has a Python scanner to diff against, so treat its fixture-based golden comparisons and
-  real regression tests as the correctness bar instead).
+  `chrono` + `regex` + `toml`, plus `petridish-core` for the schema/`present` types. Source
+  in `swab/src/`, sensors in `swab/src/sensors/`, tests inline (`#[cfg(test)] mod tests`) in
+  each module. Verified via `cargo test --workspace` plus `swab/scripts/diff_check.sh` (a
+  differential oracle — no longer has a Python scanner to diff against, so treat its
+  fixture-based golden comparisons and real regression tests as the correctness bar
+  instead).
 - **`src/petridish/`**: Python 3.12+, stdlib only, for everything that remains here.
   `pytest` is the sole dev dependency. Do not add runtime dependencies to this side — the
   zero-deps constraint is what keeps the TUI/menubar/installer trivially verifiable with no
-  env setup. (This constraint never applied to `swab/` — Rust dependencies there are
-  fine, pinned in `swab/Cargo.toml`.)
-- Tests in `tests/` (Python, pytest) and `swab/src/**/*.rs` (Rust, inline `#[test]`).
+  env setup. (This constraint never applied to the Rust crates — their dependencies are
+  fine, pinned in each crate's own `Cargo.toml`.)
+- Tests in `tests/` (Python, pytest) and `{petridish-core,swab}/src/**/*.rs` (Rust, inline
+  `#[test]`), run together via `cargo test --workspace` from the repo root.
 
 ## Non-negotiable invariants
 
@@ -66,12 +82,13 @@ tests and is still wrong. Invariants 1-5 apply to `swab/`, the only thing still 
 
 ## Testing
 
-**Rust (`swab/`)**: real fixtures, not mocks — `git init` actual repos in tmpdirs with
-pinned author/date env vars, real fixture transcript files, cross-verified against the real
-`git` CLI's own porcelain output where behavior is subtle (see `git.rs`'s status-parity
-regression tests). `cargo test -- --test-threads=1` from `swab/` must exit 0 (parallel
-test threads currently share `HOME` env-var mutation across some Python-side fixture tests
-only — not a Rust issue, but run single-threaded out of habit if in doubt).
+**Rust (`petridish-core/`, `swab/`)**: real fixtures, not mocks — `git init` actual repos in
+tmpdirs with pinned author/date env vars, real fixture transcript files, cross-verified
+against the real `git` CLI's own porcelain output where behavior is subtle (see `git.rs`'s
+status-parity regression tests). `cargo test --workspace -- --test-threads=1` from the repo
+root must exit 0 (parallel test threads currently share `HOME` env-var mutation across some
+Python-side fixture tests only — not a Rust issue, but run single-threaded out of habit if
+in doubt).
 
 **Python (`src/petridish/`)**: same real-fixtures philosophy for whatever exercises
 `schema.py`/the TUI/installer. `pytest tests/ -q` from the repo root must exit 0.

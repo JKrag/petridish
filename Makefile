@@ -10,7 +10,7 @@
 # returns only the LAST command's exit status, so failing tests would report
 # success. Verified empirically — keep them as prerequisites.
 
-.PHONY: help install test typecheck pyver check clean
+.PHONY: help install test rust-test typecheck pyver check clean
 
 .DEFAULT_GOAL := help
 
@@ -25,13 +25,17 @@ install:        ## Install the package + dev extras into a uv-managed venv.
 test:           ## Run the test suite (pytest).
 	uv run --extra dev pytest -q
 
+rust-test:      ## Run the Rust workspace tests (petridish-core, swab).
+	PATH="$$HOME/.rustup/toolchains/stable-aarch64-apple-darwin/bin:$$PATH" \
+		cargo test --workspace -- --test-threads=1
+
 typecheck:      ## Fail if pyright errors under src/ rose above the baseline.
 	uv run --extra dev python3 scripts/typecheck_ratchet.py
 
 pyver:          ## Fail if src/ uses stdlib APIs newer than requires-python.
 	uv run --extra dev python3 scripts/check_pyver.py
 
-check: test typecheck pyver   ## Full gate: tests + typecheck + version floor.
+check: test rust-test typecheck pyver   ## Full gate: tests + Rust workspace + typecheck + version floor.
 
 clean:          ## Remove caches (leaves .venv alone — use `rm -rf .venv` for that).
 	find . -type d -name __pycache__ -prune -exec rm -rf {} +

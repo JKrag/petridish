@@ -56,7 +56,7 @@ the [[state file]], not to whether you can put a cursor on something.
 
 ## Status buckets
 
-`active` / `in_flight` / `stale` / `cold` — see `swab/src/schema.rs`'s
+`active` / `in_flight` / `stale` / `cold` — see `petridish-core/src/schema.rs`'s
 `StatusBucket` (or Python `schema.py`'s `STATUS_BUCKETS` on the read side) and
 `ARCHITECTURE.md` §4 for the time thresholds. Every frontend (CLI table, `petri`'s grouped
 sections) organizes primarily by this axis.
