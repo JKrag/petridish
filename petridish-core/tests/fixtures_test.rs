@@ -16,6 +16,14 @@
 //! running. This test enforces that reading (`hostile_all_projects_are_cold`) rather
 //! than a literal empty list. Flagging this here per CLAUDE.md's shortcut-disclosure
 //! rule — if that reading is wrong, this is the one place to fix it.
+//!
+//! Every test here is `#[ignore]`d: the fixtures don't exist yet (that's the S2
+//! round's job), and a committed-but-currently-failing test would make
+//! `cargo test --workspace` / `make check` / CI red on every commit until S2 lands —
+//! including this one. `.afk/verify-petri-rust.sh` runs this file with `--ignored`
+//! for the S2 gate; the orchestrator strips every `#[ignore]` here as part of
+//! committing S2 once it passes, so the ordinary `cargo test --workspace` picks
+//! these up permanently from then on.
 
 use petridish_core::schema::{Radar, StatusBucket};
 use std::path::PathBuf;
@@ -35,12 +43,14 @@ fn load(name: &str) -> Radar {
 }
 
 #[test]
+#[ignore = "S2 gate: fixtures not authored yet; run explicitly with --ignored"]
 fn minimal_has_exactly_one_project() {
     let radar = load("minimal.json");
     assert_eq!(radar.projects.len(), 1, "minimal.json must contain exactly one project");
 }
 
 #[test]
+#[ignore = "S2 gate: fixtures not authored yet; run explicitly with --ignored"]
 fn normal_has_roughly_fifteen_projects_in_mixed_buckets() {
     let radar = load("normal.json");
     let n = radar.projects.len();
@@ -64,6 +74,7 @@ fn normal_has_roughly_fifteen_projects_in_mixed_buckets() {
 }
 
 #[test]
+#[ignore = "S2 gate: fixtures not authored yet; run explicitly with --ignored"]
 fn loaded_has_roughly_seventy_projects_every_bucket_and_a_worktree() {
     let radar = load("loaded.json");
     let n = radar.projects.len();
@@ -89,6 +100,7 @@ fn loaded_has_roughly_seventy_projects_every_bucket_and_a_worktree() {
 }
 
 #[test]
+#[ignore = "S2 gate: fixtures not authored yet; run explicitly with --ignored"]
 fn hostile_deserializes_and_has_a_far_future_schema_version() {
     let radar = load("hostile.json");
     assert!(
@@ -99,6 +111,7 @@ fn hostile_deserializes_and_has_a_far_future_schema_version() {
 }
 
 #[test]
+#[ignore = "S2 gate: fixtures not authored yet; run explicitly with --ignored"]
 fn hostile_updated_at_is_stale() {
     let radar = load("hostile.json");
     let age = chrono::Utc::now().signed_duration_since(radar.updated_at);
@@ -109,12 +122,14 @@ fn hostile_updated_at_is_stale() {
 }
 
 #[test]
+#[ignore = "S2 gate: fixtures not authored yet; run explicitly with --ignored"]
 fn hostile_quota_is_absent() {
     let radar = load("hostile.json");
     assert!(radar.quota.is_none(), "hostile.json must have absent quota (quota: null)");
 }
 
 #[test]
+#[ignore = "S2 gate: fixtures not authored yet; run explicitly with --ignored"]
 fn hostile_all_projects_are_cold() {
     // See the module doc comment above for why this, not a literal empty `projects: []`.
     let radar = load("hostile.json");
@@ -126,6 +141,7 @@ fn hostile_all_projects_are_cold() {
 }
 
 #[test]
+#[ignore = "S2 gate: fixtures not authored yet; run explicitly with --ignored"]
 fn hostile_has_a_non_repo_project() {
     let radar = load("hostile.json");
     assert!(
@@ -135,6 +151,7 @@ fn hostile_has_a_non_repo_project() {
 }
 
 #[test]
+#[ignore = "S2 gate: fixtures not authored yet; run explicitly with --ignored"]
 fn hostile_has_a_null_branch_project() {
     let radar = load("hostile.json");
     assert!(
@@ -144,6 +161,7 @@ fn hostile_has_a_null_branch_project() {
 }
 
 #[test]
+#[ignore = "S2 gate: fixtures not authored yet; run explicitly with --ignored"]
 fn hostile_has_a_two_hundred_char_name() {
     let radar = load("hostile.json");
     assert!(
@@ -153,6 +171,7 @@ fn hostile_has_a_two_hundred_char_name() {
 }
 
 #[test]
+#[ignore = "S2 gate: fixtures not authored yet; run explicitly with --ignored"]
 fn hostile_has_a_cjk_or_emoji_name() {
     let radar = load("hostile.json");
     assert!(
@@ -162,6 +181,7 @@ fn hostile_has_a_cjk_or_emoji_name() {
 }
 
 #[test]
+#[ignore = "S2 gate: fixtures not authored yet; run explicitly with --ignored"]
 fn hostile_has_a_worktree_with_an_absent_parent() {
     let radar = load("hostile.json");
     let all_paths: std::collections::HashSet<&str> =
