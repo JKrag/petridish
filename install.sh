@@ -12,11 +12,13 @@
 # That shim used to be `swab` itself, back when it was a Python console
 # script. Now `swab`/`swab-hook` are the Rust binaries (swab/) that fully
 # replaced src/petridish/{cli,hook}.py — they're not Python at all, so their
-# own realpath can't point at a venv's python3 anymore. `petri` (the TUI,
-# still Python, still installed the same `uv tool install --editable .` way)
-# is the shim we resolve against instead — same trick, different anchor.
-# installer.py's own `command -v swab-hook` (D1: never hardcode) is unrelated
-# to this and still resolves the Rust hook binary correctly on its own.
+# own realpath can't point at a venv's python3 anymore. The TUI (`petri`) is
+# being reimplemented in Rust too (petri/SPEC.md) and will eventually stop
+# being Python as well, so this script anchors on `petridish-installer`
+# itself instead — the one console script that is guaranteed to stay Python
+# for as long as this script runs it. installer.py's own `command -v
+# swab-hook` (D1: never hardcode) is unrelated to this and still resolves the
+# Rust hook binary correctly on its own.
 set -euo pipefail
 
 if ! command -v swab >/dev/null 2>&1 || ! command -v swab-hook >/dev/null 2>&1; then
@@ -25,8 +27,8 @@ if ! command -v swab >/dev/null 2>&1 || ! command -v swab-hook >/dev/null 2>&1; 
     exit 1
 fi
 
-if ! command -v petri >/dev/null 2>&1; then
-    echo "error: 'petri' not found on PATH. Install it first:" >&2
+if ! command -v petridish-installer >/dev/null 2>&1; then
+    echo "error: 'petridish-installer' not found on PATH. Install it first:" >&2
     echo "  uv tool install --editable ." >&2
     exit 1
 fi
@@ -36,13 +38,13 @@ if ! command -v python3 >/dev/null 2>&1; then
     exit 1
 fi
 
-PETRI_REAL="$(python3 -c 'import os, sys; print(os.path.realpath(sys.argv[1]))' "$(command -v petri)")"
-VENV_PY="$(dirname "$PETRI_REAL")/python3"
+INSTALLER_REAL="$(python3 -c 'import os, sys; print(os.path.realpath(sys.argv[1]))' "$(command -v petridish-installer)")"
+VENV_PY="$(dirname "$INSTALLER_REAL")/python3"
 
 if [[ -x "$VENV_PY" ]]; then
     exec "$VENV_PY" -m petridish.installer "$@"
 fi
 
-# Fallback: petri wasn't installed into an isolated venv (e.g. plain
-# PYTHONPATH=src dev setup) — the ambient python3 is the right one.
+# Fallback: petridish-installer wasn't installed into an isolated venv (e.g.
+# plain PYTHONPATH=src dev setup) — the ambient python3 is the right one.
 exec python3 -m petridish.installer "$@"

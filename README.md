@@ -19,14 +19,18 @@ This puts `swab` and `swab-hook` on `~/.cargo/bin` (verify it's on `PATH`). Veri
 swab --help
 ```
 
-**`petri`** (the TUI dashboard) is still Python — it only ever reads `~/.petridish/projects.json`
-(via `petridish.schema`), it never scans:
+**`petri`** (the TUI dashboard) is being reimplemented in Rust/ratatui (`petri/`, see
+`petri/SPEC.md`) and is not yet built. Until it lands, the Python original — renamed
+`petripy` to free up the `petri` name, deprecated but still working, see `CONTEXT.md`'s
+`petripy` entry — is what reads `~/.petridish/projects.json` (via `petridish.schema`); it
+never scans:
 
 ```sh
 uv tool install --editable .
 ```
 
-This puts a `petri` shim on `~/.local/bin` (already first on `PATH` for most `uv` setups).
+This puts a `petripy` shim (plus `petridish-installer`, used below) on `~/.local/bin`
+(already first on `PATH` for most `uv` setups).
 
 ## Wire up the launchd job + Claude Code hook
 
@@ -35,7 +39,8 @@ This puts a `petri` shim on `~/.local/bin` (already first on `PATH` for most `uv
 ./install.sh --uninstall  # remove both, cleanly
 ```
 
-`install.sh` requires `swab`/`swab-hook` and `petri` to already be on `PATH` (see above). It:
+`install.sh` requires `swab`/`swab-hook` and `petridish-installer` to already be on `PATH`
+(see above). It:
 
 - creates `~/.petridish/` and writes a default `config.toml` if one isn't already there
 - backs up `~/.claude/settings.json` once, to `~/.petridish/settings.json.backup`, before ever
