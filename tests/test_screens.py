@@ -110,7 +110,7 @@ def test_dashboard_roomy_exact_string():
             "══════════════════════════════════════════════════════════════════════════════",
             " RUNNING                                                    3 · quietest first",
             "──────────────────────────────────────────────────────────────────────────────",
-            " ⚠ rtk                                                 silent 47m · ornith-35b",
+            " ▲ rtk                                                 silent 47m · ornith-35b",
             "     feat/token-map  ✎3                                 Bash  cargo test --lib",
             "     ~/repos/JKrag/rtk                                 sess 2b81f004-aaaa-bbbb",
             "",
@@ -155,7 +155,7 @@ def test_dashboard_puts_the_stalled_run_on_the_first_card():
         _p("stalled", silence_s=4000, agent="a", session="s3"),
     )
     lines = render_dashboard(radar, now=NOW, width=78, height=40, home=HOME)
-    names = [ln.split()[1] for ln in lines if ln.startswith((" ⚠ ", " ● ", " ○ "))]
+    names = [ln.split()[1] for ln in lines if ln.startswith((" ▲ ", " ● ", " ○ "))]
     assert names == ["stalled", "middling", "fresh"]
 
 
@@ -165,7 +165,7 @@ def test_dashboard_marks_only_the_stalled_run_with_a_warning():
         _p("stalled", silence_s=4000, agent="a", session="s2"),
     )
     lines = render_dashboard(radar, now=NOW, width=78, height=40, home=HOME)
-    warned = [ln for ln in lines if ln.startswith(" ⚠ ")]
+    warned = [ln for ln in lines if ln.startswith(" ▲ ")]
     assert len(warned) == 1
     assert "stalled" in warned[0]
 
@@ -319,8 +319,8 @@ def test_dashboard_compact_exact_string():
             "══════════════════════════════════════════════════════════════════════════════",
             " RUNNING                                          8 · quietest first · compact",
             "──────────────────────────────────────────────────────────────────────────────",
-            " ⚠ rtk               feat/token-map   ✎3    47m  Bash  cargo test --lib",
-            " ⚠ swab-hook-bench   wip/latency      ✎3    38m  Read  bench/results.md",
+            " ▲ rtk               feat/token-map   ✎3    47m  Bash  cargo test --lib",
+            " ▲ swab-hook-bench   wip/latency      ✎3    38m  Read  bench/results.md",
             " ● mlx-playground    main             ✎1    22m  Bash  uv run pytest -q",
             " ● petri-notes       main                    9m  Write docs/outline.md",
             " ● project-radar     master           ✎7     4m  Edit  src/petridish/tui.py",

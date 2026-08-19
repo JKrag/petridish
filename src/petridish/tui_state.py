@@ -385,7 +385,7 @@ def glyph_for(project: Project, *, now: datetime) -> tuple[str, str]:
     * ``● green``/``● yellow`` — an agent is moving; the colour comes from
       re-deriving the state at *render* time, so it stays honest even when
       ``projects.json`` is a couple of minutes stale.
-    * ``⚠ warn`` — silent between :data:`STALL_AFTER_S` and
+    * ``▲ warn`` — silent between :data:`STALL_AFTER_S` and
       :data:`STALL_CEILING_S`. Recent enough that the run could still be alive,
       quiet enough that something is probably wrong. This is the row you opened
       the dashboard to find.
@@ -405,7 +405,7 @@ def glyph_for(project: Project, *, now: datetime) -> tuple[str, str]:
         # made almost every row warn — see STALL_CEILING_S.
         return ("○", "dim")
     if silence >= STALL_AFTER_S:
-        return ("⚠", "warn")
+        return ("▲", "warn")
     return agent_bulb(agent_state_for_silence(silence))
 
 

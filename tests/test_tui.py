@@ -150,11 +150,11 @@ def test_toggle_density_is_its_own_inverse():
 @pytest.mark.parametrize(
     ("line", "expected"),
     [
-        (" ⚠ rtk               feat/token-map", (1, "warn")),
+        (" ▲ rtk               feat/token-map", (1, "warn")),
         (" ● nono", (1, "green")),
         (" ○ old-blog", (1, "dim")),
         ("> ● project-radar", (2, "green")),
-        ("  ⚠ rtk", (2, "warn")),
+        ("  ▲ rtk", (2, "warn")),
     ],
 )
 def test_find_glyph_locates_the_state_cell(line, expected):

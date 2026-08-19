@@ -58,7 +58,7 @@ _BUCKET_LABELS = {
 ROOMY_CARD_HEIGHT = 4
 
 #: Keymap footers. These advertise **only keys tui.py actually binds** — a
-#: footer promising "⏎ open" or "r resume" when nothing is wired to them is
+#: footer promising "enter open" or "r resume" when nothing is wired to them is
 #: worse than a shorter footer, because the user learns to distrust the whole
 #: line. Extend these in the same commit that binds the key.
 DASHBOARD_KEYS = " tab browser   z density   q quit"

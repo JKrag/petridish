@@ -51,7 +51,7 @@ _SCREENS = ("dashboard", "browser")
 #: :func:`_init_color_attrs` provides. Kept here rather than imported so the
 #: blitter's concern (which cell to paint) stays separate from the renderer's
 #: (what the glyph means).
-_GLYPH_COLORS = {"⚠": "warn", "●": "green", "○": "dim"}
+_GLYPH_COLORS = {"▲": "warn", "●": "green", "○": "dim"}
 
 
 def _init_color_attrs() -> dict[str, int]:
@@ -269,7 +269,7 @@ def _put(stdscr, y: int, x: int, text: str, width: int, attr: int = 0) -> None:
 
     Swallowing that error used to discard the **entire line**. That is the one
     thing this screen must never do: every card's headline carries its name and
-    its ``⚠``/``●`` state glyph, so a dropped headline doesn't look like a bug,
+    its ``▲``/``●`` state glyph, so a dropped headline doesn't look like a bug,
     it looks like a calm dashboard. (Observed for real: on CI's ncurses the
     three RUNNING headlines vanished and the frame still read as plausible,
     because each project's name also appears on its path row.)

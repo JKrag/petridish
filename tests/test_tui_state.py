@@ -514,14 +514,14 @@ def test_glyph_no_agent_is_hollow():
 
 def test_glyph_stalled_agent_is_a_warning():
     """An agent that has been here but has not moved in 47m needs attention."""
-    assert glyph_for(_agent_project(silence_s=2820), now=NOW) == ("⚠", "warn")
+    assert glyph_for(_agent_project(silence_s=2820), now=NOW) == ("▲", "warn")
 
 
 def test_glyph_stall_boundary_is_inclusive():
     below = _agent_project(silence_s=STALL_AFTER_S - 1)
     at = _agent_project(silence_s=STALL_AFTER_S)
     assert glyph_for(below, now=NOW)[0] == "●"
-    assert glyph_for(at, now=NOW) == ("⚠", "warn")
+    assert glyph_for(at, now=NOW) == ("▲", "warn")
 
 
 def test_glyph_working_and_recent_differ_by_colour_not_shape():
@@ -560,7 +560,7 @@ def test_glyph_never_reads_state_even_when_state_is_plausible():
             session_id="s",
         ),
     )
-    assert glyph_for(stalled_but_labelled_working, now=NOW) == ("⚠", "warn")
+    assert glyph_for(stalled_but_labelled_working, now=NOW) == ("▲", "warn")
 
 
 # ---------------------------------------------------------------------------
@@ -754,23 +754,23 @@ def test_glyph_still_warns_across_an_overnight_run():
     the time you look at 08:00. That must still warn.
     """
     assert glyph_for(_agent_project("died-at-midnight", silence_s=8 * 3600),
-                     now=NOW) == ("⚠", "warn")
+                     now=NOW) == ("▲", "warn")
 
 
 def test_glyph_stall_ceiling_boundary():
     below = _agent_project("below", silence_s=STALL_CEILING_S - 1)
     at = _agent_project("at", silence_s=STALL_CEILING_S)
-    assert glyph_for(below, now=NOW) == ("⚠", "warn")
+    assert glyph_for(below, now=NOW) == ("▲", "warn")
     assert glyph_for(at, now=NOW) == ("○", "dim")
 
 
 def test_the_three_glyph_windows_are_ordered_and_exhaustive():
-    """One pass over the whole silence range: ● then ⚠ then ○, no gaps."""
+    """One pass over the whole silence range: ● then ▲ then ○, no gaps."""
     seen = [
         glyph_for(_agent_project("p", silence_s=s), now=NOW)[0]
         for s in (0, 60, 89, 91, 600, 1799, 1801, 3600, 43_199, 43_201, 200_000)
     ]
-    assert seen == ["●"] * 6 + ["⚠"] * 3 + ["○"] * 2
+    assert seen == ["●"] * 6 + ["▲"] * 3 + ["○"] * 2
 
 
 def test_a_long_silent_project_still_sorts_above_one_with_no_agent():

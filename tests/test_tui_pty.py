@@ -419,7 +419,7 @@ def test_dashboard_orders_by_silence_and_flags_the_stalled_run(state_file):
     nono (silent 12s) must not.
 
     Asserted on the reconstructed grid (:func:`_screen`), not the byte stream.
-    The previous version read "is ``⚠`` anywhere in the output" and "which
+    The previous version read "is the glyph anywhere in the output" and "which
     stream segment is it in", and failed on CI for a reason neither assertion
     could show: a card's whole headline row had been silently dropped by
     ``tui._put``, and every project name also appears on its path row, so the
@@ -440,10 +440,10 @@ def test_dashboard_orders_by_silence_and_flags_the_stalled_run(state_file):
         first = [n for i, n in enumerate(order) if n not in order[:i]]
         assert first == ["rtk", "project-radar", "nono"], f"wrong order: {first}\n{dump}"
 
-        stalled = [ln for ln in screen if "⚠" in ln]
-        assert len(stalled) == 1, f"expected exactly one ⚠ row, got {len(stalled)}\n{dump}"
-        assert "rtk" in stalled[0], f"⚠ is not on rtk's row\n{dump}"
-        assert not any("nono" in ln and "⚠" in ln for ln in screen), dump
+        stalled = [ln for ln in screen if "▲" in ln]
+        assert len(stalled) == 1, f"expected exactly one ▲ row, got {len(stalled)}\n{dump}"
+        assert "rtk" in stalled[0], f"▲ is not on rtk's row\n{dump}"
+        assert not any("nono" in ln and "▲" in ln for ln in screen), dump
 
 
 def test_blitter_puts_the_renderer_output_on_screen_verbatim(state_file):
