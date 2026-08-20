@@ -133,8 +133,15 @@ impl DashboardState {
     /// and `COLD` collapsed), cursor on the first stop (`RUNNING`'s header,
     /// or `None` if there is nothing to show at all).
     pub fn new(radar: &Radar) -> Self {
+        Self::with_collapsed(radar, [false, false, true, true])
+    }
+
+    /// Build the initial state from `radar` with a caller-supplied collapse
+    /// state (petri/SPEC.md §6: `petri.toml` persists which sections are
+    /// collapsed across restarts) instead of the hardcoded defaults.
+    pub fn with_collapsed(radar: &Radar, collapsed: CollapsedState) -> Self {
         let mut state = DashboardState {
-            collapsed: [false, false, true, true],
+            collapsed,
             visible: Vec::new(),
             selected: None,
         };

@@ -6,6 +6,7 @@
 pub mod app;
 pub mod browser;
 pub mod dashboard;
+pub mod prefs;
 
 /// Resolved default state-file path: `$HOME/.petridish/projects.json`. Mirrors
 /// `swab::cli::default_state_path` — same reasoning (composed directly so tests
