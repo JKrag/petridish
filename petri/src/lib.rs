@@ -9,6 +9,12 @@ pub mod dashboard;
 pub mod prefs;
 use crate::prefs::{LastScreen, Prefs};
 
+/// Row count for the Browser's `Shift`-style fast-jump keys (`J`/`K`). 10 is
+/// the fixed "about ten lines" jump — deliberately NOT tied to viewport
+/// height (unlike `PageUp`/`PageDown`, which jump exactly one screenful):
+/// this is the small/predictable hop, that one is the big/screen-relative one.
+const BROWSER_FAST_JUMP: i32 = 10;
+
 /// Resolved default state-file path: `$HOME/.petridish/projects.json`. Mirrors
 /// `swab::cli::default_state_path` — same reasoning (composed directly so tests
 /// can override it without touching `HOME`).
@@ -274,6 +280,41 @@ fn poll_loop(
                             }
                             true
                         }
+                        // Page/fast-jump/edge navigation, same as normal mode
+                        // (see that match arm's comments) — none of these are
+                        // printable characters that a filter query could want,
+                        // so binding them here doesn't cost the user anything
+                        // they could otherwise type.
+                        crossterm::event::KeyCode::PageUp => {
+                            if let Some(ref mut state) = browser_state {
+                                let step = crossterm::terminal::size()
+                                    .map(|(_, h)| crate::browser::page_size(h) as i32)
+                                    .unwrap_or(BROWSER_FAST_JUMP);
+                                state.move_selection(-step);
+                            }
+                            true
+                        }
+                        crossterm::event::KeyCode::PageDown => {
+                            if let Some(ref mut state) = browser_state {
+                                let step = crossterm::terminal::size()
+                                    .map(|(_, h)| crate::browser::page_size(h) as i32)
+                                    .unwrap_or(BROWSER_FAST_JUMP);
+                                state.move_selection(step);
+                            }
+                            true
+                        }
+                        crossterm::event::KeyCode::Home => {
+                            if let Some(ref mut state) = browser_state {
+                                state.move_selection(i32::MIN);
+                            }
+                            true
+                        }
+                        crossterm::event::KeyCode::End => {
+                            if let Some(ref mut state) = browser_state {
+                                state.move_selection(i32::MAX);
+                            }
+                            true
+                        }
                         // `Esc` closes the filter input mode *and* clears the
                         // query (petri/SPEC.md §5).
                         crossterm::event::KeyCode::Esc => {
@@ -337,6 +378,57 @@ fn poll_loop(
                             crossterm::event::KeyCode::Down | crossterm::event::KeyCode::Char('j') => {
                                 if let Some(ref mut state) = browser_state {
                                     state.move_selection(1);
+                                }
+                                true
+                            }
+                            // Fast jump: ~10 rows, a fixed hop independent of
+                            // viewport size (PageUp/PageDown below is the
+                            // screen-relative jump).
+                            crossterm::event::KeyCode::Char('K') => {
+                                if let Some(ref mut state) = browser_state {
+                                    state.move_selection(-BROWSER_FAST_JUMP);
+                                }
+                                true
+                            }
+                            crossterm::event::KeyCode::Char('J') => {
+                                if let Some(ref mut state) = browser_state {
+                                    state.move_selection(BROWSER_FAST_JUMP);
+                                }
+                                true
+                            }
+                            // Page jump: exactly one screenful, matching the
+                            // list's own real visible-row count (`browser::page_size`
+                            // mirrors `browser::render`'s layout math). Falls back to
+                            // the fixed fast-jump distance if the terminal size can't
+                            // be read.
+                            crossterm::event::KeyCode::PageUp => {
+                                if let Some(ref mut state) = browser_state {
+                                    let step = crossterm::terminal::size()
+                                        .map(|(_, h)| crate::browser::page_size(h) as i32)
+                                        .unwrap_or(BROWSER_FAST_JUMP);
+                                    state.move_selection(-step);
+                                }
+                                true
+                            }
+                            crossterm::event::KeyCode::PageDown => {
+                                if let Some(ref mut state) = browser_state {
+                                    let step = crossterm::terminal::size()
+                                        .map(|(_, h)| crate::browser::page_size(h) as i32)
+                                        .unwrap_or(BROWSER_FAST_JUMP);
+                                    state.move_selection(step);
+                                }
+                                true
+                            }
+                            // Jump straight to the first/last row.
+                            crossterm::event::KeyCode::Home => {
+                                if let Some(ref mut state) = browser_state {
+                                    state.move_selection(i32::MIN);
+                                }
+                                true
+                            }
+                            crossterm::event::KeyCode::End => {
+                                if let Some(ref mut state) = browser_state {
+                                    state.move_selection(i32::MAX);
                                 }
                                 true
                             }

@@ -214,11 +214,21 @@ The ambient monitor: "does anything need me?" across a fleet of unattended runs.
 |---|---|
 | `Tab` | switch Dashboard ↔ Browser |
 | `j` / `k` / `↑` / `↓` | move selection (both screens) |
+| `J` / `K` | Browser: fast jump, ~10 rows |
+| `PageDown` / `PageUp` | Browser: jump one screenful |
+| `Home` / `End` | Browser: jump to the first/last row |
 | `Enter` | Dashboard: on a row, jump to Browser on this project; on a section header, toggle it. Browser: **unbound** (see below) |
 | `/` | Browser: open type-ahead filter |
 | `Esc` | close/clear the filter |
 | `Space` | Dashboard: collapse/expand the current section |
 | `q` | quit |
+
+**`J`/`K`/`PageUp`/`PageDown`/`Home`/`End` are Browser-only, not Dashboard.**
+The Dashboard's overflow model is "truncate, never scroll" (§3.2) — there is no
+viewport to page through, and a big jump could land the cursor on a row that was
+truncated out of the render entirely with no visual feedback. The Browser is the
+one screen with a real scrolling viewport, so that's where fast navigation earns
+its keep.
 
 The footer must advertise only keys that are actually bound. No launch, open-editor
 or resume-session actions in v1 — the Raycast extension already covers those, and

@@ -69,14 +69,16 @@ impl BrowserState {
     /// `visible`, **clamped at both ends — never wrapping**. A `delta` that
     /// would go past the last row stops AT the last row, not back to zero (and
     /// symmetrically at the top). No-op (and does not panic) when `visible` is
-    /// empty.
+    /// empty. `delta` is added via `saturating_add` (not plain `+`) so the
+    /// Home/End jump-to-edge bindings (`lib.rs`, `i32::MIN`/`i32::MAX`) can't
+    /// overflow — `current + i32::MAX` would panic in a debug build otherwise.
     pub fn move_selection(&mut self, delta: i32) {
         if self.visible.is_empty() {
             return;
         }
         let n = self.visible.len() as i32;
         let current = self.selected.unwrap_or(0) as i32;
-        self.selected = Some((current + delta).clamp(0, n - 1) as usize);
+        self.selected = Some(current.saturating_add(delta).clamp(0, n - 1) as usize);
     }
 
     /// Re-derive `visible` from `radar`, filtered by `query`
@@ -222,7 +224,7 @@ pub fn render(frame: &mut Frame, radar: &Radar, state: &BrowserState) {
 
     // Footer: bound keymap (spec §5 — advertise only keys actually bound).
     let footer = Paragraph::new(Line::from(Span::styled(
-        " Tab Dashboard  j/k up-down  / filter  q quit ",
+        " Tab Dashboard  j/k up-down  Shift+j/k ×10  PgUp/PgDn page  Home/End  / filter  q quit ",
         Style::default().fg(Color::DarkGray),
     )))
     .wrap(Wrap { trim: false });
@@ -274,8 +276,7 @@ pub fn render(frame: &mut Frame, radar: &Radar, state: &BrowserState) {
     // off-screen rows' details — before `compute_scroll_offset` finally
     // caught up and scrolled the list.
     let (list_lines, selected_line) = render_list_lines(radar, state);
-    let list_inner_height = list_area.height.saturating_sub(2); // top + bottom border
-    let visible_rows = if list_inner_height > 0 { list_inner_height as usize } else { 1 };
+    let visible_rows = list_content_rows(list_area.height); // top + bottom border consumed
     let scroll_offset = compute_scroll_offset(selected_line, list_lines.len(), visible_rows);
 
     let list_para = Paragraph::new(list_lines)
@@ -305,6 +306,29 @@ pub fn render(frame: &mut Frame, radar: &Radar, state: &BrowserState) {
     if let Some(detail_area) = detail_inner {
         render_detail_pane(frame, detail_area, radar, state);
     }
+}
+
+/// Number of project-list content rows actually visible within a bordered
+/// list block whose OUTER height (the `Rect` handed to it, borders included)
+/// is `block_height`. `Borders::ALL` consumes 2 of those rows (top + bottom),
+/// so this is `block_height - 2`, floored at 1 (never claim zero visible rows
+/// — `compute_scroll_offset` divides conceptually by this and a real 0 would
+/// make every offset "already visible").
+fn list_content_rows(block_height: u16) -> usize {
+    let inner = block_height.saturating_sub(2);
+    if inner > 0 { inner as usize } else { 1 }
+}
+
+/// Number of list rows a `PageUp`/`PageDown` press should jump by, given the
+/// full terminal height (not the list block's height — callers outside this
+/// module, i.e. `lib.rs`'s key handler, only have `crossterm::terminal::size()`
+/// to work with). Mirrors `render`'s own layout exactly: 3 rows of screen
+/// chrome (header + heavy rule + footer, `render`'s `chunks`) surround the
+/// main area, whose full height becomes the list block's OUTER height (the
+/// list/detail split is horizontal only), which `list_content_rows` then
+/// reduces by the list block's own border rows.
+pub fn page_size(terminal_height: u16) -> usize {
+    list_content_rows(terminal_height.saturating_sub(3))
 }
 
 /// Compute the scroll offset so that the selected row stays visible in a list
@@ -773,6 +797,21 @@ mod tests {
             whole.contains("project-19"),
             "the selected (last) project's row must actually be visible in the rendered list, not just reflected in the detail pane, got:\n{whole}"
         );
+    }
+
+    /// `page_size` backs `PageUp`/`PageDown` (lib.rs) — it must account for
+    /// exactly the same chrome `render` does: 3 screen rows (header, heavy
+    /// rule, footer) plus the list block's own 2 border rows, 5 total.
+    #[test]
+    fn page_size_accounts_for_screen_chrome_and_list_borders() {
+        // 24-row terminal: 24 - 3 (header/rule/footer) - 2 (list borders) = 19.
+        assert_eq!(page_size(24), 19);
+        // 80x50: 50 - 5 = 45.
+        assert_eq!(page_size(50), 45);
+        // Degenerate terminals must floor at 1, never 0 (a 0-row page jump
+        // would be a silent no-op) and must never underflow/panic.
+        assert_eq!(page_size(3), 1);
+        assert_eq!(page_size(0), 1);
     }
 
     /// Regression test for a second, related real bug found via human

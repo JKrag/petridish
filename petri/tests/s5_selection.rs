@@ -116,6 +116,23 @@ fn move_selection_clamps_at_the_top_never_wraps() {
 }
 
 #[test]
+fn move_selection_by_i32_extremes_jumps_to_edges_without_overflow() {
+    // `lib.rs` binds Home/End to `move_selection(i32::MIN)`/`(i32::MAX)` —
+    // guards against the overflow-panic regression where `current + delta`
+    // (plain `+`, not `saturating_add`) would panic in a debug build once
+    // `current + i32::MAX` exceeded `i32::MAX`.
+    let radar = load("normal.json");
+    let mut state = BrowserState::new(&radar);
+    let last = state.visible.len() - 1;
+
+    state.move_selection(i32::MAX);
+    assert_eq!(state.selected, Some(last), "i32::MAX must jump to the last row, not overflow/panic");
+
+    state.move_selection(i32::MIN);
+    assert_eq!(state.selected, Some(0), "i32::MIN must jump to the first row, not overflow/panic");
+}
+
+#[test]
 fn move_selection_crosses_section_boundaries() {
     // loaded.json has every bucket populated (petri/SPEC.md §8) — moving one
     // step past the end of a section's rows must land in the next section's
