@@ -40,6 +40,35 @@ pub fn petri_bin() -> PathBuf {
     PathBuf::from(env!("CARGO_BIN_EXE_petri"))
 }
 
+/// Repeatedly (re)spawn+settle up to `attempts` times, returning the first
+/// non-empty settled output (and the `Session` that produced it, still
+/// alive, for further interaction). Mitigates the empty-first-settle PTY
+/// race documented in this module's doc comment (bug 2's fix narrows it but
+/// doesn't fully close it) — S4's and S5's PTY tests each independently
+/// reinvented this same bounded-retry loop before it was pulled up here for
+/// S6 to reuse. Returns the LAST (possibly still empty) output if every
+/// attempt comes back empty, so a genuine regression fails loudly rather
+/// than silently passing.
+pub fn spawn_and_settle_nonempty(
+    state_path: &std::path::Path,
+    cols: u16,
+    rows: u16,
+    timeout: Duration,
+    quiet_for: Duration,
+    attempts: u32,
+) -> (Session, String) {
+    let mut session = Session::spawn(state_path, cols, rows);
+    let mut output = session.settle(timeout, quiet_for);
+    let mut attempt = 1;
+    while output.is_empty() && attempt < attempts {
+        attempt += 1;
+        eprintln!("attempt {attempt}/{attempts}: empty output (suspected PTY race), retrying");
+        session = Session::spawn(state_path, cols, rows);
+        output = session.settle(timeout, quiet_for);
+    }
+    (session, output)
+}
+
 pub struct Session {
     // Kept alive for the whole session even though nothing reads it directly —
     // see this module's doc comment, bug 2.

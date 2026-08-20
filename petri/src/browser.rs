@@ -17,8 +17,13 @@ use ratatui::{
 use std::time::{SystemTime, UNIX_EPOCH};
 
 /// Section order (petri/SPEC.md §3.1): "Grouped list, sections in the fixed
-/// order active, in_flight, stale, cold". No headers in the Browser (v1) —
-/// that's a Dashboard-only concept (S6) — so this is purely a sort key.
+/// order active, in_flight, stale, cold". The Browser DOES render headers
+/// with counts (§3.1) — they are just not selection stops here (selection
+/// only ever lands on a project row; `BrowserState.visible` holds project
+/// indices only, never a header). This is a Dashboard-only distinction (S6):
+/// the Dashboard's headers ARE stops (§3.2), which needs its own cursor type
+/// — do not reuse `BrowserState` for it. See browser::render for how a
+/// header is drawn without being reachable by move_selection.
 pub const SECTION_ORDER: [StatusBucket; 4] =
     [StatusBucket::Active, StatusBucket::InFlight, StatusBucket::Stale, StatusBucket::Cold];
 
