@@ -7,6 +7,7 @@ pub mod app;
 pub mod browser;
 pub mod dashboard;
 pub mod prefs;
+use crate::prefs::{LastScreen, Prefs};
 
 /// Resolved default state-file path: `$HOME/.petridish/projects.json`. Mirrors
 /// `swab::cli::default_state_path` — same reasoning (composed directly so tests
@@ -127,13 +128,23 @@ fn poll_loop(
         .ok()
         .and_then(|m| m.modified().ok());
 
-    let mut screen = Screen::Dashboard;
-
-    // DashboardState is built eagerly (it's the landing screen); BrowserState
-    // is only built lazily, the first time `Enter` on a Dashboard row jumps
-    // there (petri/SPEC.md §5) — no need to pay for it up front.
-    let mut dashboard_state = last_good.as_ref().map(crate::dashboard::DashboardState::new);
-    let mut browser_state: Option<crate::browser::BrowserState> = None;
+    // Load preferences (petri/SPEC.md §6). Missing or corrupt file -> defaults,
+    // an eprintln! on stderr — petri/SPEC.md §6: "never a crash, and never a
+    // refusal to start".
+    let prefs = prefs::load(&prefs::default_prefs_path());
+    let (mut screen, mut browser_state) = match prefs.last_screen {
+        LastScreen::Dashboard => {
+            (Screen::Dashboard, None)
+        }
+        LastScreen::Browser => {
+            let bstate = last_good.as_ref().map(crate::browser::BrowserState::new);
+            (Screen::Browser, bstate)
+        }
+    };
+    let mut dashboard_state: Option<crate::dashboard::DashboardState> = match last_good.as_ref() {
+        Some(radar) => Some(crate::dashboard::DashboardState::with_collapsed(radar, prefs.collapsed)),
+        None => None,
+    };
 
     let mut in_filter_input = false;
 
@@ -152,52 +163,76 @@ fn poll_loop(
                     // `q` always quits, even in filter input mode.
                     return Ok(0);
                 } else if screen == Screen::Dashboard {
-                    // The Dashboard has no filter input mode — `/` is a
-                    // Browser-only key (petri/SPEC.md §5).
-                    match key.code {
-                        crossterm::event::KeyCode::Up | crossterm::event::KeyCode::Char('k') => {
-                            if let Some(ref mut dstate) = dashboard_state {
-                                dstate.move_selection(-1);
-                            }
-                            true
+                    // `Tab` switches Dashboard → Browser (petri/SPEC.md §5).
+                    if key.code == crossterm::event::KeyCode::Tab {
+                        // Build browser state lazily on the first Tab switch,
+                        // only if we have a valid radar (State read failures
+                        // happen on first run when no state file exists yet).
+                        let bstate = last_good
+                            .as_ref()
+                            .map(crate::browser::BrowserState::new);
+                        screen = Screen::Browser;
+                        browser_state = bstate;
+                        if let Err(e) = prefs::save(&prefs::default_prefs_path(), &Prefs {
+                            last_screen: LastScreen::Browser,
+                            collapsed: dashboard_state.as_ref().map(|d| d.collapsed).unwrap_or([false, false, true, true]),
+                        }) {
+                            eprintln!("petri S7: persist Tab switch failed: {e}");
                         }
-                        crossterm::event::KeyCode::Down | crossterm::event::KeyCode::Char('j') => {
-                            if let Some(ref mut dstate) = dashboard_state {
-                                dstate.move_selection(1);
-                            }
-                            true
-                        }
-                        crossterm::event::KeyCode::Char(' ') => {
-                            if let (Some(dstate), Some(radar)) = (&mut dashboard_state, &last_good) {
-                                dstate.toggle_selected(radar);
-                            }
-                            true
-                        }
-                        // `Enter`: on a header, toggle (same as Space); on a
-                        // row, jump to the Browser with that project selected
-                        // (petri/SPEC.md §5).
-                        crossterm::event::KeyCode::Enter => {
-                            if let (Some(dstate), Some(radar)) = (&mut dashboard_state, &last_good) {
-                                let current_row = dstate.selected.and_then(|i| dstate.visible.get(i)).copied();
-                                match current_row {
-                                    Some(crate::dashboard::DashRow::Header(_)) => {
-                                        dstate.toggle_selected(radar);
-                                    }
-                                    Some(crate::dashboard::DashRow::Project(proj_idx)) => {
-                                        let mut bstate = crate::browser::BrowserState::new(radar);
-                                        if let Some(pos) = bstate.visible.iter().position(|&i| i == proj_idx) {
-                                            bstate.selected = Some(pos);
-                                        }
-                                        browser_state = Some(bstate);
-                                        screen = Screen::Browser;
-                                    }
-                                    None => {}
+                        true
+                    } else {
+                        match key.code {
+                            crossterm::event::KeyCode::Up | crossterm::event::KeyCode::Char('k') => {
+                                if let Some(ref mut dstate) = dashboard_state {
+                                    dstate.move_selection(-1);
                                 }
+                                true
                             }
-                            true
+                            crossterm::event::KeyCode::Down | crossterm::event::KeyCode::Char('j') => {
+                                if let Some(ref mut dstate) = dashboard_state {
+                                    dstate.move_selection(1);
+                                }
+                                true
+                            }
+                            crossterm::event::KeyCode::Char(' ') => {
+                                if let (Some(dstate), Some(radar)) = (&mut dashboard_state, &last_good) {
+                                    dstate.toggle_selected(radar);
+                                }
+                                true
+                            }
+                            // `Enter`: on a header, toggle (same as Space); on a
+                            // row, jump to the Browser with that project selected
+                            // (petri/SPEC.md §5).
+                            crossterm::event::KeyCode::Enter => {
+                                if let (Some(dstate), Some(radar)) = (&mut dashboard_state, &last_good) {
+                                    let current_row = dstate.selected.and_then(|i| dstate.visible.get(i)).copied();
+                                    match current_row {
+                                        Some(crate::dashboard::DashRow::Header(_)) => {
+                                            dstate.toggle_selected(radar);
+                                        }
+                                        Some(crate::dashboard::DashRow::Project(proj_idx)) => {
+                                            // Persist Dashboard → Browser transition (same as Tab).
+                                            if let Err(e) = prefs::save(&prefs::default_prefs_path(), &Prefs {
+                                                last_screen: LastScreen::Browser,
+                                                collapsed: dstate.collapsed,
+                                            }) {
+                                                eprintln!("petri S7: persist Enter→Browser failed: {e}");
+                                            }
+                                            let mut bstate = crate::browser::BrowserState::new(radar);
+                                            if let Some(pos) = bstate.visible.iter().position(|&i| i == proj_idx) {
+                                                bstate.selected = Some(pos);
+                                            }
+                                            browser_state = Some(bstate);
+                                            screen = Screen::Browser;
+                                        }
+                                        None => {}
+                                    }
+                                }
+                                true
+                            }
+                            crossterm::event::KeyCode::Esc => true,
+                            _ => false,
                         }
-                        crossterm::event::KeyCode::Esc => true,
-                        _ => false,
                     }
                 } else if key.code == crossterm::event::KeyCode::Char('/') {
                     // Enter filter input mode. The query starts empty and
@@ -265,24 +300,40 @@ fn poll_loop(
                         _ => false,
                     }
                 } else {
-                    match key.code {
-                        // Navigation in normal (non-filter) mode.
-                        crossterm::event::KeyCode::Up | crossterm::event::KeyCode::Char('k') => {
-                            if let Some(ref mut state) = browser_state {
-                                state.move_selection(-1);
-                            }
-                            true
+                    // `Tab` from the Browser switches back to the Dashboard
+                    // (petri/SPEC.md §5). Persistence is handled in the
+                    // Dashboard branch above, but here on the Browser side
+                    // it must also trigger a save (the Dashboard branch
+                    // doesn't fire when screen is Browser).
+                    if key.code == crossterm::event::KeyCode::Tab {
+                        if let Err(e) = prefs::save(&prefs::default_prefs_path(), &Prefs {
+                            last_screen: LastScreen::Dashboard,
+                            collapsed: dashboard_state.as_ref().map(|d| d.collapsed).unwrap_or([false, false, true, true]),
+                        }) {
+                            eprintln!("petri S7: persist Tab switch (Browser→Dashboard) failed: {e}");
                         }
-                        crossterm::event::KeyCode::Down | crossterm::event::KeyCode::Char('j') => {
-                            if let Some(ref mut state) = browser_state {
-                                state.move_selection(1);
+                        screen = Screen::Dashboard;
+                        true
+                    } else {
+                        match key.code {
+                            // Navigation in normal (non-filter) mode.
+                            crossterm::event::KeyCode::Up | crossterm::event::KeyCode::Char('k') => {
+                                if let Some(ref mut state) = browser_state {
+                                    state.move_selection(-1);
+                                }
+                                true
                             }
-                            true
+                            crossterm::event::KeyCode::Down | crossterm::event::KeyCode::Char('j') => {
+                                if let Some(ref mut state) = browser_state {
+                                    state.move_selection(1);
+                                }
+                                true
+                            }
+                            // `Esc` in normal mode: no-op (only meaningful to
+                            // close the filter; if filter isn't open, do nothing).
+                            crossterm::event::KeyCode::Esc => true,
+                            _ => false,
                         }
-                        // `Esc` in normal mode: no-op (only meaningful to
-                        // close the filter; if filter isn't open, do nothing).
-                        crossterm::event::KeyCode::Esc => true,
-                        _ => false,
                     }
                 };
                 if handled {

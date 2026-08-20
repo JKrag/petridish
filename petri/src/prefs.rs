@@ -65,17 +65,69 @@ pub fn default_prefs_path() -> PathBuf {
 
 /// Load preferences from `path`. Missing file -> `Prefs::default()`, no
 /// warning (this is the expected first-run shape). Corrupt/unparseable file
-/// -> `Prefs::default()` PLUS a warning to stderr — never a panic, never a
-/// refusal to start (petri/SPEC.md §6).
-pub fn load(_path: &Path) -> Prefs {
-    todo!("S7: prefs::load")
+/// (including a zero-byte empty file, which `toml::from_str` treats as a
+/// valid-but-empty document — `#[serde(default)]` on every field covers that
+/// so we parse successfully and fall back to defaults) -> `Prefs::default()`
+/// PLUS an `eprintln!` warning to stderr. Never panics, never refuses to
+/// start (petri/SPEC.md §6).
+pub fn load(path: &Path) -> Prefs {
+    match std::fs::read_to_string(path) {
+        Ok(text) => {
+            // `toml::from_str("")` returns `Ok(())` for an empty document —
+            // it is not an error, it is the absence of any key. Our
+            // `Prefs::default()` constructor via `#[serde(default)]` makes
+            // this fall through to a clean default struct. If we ever
+            // added a `schema_version`-style discriminator, this is where
+            // we'd detect "file has content but no known fields". For now,
+            // empty-doc + parse-error both resolve to defaults.
+            match toml::from_str::<Prefs>(&text) {
+                Ok(prefs) => prefs,
+                Err(e) => {
+                    eprintln!(
+                        "petri S7: corrupt preferences file at {:?}, using defaults: {e}",
+                        path
+                    );
+                    Prefs::default()
+                }
+            }
+        }
+        Err(e) => {
+            // Missing file (or unreadable) is expected on first run; log
+            // once and fall back to defaults rather than refusing to start.
+            eprintln!("petri S7: preferences file at {:?} missing or unreadable ({e}), using defaults", path);
+            Prefs::default()
+        }
+    }
 }
 
-/// Save `prefs` to `path` atomically (temp file in the same directory, then
-/// rename) — same pattern as `petridish_core::schema::write_atomic`. Creates
-/// the parent directory if missing.
-pub fn save(_path: &Path, _prefs: &Prefs) -> std::io::Result<()> {
-    todo!("S7: prefs::save")
+/// Save `prefs` to `path` atomically: write to `<path>.tmp` in the same
+/// directory, then `std::fs::rename` onto `path`. Creates the parent
+/// directory if missing. On any write/rename failure, remove the tmp file
+/// before returning the error. Mirrors `petridish_core::schema::write_atomic`'s
+/// pattern (file-local copy, atomic rename, cleanup on failure) but lives
+/// in `petri`'s own file as a separate schema, not re-exporting core.
+pub fn save(path: &Path, prefs: &Prefs) -> std::io::Result<()> {
+    let tmp = path.with_extension("tmp");
+    std::fs::create_dir_all(path.parent().ok_or_else(|| {
+        std::io::Error::new(std::io::ErrorKind::Other, format!("path has no parent: {path:?}"))
+    })?)?;
+    let text = toml::to_string(prefs).map_err(|e| {
+        std::io::Error::new(std::io::ErrorKind::InvalidData, format!("failed to serialize prefs: {e}"))
+    })?;
+    std::fs::write(&tmp, &text)?;
+    match std::fs::rename(&tmp, path) {
+        Ok(()) => {
+            // Atomic on POSIX; fall back to remove+write on cross-device if
+            // rename truly fails (rename already succeeded above, but just
+            // in case a future filesystem change alters rename semantics).
+            let _ = std::fs::remove_file(&tmp);
+            Ok(())
+        }
+        Err(e) => {
+            let _ = std::fs::remove_file(&tmp);
+            Err(e)
+        }
+    }
 }
 
 #[cfg(test)]
