@@ -2376,6 +2376,7 @@ dependencies = [
  "portable-pty",
  "ratatui",
  "serde",
+ "serde_json",
  "toml",
 ]
 
