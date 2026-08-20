@@ -43,7 +43,6 @@ fn rendered_lines(radar: &Radar, state: &BrowserState, width: u16, height: u16) 
 }
 
 #[test]
-#[ignore = "S5 gate: BrowserState/browser::render not implemented yet; run explicitly with --ignored"]
 fn header_identifies_the_app_at_80x24() {
     let radar = load("normal.json");
     let state = BrowserState::new(&radar);
@@ -52,7 +51,6 @@ fn header_identifies_the_app_at_80x24() {
 }
 
 #[test]
-#[ignore = "S5 gate: BrowserState/browser::render not implemented yet; run explicitly with --ignored"]
 fn section_labels_are_rendered_for_populated_buckets() {
     // petri/SPEC.md §3.1: "Grouped list, sections in the fixed order active,
     // in_flight, stale, cold, each with a header and a count. Section
@@ -75,7 +73,6 @@ fn section_labels_are_rendered_for_populated_buckets() {
 }
 
 #[test]
-#[ignore = "S5 gate: BrowserState/browser::render not implemented yet; run explicitly with --ignored"]
 fn every_visible_project_name_reachable_at_200x50() {
     // 200x50 is roomy — normal.json's 15 projects must all fit and be visible.
     let radar = load("normal.json");
@@ -89,7 +86,6 @@ fn every_visible_project_name_reachable_at_200x50() {
 }
 
 #[test]
-#[ignore = "S5 gate: BrowserState/browser::render not implemented yet; run explicitly with --ignored"]
 fn every_visible_project_name_reachable_at_80x24_minimal() {
     let radar = load("minimal.json");
     let state = BrowserState::new(&radar);
@@ -102,7 +98,6 @@ fn every_visible_project_name_reachable_at_80x24_minimal() {
 }
 
 #[test]
-#[ignore = "S5 gate: BrowserState/browser::render not implemented yet; run explicitly with --ignored"]
 fn detail_pane_absent_entirely_at_40x10() {
     // petri/SPEC.md §3.1: "If the window is too narrow to give it a usable
     // width, hide it entirely rather than squeezing." 40 columns is not
@@ -136,7 +131,6 @@ fn detail_pane_absent_entirely_at_40x10() {
 }
 
 #[test]
-#[ignore = "S5 gate: BrowserState/browser::render not implemented yet; run explicitly with --ignored"]
 fn does_not_panic_on_empty_visible_list() {
     let radar = Radar {
         schema_version: 1,
@@ -151,7 +145,6 @@ fn does_not_panic_on_empty_visible_list() {
 }
 
 #[test]
-#[ignore = "S5 gate: BrowserState/browser::render not implemented yet; run explicitly with --ignored"]
 fn does_not_panic_at_tiny_geometry() {
     let radar = load("minimal.json");
     let state = BrowserState::new(&radar);

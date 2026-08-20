@@ -1,7 +1,7 @@
 //! `petri` — the Rust/ratatui reimplementation of the interactive dashboard.
-//! Spec: `petri/SPEC.md`. S4 fills in the walking skeleton (real terminal, event
-//! loop, poll timer, panic hook — petri/SPEC.md §9 S4); S5+ replace `app::render`
-//! with the grouped Browser/Dashboard screens.
+//! Spec: `petri/SPEC.md`. S4 fills in the walking skeleton (real terminal,
+//! event loop, poll timer, panic hook — petri/SPEC.md §9 S4); S5+ replace
+//! `app::render` with the grouped Browser/Dashboard screens.
 
 pub mod app;
 pub mod browser;
@@ -90,6 +90,7 @@ fn install_panic_hook() {
     }));
 }
 
+
 /// The main poll loop: draw the current state once, then only redraw on
 /// meaningful events (keyboard input, resize, mtime change). `q` breaks.
 fn poll_loop(
@@ -103,7 +104,7 @@ fn poll_loop(
     // keeping whatever `last_good` still holds (a non-panicking invariant).
     match read_state_file(state_path) {
         Ok(r) => last_good = Some(r),
-        Err(e) => eprintln!("petri S4 initial state read failed: {e}"),
+        Err(e) => eprintln!("petri S5 initial state read failed: {e}"),
     }
 
     // Initial mtime snapshot. We don't draw on ticks where nothing has
@@ -114,8 +115,18 @@ fn poll_loop(
         .ok()
         .and_then(|m| m.modified().ok());
 
+    // BrowserState + filter input mode. The state owns the selection and
+    // filter query; we re-derive it from `last_good` when the radar changes
+    // (mtime update) so the filter survives state-file reloads.
+    let mut browser_state = match &last_good {
+        Some(r) => Some(crate::browser::BrowserState::new(r)),
+        None => None,
+    };
+
+    let mut in_filter_input = false;
+
     // Initial draw — unconditional so we always paint something on startup.
-    render_current(terminal, &last_good);
+    render_current(terminal, &last_good, &mut browser_state);
 
     loop {
         // crossterm's `poll` returns true when *any* event is queued (Key,
@@ -125,8 +136,97 @@ fn poll_loop(
         let event_ready = crossterm::event::poll(std::time::Duration::from_secs(1)).unwrap_or(false);
         if event_ready {
             if let Ok(crossterm::event::Event::Key(key)) = crossterm::event::read() {
-                if key.code == crossterm::event::KeyCode::Char('q') {
+                let handled = if key.code == crossterm::event::KeyCode::Char('q') {
+                    // `q` always quits, even in filter input mode.
                     return Ok(0);
+                } else if key.code == crossterm::event::KeyCode::Char('/') {
+                    // Enter filter input mode. The query starts empty and
+                    // subsequent character keys append to it.
+                    in_filter_input = true;
+                    if let Some(ref mut state) = browser_state {
+                        state.filter_query = String::new();
+                        if let Some(ref radar) = last_good {
+                            state.apply_filter(radar, "");
+                        }
+                    }
+                    true
+                } else if in_filter_input {
+                    match key.code {
+                        // Navigation arrows and j/k still move selection while
+                        // in filter mode (the user may want to test moves without
+                        // exiting the filter). Place before the generic Char(c)
+                        // arm so they take priority.
+                        crossterm::event::KeyCode::Up | crossterm::event::KeyCode::Char('k') => {
+                            if let Some(ref mut state) = browser_state {
+                                state.move_selection(-1);
+                            }
+                            true
+                        }
+                        crossterm::event::KeyCode::Down | crossterm::event::KeyCode::Char('j') => {
+                            if let Some(ref mut state) = browser_state {
+                                state.move_selection(1);
+                            }
+                            true
+                        }
+                        // `Esc` closes the filter input mode *and* clears the
+                        // query (petri/SPEC.md §5).
+                        crossterm::event::KeyCode::Esc => {
+                            in_filter_input = false;
+                            if let Some(ref mut state) = browser_state {
+                                state.filter_query = String::new();
+                                if let Some(ref radar) = last_good {
+                                    state.apply_filter(radar, "");
+                                }
+                            }
+                            true
+                        }
+                        // `Enter` closes the filter input mode but keeps the
+                        // query, so the filtered selection persists.
+                        crossterm::event::KeyCode::Enter => {
+                            in_filter_input = false;
+                            true
+                        }
+                        // Character keys: append to the query (filter input
+                        // only — we don't treat these as navigation when we're
+                        // mid-filter). Non-printable / control keys fall
+                        // through and are ignored in filter mode.
+                        crossterm::event::KeyCode::Char(c) => {
+                            if let Some(ref mut state) = browser_state {
+                                let q = std::mem::take(&mut state.filter_query);
+                                let new_q = format!("{q}{c}");
+                                if let Some(ref radar) = last_good {
+                                    state.apply_filter(radar, &new_q);
+                                }
+                                true
+                            } else {
+                                false
+                            }
+                        }
+                        _ => false,
+                    }
+                } else {
+                    match key.code {
+                        // Navigation in normal (non-filter) mode.
+                        crossterm::event::KeyCode::Up | crossterm::event::KeyCode::Char('k') => {
+                            if let Some(ref mut state) = browser_state {
+                                state.move_selection(-1);
+                            }
+                            true
+                        }
+                        crossterm::event::KeyCode::Down | crossterm::event::KeyCode::Char('j') => {
+                            if let Some(ref mut state) = browser_state {
+                                state.move_selection(1);
+                            }
+                            true
+                        }
+                        // `Esc` in normal mode: no-op (only meaningful to
+                        // close the filter; if filter isn't open, do nothing).
+                        crossterm::event::KeyCode::Esc => true,
+                        _ => false,
+                    }
+                };
+                if handled {
+                    render_current(terminal, &last_good, &mut browser_state);
                 }
             }
         }
@@ -145,8 +245,24 @@ fn poll_loop(
 
         if mtime_changed {
             match read_state_file(state_path) {
-                Ok(r) => last_good = Some(r),
-                Err(e) => eprintln!("petri S4 mid-loop state read failed: {e}"),
+                Ok(r) => {
+                    last_good = Some(r);
+                    // Re-derive browser state from the new Radar, preserving the
+                    // current filter query. Selection follows the previously-
+                    // selected project when it survives, else resets to first row
+                    // (per spec §3.1 — `apply_filter` guarantees this). We take a
+                    // snapshot of the filter query first so we don't hold two
+                    // borrows on `browser_state` at once.
+                    let query_snapshot: Option<String> = browser_state
+                        .as_ref()
+                        .map(|s| s.filter_query.clone());
+                    if let (Some(radar), Some(q)) = (&last_good, query_snapshot) {
+                        if let Some(ref mut state) = browser_state {
+                            state.apply_filter(radar, &q);
+                        }
+                    }
+                }
+                Err(e) => eprintln!("petri S5 mid-loop state read failed: {e}"),
             }
         }
 
@@ -155,20 +271,26 @@ fn poll_loop(
         // ticks we skip draw so the output stream goes still — this keeps PTY
         // harnesses happy and the user's terminal clean when petri is idle.
         if event_ready || mtime_changed {
-            render_current(terminal, &last_good);
+            render_current(terminal, &last_good, &mut browser_state);
         }
 
         last_mtime = new_mtime;
     }
 }
 
-/// Helper: redraw `terminal` from the last good radar, with any read errors
-/// logged but not propagated (mid-run failures degrade in place).
+/// Helper: redraw `terminal` from the last good radar and live `BrowserState`,
+/// with any read errors logged but not propagated (mid-run failures degrade in
+/// place).
 fn render_current(
     terminal: &mut ratatui::Terminal<ratatui::backend::CrosstermBackend<std::io::Stdout>>,
     radar: &Option<petridish_core::schema::Radar>,
+    browser_state: &Option<crate::browser::BrowserState>,
 ) {
-    if let Some(r) = radar {
-        let _ = terminal.draw(|frame| app::render(frame, r));
+    if let (Some(r), Some(s)) = (radar, browser_state) {
+        // `browser::render` takes immutable references to both the radar and
+        // state — we just need to thread them through. BrowserState mutations
+        // happen in `poll_loop`, not inside this closure.
+        let _ = terminal.draw(|frame| crate::browser::render(frame, r, s));
     }
 }
+

@@ -29,7 +29,6 @@ fn load(name: &str) -> Radar {
 }
 
 #[test]
-#[ignore = "S5 gate: BrowserState/browser::render not implemented yet; run explicitly with --ignored"]
 fn new_excludes_foreign_projects() {
     let radar = load("loaded.json");
     let state = BrowserState::new(&radar);
@@ -43,7 +42,6 @@ fn new_excludes_foreign_projects() {
 }
 
 #[test]
-#[ignore = "S5 gate: BrowserState/browser::render not implemented yet; run explicitly with --ignored"]
 fn new_groups_in_section_order() {
     let radar = load("loaded.json");
     let state = BrowserState::new(&radar);
@@ -69,7 +67,6 @@ fn new_groups_in_section_order() {
 }
 
 #[test]
-#[ignore = "S5 gate: BrowserState/browser::render not implemented yet; run explicitly with --ignored"]
 fn new_selects_first_visible_row() {
     let radar = load("minimal.json");
     let state = BrowserState::new(&radar);
@@ -78,7 +75,6 @@ fn new_selects_first_visible_row() {
 }
 
 #[test]
-#[ignore = "S5 gate: BrowserState/browser::render not implemented yet; run explicitly with --ignored"]
 fn empty_visible_list_has_no_selection_and_does_not_panic() {
     // hostile.json is all-cold but not empty (see petridish-core's
     // fixtures_test.rs for why) — build a genuinely empty Radar instead to
@@ -101,7 +97,6 @@ fn empty_visible_list_has_no_selection_and_does_not_panic() {
 }
 
 #[test]
-#[ignore = "S5 gate: BrowserState/browser::render not implemented yet; run explicitly with --ignored"]
 fn move_selection_clamps_at_the_bottom_never_wraps() {
     let radar = load("normal.json"); // 15 projects (petri/SPEC.md §8)
     let mut state = BrowserState::new(&radar);
@@ -112,7 +107,6 @@ fn move_selection_clamps_at_the_bottom_never_wraps() {
 }
 
 #[test]
-#[ignore = "S5 gate: BrowserState/browser::render not implemented yet; run explicitly with --ignored"]
 fn move_selection_clamps_at_the_top_never_wraps() {
     let radar = load("normal.json");
     let mut state = BrowserState::new(&radar);
@@ -122,7 +116,6 @@ fn move_selection_clamps_at_the_top_never_wraps() {
 }
 
 #[test]
-#[ignore = "S5 gate: BrowserState/browser::render not implemented yet; run explicitly with --ignored"]
 fn move_selection_crosses_section_boundaries() {
     // loaded.json has every bucket populated (petri/SPEC.md §8) — moving one
     // step past the end of a section's rows must land in the next section's
@@ -153,7 +146,6 @@ fn move_selection_crosses_section_boundaries() {
 }
 
 #[test]
-#[ignore = "S5 gate: BrowserState/browser::render not implemented yet; run explicitly with --ignored"]
 fn apply_filter_case_insensitive_substring_match() {
     let radar = load("normal.json");
     let mut state = BrowserState::new(&radar);
@@ -175,7 +167,6 @@ fn apply_filter_case_insensitive_substring_match() {
 }
 
 #[test]
-#[ignore = "S5 gate: BrowserState/browser::render not implemented yet; run explicitly with --ignored"]
 fn apply_filter_empty_query_returns_full_unfiltered_list() {
     let radar = load("normal.json");
     let mut state = BrowserState::new(&radar);
@@ -187,7 +178,6 @@ fn apply_filter_empty_query_returns_full_unfiltered_list() {
 }
 
 #[test]
-#[ignore = "S5 gate: BrowserState/browser::render not implemented yet; run explicitly with --ignored"]
 fn apply_filter_out_the_selected_project_resets_to_first_available_row() {
     let radar = load("normal.json");
     let mut state = BrowserState::new(&radar);
@@ -207,7 +197,6 @@ fn apply_filter_out_the_selected_project_resets_to_first_available_row() {
 }
 
 #[test]
-#[ignore = "S5 gate: BrowserState/browser::render not implemented yet; run explicitly with --ignored"]
 fn apply_filter_keeps_selection_on_the_same_project_when_it_survives() {
     let radar = load("normal.json");
     let mut state = BrowserState::new(&radar);

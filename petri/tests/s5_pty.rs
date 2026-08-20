@@ -27,25 +27,39 @@ use std::io::Write;
 use std::time::Duration;
 
 #[test]
-#[ignore = "S5 gate: BrowserState/browser::render not implemented yet; run explicitly with --ignored"]
 fn initial_frame_shows_section_labels() {
-    let mut session = Session::spawn(&fixture_path("normal.json"), 80, 40);
-    let first_frame = session.settle(Duration::from_secs(5), Duration::from_millis(300));
+    // Bounded retry for the same class of OS-level PTY race documented in
+    // pty_support's module doc comment and s4_pty.rs's missing-state-file
+    // test: observed here at roughly 1/3 runs (measured empirically — this
+    // slice's real terminal setup, alternate screen + raw mode, appears to
+    // widen the race window versus S4's simpler flat-list render). ADR-0003
+    // is explicit that a flaky layer-3 test is worse than none in an
+    // unattended context, so rather than accept a nonzero flake rate, retry
+    // the whole spawn+settle cycle up to 3 times and only fail if it's
+    // consistently empty — which would mean a real regression, not this race.
+    let mut first_frame = String::new();
+    for attempt in 1..=3 {
+        let mut session = Session::spawn(&fixture_path("normal.json"), 80, 40);
+        first_frame = session.settle(Duration::from_secs(5), Duration::from_millis(300));
+        session.writer.write_all(b"q").ok();
+        let _ = session.wait_with_timeout(Duration::from_secs(5));
+        if !first_frame.is_empty() {
+            break;
+        }
+        eprintln!("attempt {attempt}/3: empty output (suspected PTY race), retrying");
+    }
     // normal.json populates every bucket (5 active / 4 in_flight / 4 stale /
     // 3 cold) — see s5_snapshot.rs's identical assertion for why this is the
     // one check that actually discriminates S5 from S4's stub.
     for label in ["RUNNING", "IN FLIGHT", "STALE", "COLD"] {
         assert!(
             first_frame.contains(label),
-            "initial frame must show section label {label:?}, got: {first_frame:?}"
+            "initial frame must show section label {label:?} after 3 attempts, got: {first_frame:?}"
         );
     }
-    session.writer.write_all(b"q").ok();
-    let _ = session.wait_with_timeout(Duration::from_secs(5));
 }
 
 #[test]
-#[ignore = "S5 gate: BrowserState/browser::render not implemented yet; run explicitly with --ignored"]
 fn navigation_and_filter_keystrokes_do_not_crash_the_binary() {
     // Lifecycle/plumbing check, not a content check (see module doc comment):
     // j/k/arrows move selection, / opens the filter, Esc clears it — none of
@@ -66,7 +80,6 @@ fn navigation_and_filter_keystrokes_do_not_crash_the_binary() {
 }
 
 #[test]
-#[ignore = "S5 gate: BrowserState/browser::render not implemented yet; run explicitly with --ignored"]
 fn q_still_quits_cleanly_with_browser_active() {
     // Regression guard: S5 must not break S4's basic "q quits" contract while
     // wiring BrowserState into the event loop.
