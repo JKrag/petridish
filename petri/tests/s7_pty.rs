@@ -31,17 +31,26 @@
 //! before delegating S7.
 
 mod pty_support;
-use pty_support::{Session, fixture_path, spawn_and_settle_nonempty};
+use pty_support::{Session, fixture_path};
 use std::io::Write;
 use std::time::Duration;
 
 #[test]
-#[ignore = "S7 gate: Tab switching / petri.toml persistence not wired into poll_loop yet; run explicitly with --ignored"]
 fn tab_switches_dashboard_to_browser_and_back() {
-    let (mut session, _first_frame) =
-        spawn_and_settle_nonempty(&fixture_path("loaded.json"), 80, 40, Duration::from_secs(5), Duration::from_millis(300), 3);
+    // Uses a scratch HOME, not bare `Session::spawn` — this test presses Tab
+    // (twice), and Tab now calls `prefs::save` for real (petri/SPEC.md §6).
+    // Bare `Session::spawn` inherits the ambient `$HOME`, which means every
+    // run of this test would silently write to the REAL user's
+    // `~/.petridish/petri.toml` — caught only by noticing the installed
+    // binary started on the wrong screen against real data after running
+    // this test repeatedly during verification. No prior real preferences
+    // existed to be lost (confirmed via the file's creation timestamp
+    // matching a test run), but the isolation bug itself is real regardless.
+    let home = std::env::temp_dir().join(format!("petri_s7_pty_tab_switch_home_{}", std::process::id()));
+    std::fs::create_dir_all(&home).expect("scratch home dir must be creatable");
+    let mut session = Session::spawn_with_home(&fixture_path("loaded.json"), 80, 40, &home);
 
-    let initial_screen = session.screen_retry(80, 40, Duration::from_secs(2), Duration::from_millis(300), 5);
+    let initial_screen = session.screen_retry(80, 40, Duration::from_secs(5), Duration::from_millis(300), 5);
     assert!(
         initial_screen[0].contains("petri") && initial_screen[0].contains("dashboard"),
         "petri must start on the Dashboard (S6 default, still true here), got row 0: {:?}",
@@ -75,7 +84,6 @@ fn tab_switches_dashboard_to_browser_and_back() {
 }
 
 #[test]
-#[ignore = "S7 gate: Tab switching / petri.toml persistence not wired into poll_loop yet; run explicitly with --ignored"]
 fn valid_petri_toml_is_applied_on_startup() {
     // The one PTY assertion that actually discriminates "prefs wired into
     // startup" from "not wired at all": `corrupt_petri_toml_does_not_prevent_startup`
@@ -106,7 +114,6 @@ fn valid_petri_toml_is_applied_on_startup() {
 }
 
 #[test]
-#[ignore = "S7 gate: Tab switching / petri.toml persistence not wired into poll_loop yet; run explicitly with --ignored"]
 fn corrupt_petri_toml_does_not_prevent_startup() {
     // petri/SPEC.md §6: "A corrupt or unparseable file means defaults plus a
     // warning — never a crash, and never a refusal to start. There is a test
@@ -129,3 +136,4 @@ fn corrupt_petri_toml_does_not_prevent_startup() {
     let status = session.wait_with_timeout(Duration::from_secs(5));
     assert_eq!(status.exit_code(), 0, "'q' must still exit 0 with a corrupt petri.toml present");
 }
+

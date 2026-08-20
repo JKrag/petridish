@@ -25,7 +25,6 @@ fn scratch_path(name: &str) -> PathBuf {
 }
 
 #[test]
-#[ignore = "S7 gate: prefs::load/prefs::save not implemented yet; run explicitly with --ignored"]
 fn missing_file_returns_defaults() {
     let path = scratch_path("missing_file_returns_defaults");
     assert!(!path.exists(), "test precondition: scratch path must not exist yet");
@@ -36,7 +35,6 @@ fn missing_file_returns_defaults() {
 }
 
 #[test]
-#[ignore = "S7 gate: prefs::load/prefs::save not implemented yet; run explicitly with --ignored"]
 fn corrupt_file_returns_defaults_not_a_panic() {
     let path = scratch_path("corrupt_file_returns_defaults_not_a_panic");
     std::fs::write(&path, b"this is not valid toml { [[[ ===").expect("write garbage must succeed");
@@ -47,7 +45,6 @@ fn corrupt_file_returns_defaults_not_a_panic() {
 }
 
 #[test]
-#[ignore = "S7 gate: prefs::load/prefs::save not implemented yet; run explicitly with --ignored"]
 fn empty_file_returns_defaults_not_a_panic() {
     // A zero-byte file is a distinct edge case from garbage bytes (some TOML
     // parsers treat an empty document as valid-but-empty, which would parse
@@ -60,7 +57,6 @@ fn empty_file_returns_defaults_not_a_panic() {
 }
 
 #[test]
-#[ignore = "S7 gate: prefs::load/prefs::save not implemented yet; run explicitly with --ignored"]
 fn roundtrip_save_then_load_preserves_non_default_values() {
     let path = scratch_path("roundtrip_save_then_load_preserves_non_default_values");
     let written = Prefs {
@@ -73,7 +69,6 @@ fn roundtrip_save_then_load_preserves_non_default_values() {
 }
 
 #[test]
-#[ignore = "S7 gate: prefs::load/prefs::save not implemented yet; run explicitly with --ignored"]
 fn save_creates_missing_parent_directory() {
     let dir = std::env::temp_dir().join(format!("petri_s7_prefs_test_nested_{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
@@ -85,7 +80,6 @@ fn save_creates_missing_parent_directory() {
 }
 
 #[test]
-#[ignore = "S7 gate: prefs::load/prefs::save not implemented yet; run explicitly with --ignored"]
 fn save_leaves_no_tmp_file_behind() {
     let path = scratch_path("save_leaves_no_tmp_file_behind");
     prefs::save(&path, &Prefs::default()).expect("save must succeed");
@@ -99,7 +93,6 @@ fn save_leaves_no_tmp_file_behind() {
 }
 
 #[test]
-#[ignore = "S7 gate: prefs::load/prefs::save not implemented yet; run explicitly with --ignored"]
 fn save_overwrite_second_call_replaces_the_first() {
     let path = scratch_path("save_overwrite_second_call_replaces_the_first");
     prefs::save(&path, &Prefs { last_screen: LastScreen::Dashboard, collapsed: [false, false, true, true] })
@@ -112,7 +105,6 @@ fn save_overwrite_second_call_replaces_the_first() {
 }
 
 #[test]
-#[ignore = "S7 gate: prefs::load/prefs::save not implemented yet; run explicitly with --ignored"]
 fn default_prefs_path_is_under_petridish_home_dir() {
     // Mirrors `default_state_path`'s convention (`lib.rs`) — same sibling
     // directory, different filename.
@@ -126,7 +118,6 @@ fn default_prefs_path_is_under_petridish_home_dir() {
 /// `DashboardState`'s own field, so a loaded prefs file can seed
 /// `DashboardState::with_collapsed` directly without conversion.
 #[test]
-#[ignore = "S7 gate: prefs::load/prefs::save not implemented yet; run explicitly with --ignored"]
 fn collapsed_state_type_matches_dashboard_state() {
     let c: CollapsedState = [true, false, true, false];
     let p = Prefs { last_screen: LastScreen::Dashboard, collapsed: c };
