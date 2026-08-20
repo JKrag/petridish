@@ -79,7 +79,6 @@ fn rendered_lines(radar: &Radar, state: &DashboardState, width: u16, height: u16
 }
 
 #[test]
-#[ignore = "S6 gate: DashboardState/dashboard::render not implemented yet; run explicitly with --ignored"]
 fn header_identifies_the_dashboard_screen_at_80x24() {
     let radar = load("loaded.json");
     let state = DashboardState::new(&radar);
@@ -93,7 +92,6 @@ fn header_identifies_the_dashboard_screen_at_80x24() {
 }
 
 #[test]
-#[ignore = "S6 gate: DashboardState/dashboard::render not implemented yet; run explicitly with --ignored"]
 fn running_label_rendered_for_loaded_json_which_has_agents_present() {
     let radar = load("loaded.json"); // 25 active projects, most with an active_agent set
     let state = DashboardState::new(&radar);
@@ -103,7 +101,6 @@ fn running_label_rendered_for_loaded_json_which_has_agents_present() {
 }
 
 #[test]
-#[ignore = "S6 gate: DashboardState/dashboard::render not implemented yet; run explicitly with --ignored"]
 fn running_label_degrades_to_recent_when_no_project_has_an_active_agent() {
     // petri/SPEC.md §3.2: "Label degrades to RECENT when nothing in the
     // section has an agent at all, because RUNNING would then overstate it."
@@ -123,7 +120,6 @@ fn running_label_degrades_to_recent_when_no_project_has_an_active_agent() {
 }
 
 #[test]
-#[ignore = "S6 gate: DashboardState/dashboard::render not implemented yet; run explicitly with --ignored"]
 fn collapsed_sections_show_their_header_but_hide_their_project_names() {
     let radar = load("loaded.json"); // STALE = charlie-*, COLD = delta-*, both collapsed by default
     let state = DashboardState::new(&radar);
@@ -141,7 +137,6 @@ fn collapsed_sections_show_their_header_but_hide_their_project_names() {
 }
 
 #[test]
-#[ignore = "S6 gate: DashboardState/dashboard::render not implemented yet; run explicitly with --ignored"]
 fn overflow_truncates_with_a_more_marker_instead_of_scrolling() {
     // petri/SPEC.md §3.2: "Overflow: truncate, do not scroll... The `… +N
     // more` marker is required." loaded.json's RUNNING (25) + IN FLIGHT (18)
@@ -158,7 +153,6 @@ fn overflow_truncates_with_a_more_marker_instead_of_scrolling() {
 }
 
 #[test]
-#[ignore = "S6 gate: DashboardState/dashboard::render not implemented yet; run explicitly with --ignored"]
 fn staleness_banner_rendered_when_updated_at_is_older_than_24h() {
     let radar = load("hostile.json"); // updated_at ~6 days old, and has zero STALE-bucket projects (see module doc comment)
     let state = DashboardState::new(&radar);
@@ -171,7 +165,6 @@ fn staleness_banner_rendered_when_updated_at_is_older_than_24h() {
 }
 
 #[test]
-#[ignore = "S6 gate: DashboardState/dashboard::render not implemented yet; run explicitly with --ignored"]
 fn does_not_panic_on_empty_radar() {
     let radar = radar_of(vec![]);
     let state = DashboardState::new(&radar);
@@ -179,7 +172,6 @@ fn does_not_panic_on_empty_radar() {
 }
 
 #[test]
-#[ignore = "S6 gate: DashboardState/dashboard::render not implemented yet; run explicitly with --ignored"]
 fn does_not_panic_at_tiny_geometry() {
     let radar = load("minimal.json");
     let state = DashboardState::new(&radar);

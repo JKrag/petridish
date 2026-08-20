@@ -92,6 +92,16 @@ fn install_panic_hook() {
 }
 
 
+/// Which screen `poll_loop` is currently rendering. Dashboard is the default
+/// landing screen (petri/SPEC.md §3.2 frames it as the ambient monitor) — S6
+/// wires a one-way `Enter`-on-a-row transition to the Browser; `Tab` to
+/// switch back is S7's job (petri/SPEC.md §9), not implemented here.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Screen {
+    Dashboard,
+    Browser,
+}
+
 /// The main poll loop: draw the current state once, then only redraw on
 /// meaningful events (keyboard input, resize, mtime change). `q` breaks.
 fn poll_loop(
@@ -116,18 +126,18 @@ fn poll_loop(
         .ok()
         .and_then(|m| m.modified().ok());
 
-    // BrowserState + filter input mode. The state owns the selection and
-    // filter query; we re-derive it from `last_good` when the radar changes
-    // (mtime update) so the filter survives state-file reloads.
-    let mut browser_state = match &last_good {
-        Some(r) => Some(crate::browser::BrowserState::new(r)),
-        None => None,
-    };
+    let mut screen = Screen::Dashboard;
+
+    // DashboardState is built eagerly (it's the landing screen); BrowserState
+    // is only built lazily, the first time `Enter` on a Dashboard row jumps
+    // there (petri/SPEC.md §5) — no need to pay for it up front.
+    let mut dashboard_state = last_good.as_ref().map(crate::dashboard::DashboardState::new);
+    let mut browser_state: Option<crate::browser::BrowserState> = None;
 
     let mut in_filter_input = false;
 
     // Initial draw — unconditional so we always paint something on startup.
-    render_current(terminal, &last_good, &mut browser_state);
+    render_current(terminal, &last_good, screen, &dashboard_state, &browser_state);
 
     loop {
         // crossterm's `poll` returns true when *any* event is queued (Key,
@@ -140,6 +150,54 @@ fn poll_loop(
                 let handled = if key.code == crossterm::event::KeyCode::Char('q') {
                     // `q` always quits, even in filter input mode.
                     return Ok(0);
+                } else if screen == Screen::Dashboard {
+                    // The Dashboard has no filter input mode — `/` is a
+                    // Browser-only key (petri/SPEC.md §5).
+                    match key.code {
+                        crossterm::event::KeyCode::Up | crossterm::event::KeyCode::Char('k') => {
+                            if let Some(ref mut dstate) = dashboard_state {
+                                dstate.move_selection(-1);
+                            }
+                            true
+                        }
+                        crossterm::event::KeyCode::Down | crossterm::event::KeyCode::Char('j') => {
+                            if let Some(ref mut dstate) = dashboard_state {
+                                dstate.move_selection(1);
+                            }
+                            true
+                        }
+                        crossterm::event::KeyCode::Char(' ') => {
+                            if let (Some(dstate), Some(radar)) = (&mut dashboard_state, &last_good) {
+                                dstate.toggle_selected(radar);
+                            }
+                            true
+                        }
+                        // `Enter`: on a header, toggle (same as Space); on a
+                        // row, jump to the Browser with that project selected
+                        // (petri/SPEC.md §5).
+                        crossterm::event::KeyCode::Enter => {
+                            if let (Some(dstate), Some(radar)) = (&mut dashboard_state, &last_good) {
+                                let current_row = dstate.selected.and_then(|i| dstate.visible.get(i)).copied();
+                                match current_row {
+                                    Some(crate::dashboard::DashRow::Header(_)) => {
+                                        dstate.toggle_selected(radar);
+                                    }
+                                    Some(crate::dashboard::DashRow::Project(proj_idx)) => {
+                                        let mut bstate = crate::browser::BrowserState::new(radar);
+                                        if let Some(pos) = bstate.visible.iter().position(|&i| i == proj_idx) {
+                                            bstate.selected = Some(pos);
+                                        }
+                                        browser_state = Some(bstate);
+                                        screen = Screen::Browser;
+                                    }
+                                    None => {}
+                                }
+                            }
+                            true
+                        }
+                        crossterm::event::KeyCode::Esc => true,
+                        _ => false,
+                    }
                 } else if key.code == crossterm::event::KeyCode::Char('/') {
                     // Enter filter input mode. The query starts empty and
                     // subsequent character keys append to it.
@@ -227,7 +285,7 @@ fn poll_loop(
                     }
                 };
                 if handled {
-                    render_current(terminal, &last_good, &mut browser_state);
+                    render_current(terminal, &last_good, screen, &dashboard_state, &browser_state);
                 }
             }
         }
@@ -262,6 +320,16 @@ fn poll_loop(
                             state.apply_filter(radar, &q);
                         }
                     }
+                    // Re-derive DashboardState too, regardless of which screen
+                    // is currently active, so a reload while viewing the
+                    // Browser still leaves a fresh Dashboard behind it. Collapse
+                    // state resets to spec defaults on reload rather than being
+                    // preserved — not gated by any acceptance test, and `rebuild`
+                    // is private to `dashboard.rs`, so this is the simplest
+                    // correct behavior rather than a deliberate UX call.
+                    if let Some(ref radar) = last_good {
+                        dashboard_state = Some(crate::dashboard::DashboardState::new(radar));
+                    }
                 }
                 Err(e) => eprintln!("petri S5 mid-loop state read failed: {e}"),
             }
@@ -272,26 +340,35 @@ fn poll_loop(
         // ticks we skip draw so the output stream goes still — this keeps PTY
         // harnesses happy and the user's terminal clean when petri is idle.
         if event_ready || mtime_changed {
-            render_current(terminal, &last_good, &mut browser_state);
+            render_current(terminal, &last_good, screen, &dashboard_state, &browser_state);
         }
 
         last_mtime = new_mtime;
     }
 }
 
-/// Helper: redraw `terminal` from the last good radar and live `BrowserState`,
-/// with any read errors logged but not propagated (mid-run failures degrade in
-/// place).
+/// Helper: redraw `terminal` from the last good radar and whichever screen's
+/// live state is currently active, with any read errors logged but not
+/// propagated (mid-run failures degrade in place).
 fn render_current(
     terminal: &mut ratatui::Terminal<ratatui::backend::CrosstermBackend<std::io::Stdout>>,
     radar: &Option<petridish_core::schema::Radar>,
+    screen: Screen,
+    dashboard_state: &Option<crate::dashboard::DashboardState>,
     browser_state: &Option<crate::browser::BrowserState>,
 ) {
-    if let (Some(r), Some(s)) = (radar, browser_state) {
-        // `browser::render` takes immutable references to both the radar and
-        // state — we just need to thread them through. BrowserState mutations
-        // happen in `poll_loop`, not inside this closure.
-        let _ = terminal.draw(|frame| crate::browser::render(frame, r, s));
+    let Some(r) = radar else { return };
+    match screen {
+        Screen::Dashboard => {
+            if let Some(s) = dashboard_state {
+                let _ = terminal.draw(|frame| crate::dashboard::render(frame, r, s));
+            }
+        }
+        Screen::Browser => {
+            if let Some(s) = browser_state {
+                let _ = terminal.draw(|frame| crate::browser::render(frame, r, s));
+            }
+        }
     }
 }
 

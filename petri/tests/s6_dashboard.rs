@@ -83,7 +83,6 @@ fn section_index(b: StatusBucket) -> usize {
 // --- Default collapse state and initial cursor -----------------------------
 
 #[test]
-#[ignore = "S6 gate: DashboardState/dashboard::render not implemented yet; run explicitly with --ignored"]
 fn new_defaults_running_and_in_flight_expanded_stale_and_cold_collapsed() {
     let radar = load("loaded.json"); // 25 active / 18 in_flight / 15 stale / 12 cold
     let state = DashboardState::new(&radar);
@@ -95,7 +94,6 @@ fn new_defaults_running_and_in_flight_expanded_stale_and_cold_collapsed() {
 }
 
 #[test]
-#[ignore = "S6 gate: DashboardState/dashboard::render not implemented yet; run explicitly with --ignored"]
 fn new_selects_the_first_stop_which_is_the_running_header() {
     let radar = load("loaded.json");
     let state = DashboardState::new(&radar);
@@ -110,7 +108,6 @@ fn new_selects_the_first_stop_which_is_the_running_header() {
 // --- The named trap: collapsed vs. empty ------------------------------------
 
 #[test]
-#[ignore = "S6 gate: DashboardState/dashboard::render not implemented yet; run explicitly with --ignored"]
 fn collapsed_sections_are_a_stop_but_contribute_zero_row_stops() {
     let radar = load("loaded.json"); // STALE (15) and COLD (12) both non-empty, both collapsed by default
     let state = DashboardState::new(&radar);
@@ -132,7 +129,6 @@ fn collapsed_sections_are_a_stop_but_contribute_zero_row_stops() {
 }
 
 #[test]
-#[ignore = "S6 gate: DashboardState/dashboard::render not implemented yet; run explicitly with --ignored"]
 fn empty_section_contributes_no_stop_at_all_not_even_a_header() {
     let radar = load("hostile.json"); // all 7 projects are cold; active/in_flight/stale are empty and have no worktree relationships
     let state = DashboardState::new(&radar);
@@ -152,7 +148,6 @@ fn empty_section_contributes_no_stop_at_all_not_even_a_header() {
 // --- Space/toggle semantics --------------------------------------------------
 
 #[test]
-#[ignore = "S6 gate: DashboardState/dashboard::render not implemented yet; run explicitly with --ignored"]
 fn toggling_a_header_reveals_or_hides_that_sections_rows() {
     let radar = load("loaded.json");
     let mut state = DashboardState::new(&radar);
@@ -185,7 +180,6 @@ fn toggling_a_header_reveals_or_hides_that_sections_rows() {
 }
 
 #[test]
-#[ignore = "S6 gate: DashboardState/dashboard::render not implemented yet; run explicitly with --ignored"]
 fn toggling_a_row_collapses_its_section_and_moves_selection_to_that_header() {
     let radar = load("loaded.json"); // RUNNING is expanded by default and non-empty
     let mut state = DashboardState::new(&radar);
@@ -211,7 +205,6 @@ fn toggling_a_row_collapses_its_section_and_moves_selection_to_that_header() {
 // --- Clamping ----------------------------------------------------------------
 
 #[test]
-#[ignore = "S6 gate: DashboardState/dashboard::render not implemented yet; run explicitly with --ignored"]
 fn move_selection_clamps_at_both_ends_never_wraps() {
     let radar = load("loaded.json");
     let mut state = DashboardState::new(&radar);
@@ -225,7 +218,6 @@ fn move_selection_clamps_at_both_ends_never_wraps() {
 }
 
 #[test]
-#[ignore = "S6 gate: DashboardState/dashboard::render not implemented yet; run explicitly with --ignored"]
 fn move_selection_and_toggle_are_no_ops_on_an_empty_dashboard() {
     let radar = radar_of(vec![]);
     let mut state = DashboardState::new(&radar);
@@ -241,7 +233,6 @@ fn move_selection_and_toggle_are_no_ops_on_an_empty_dashboard() {
 // --- ADR-0001 RUNNING membership + quietest-first ordering -------------------
 
 #[test]
-#[ignore = "S6 gate: DashboardState/dashboard::render not implemented yet; run explicitly with --ignored"]
 fn running_membership_includes_active_bucket_projects_and_excludes_foreign() {
     let mut foreign_active = project("f1", "foreign-active", StatusBucket::Active);
     foreign_active.is_foreign = true;
@@ -255,7 +246,6 @@ fn running_membership_includes_active_bucket_projects_and_excludes_foreign() {
 }
 
 #[test]
-#[ignore = "S6 gate: DashboardState/dashboard::render not implemented yet; run explicitly with --ignored"]
 fn running_membership_includes_a_non_active_parent_with_an_active_worktree_child() {
     // ADR-0001: "parent is active if a worktree child is active" — display-only
     // rollup into RUNNING membership, independent of the parent's own status_bucket.
@@ -275,7 +265,6 @@ fn running_membership_includes_a_non_active_parent_with_an_active_worktree_child
 }
 
 #[test]
-#[ignore = "S6 gate: DashboardState/dashboard::render not implemented yet; run explicitly with --ignored"]
 fn running_membership_does_not_pull_in_a_parent_whose_worktree_child_is_not_active() {
     let mut parent = project("parent", "alpha-01", StatusBucket::Cold);
     parent.path = "/repos/alpha-01".to_string();
@@ -289,7 +278,6 @@ fn running_membership_does_not_pull_in_a_parent_whose_worktree_child_is_not_acti
 }
 
 #[test]
-#[ignore = "S6 gate: DashboardState/dashboard::render not implemented yet; run explicitly with --ignored"]
 fn running_membership_orders_quietest_first_with_none_treated_as_maximally_silent() {
     let now = Utc::now();
     let mut recently_active = project("r1", "recently-active", StatusBucket::Active);

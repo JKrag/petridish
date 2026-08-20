@@ -23,7 +23,6 @@ use std::io::Write;
 use std::time::Duration;
 
 #[test]
-#[ignore = "S6 gate: Dashboard screen not wired into poll_loop yet; run explicitly with --ignored"]
 fn initial_frame_shows_the_dashboard_header_and_a_populated_section_label() {
     let (mut session, first_frame) =
         spawn_and_settle_nonempty(&fixture_path("loaded.json"), 80, 40, Duration::from_secs(5), Duration::from_millis(300), 3);
@@ -42,7 +41,6 @@ fn initial_frame_shows_the_dashboard_header_and_a_populated_section_label() {
 }
 
 #[test]
-#[ignore = "S6 gate: Dashboard screen not wired into poll_loop yet; run explicitly with --ignored"]
 fn enter_on_a_row_switches_from_dashboard_to_browser() {
     let (mut session, first_frame) =
         spawn_and_settle_nonempty(&fixture_path("loaded.json"), 80, 40, Duration::from_secs(5), Duration::from_millis(300), 3);
@@ -62,19 +60,27 @@ fn enter_on_a_row_switches_from_dashboard_to_browser() {
     session.writer.write_all(b"q").ok();
     let _ = session.wait_with_timeout(Duration::from_secs(5));
 
+    // NOTE on this assertion's shape: ratatui does DIFF-based redraws, not a
+    // full repaint on every frame — after switching screens, only the
+    // changed cells are written (confirmed by inspecting a real failure here:
+    // the header cell literally changed from "dashboard" to "browser" via a
+    // cursor-positioned partial write, so "petri · browser" never appears as
+    // one contiguous substring in the raw ANSI stream). `Session::settle`
+    // also accumulates across the WHOLE session lifetime (never resets
+    // between calls), so a "must NOT contain the old screen's text" check is
+    // unreliable too — the first frame's "petri · dashboard" bytes are
+    // permanently present in `after_enter` regardless of what happens later.
+    // The robust signal is a strong marker unique to the Browser's own
+    // vocabulary that Dashboard never emits: "Projects" (the list pane's
+    // title in `browser.rs`, absent from `dashboard.rs` entirely).
     assert!(after_enter.contains("petri"), "post-Enter frame must still contain \"petri\", got: {after_enter:?}");
     assert!(
-        after_enter.contains("petri · browser"),
-        "Enter on a Dashboard row must jump to the Browser (petri/SPEC.md §3.2/§5) — checking the literal \"petri · browser\" header text, got: {after_enter:?}"
-    );
-    assert!(
-        !after_enter.contains("petri · dashboard"),
-        "after switching to the Browser, the literal Dashboard header must no longer be on screen, got: {after_enter:?}"
+        after_enter.contains("Projects"),
+        "Enter on a Dashboard row must jump to the Browser (petri/SPEC.md §3.2/§5) — checking for the Browser-only \"Projects\" list-pane marker, got: {after_enter:?}"
     );
 }
 
 #[test]
-#[ignore = "S6 gate: Dashboard screen not wired into poll_loop yet; run explicitly with --ignored"]
 fn dashboard_keystrokes_do_not_crash_the_binary() {
     let (mut session, _first_frame) =
         spawn_and_settle_nonempty(&fixture_path("loaded.json"), 80, 24, Duration::from_secs(5), Duration::from_millis(300), 3);
