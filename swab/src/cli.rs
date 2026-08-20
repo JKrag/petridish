@@ -52,30 +52,6 @@ pub enum Command {
 /// mirroring the Python original's `_DAEMON_LOG_MAX_BYTES`.
 const DAEMON_LOG_MAX_BYTES: u64 = 5 * 1024 * 1024;
 
-/// `StatusBucket`/`AgentActivity` don't have an `as_str()` method (the schema derives only
-/// `Serialize`/`Deserialize` via `#[serde(rename_all = "snake_case")]`) -- these two free
-/// functions give the CLI the same lowercase snake_case string Python's CLI uses for
-/// `--bucket` filtering and table rendering, without adding a method to the protected
-/// schema.rs.
-fn status_bucket_str(b: &crate::schema::StatusBucket) -> &'static str {
-    use crate::schema::StatusBucket::*;
-    match b {
-        Active => "active",
-        InFlight => "in_flight",
-        Stale => "stale",
-        Cold => "cold",
-    }
-}
-
-fn agent_activity_str(a: &crate::schema::AgentActivity) -> &'static str {
-    use crate::schema::AgentActivity::*;
-    match a {
-        Working => "working",
-        Recent => "recent",
-        Idle => "idle",
-    }
-}
-
 /// Rotate `$HOME/.petridish/daemon.log` if it exceeds 5 MiB. Idempotent and
 /// never fails loudly: a missing log is fine (not every install runs under launchd),
 /// and the actual truncation is one `truncate` syscall — cheap.
@@ -172,7 +148,7 @@ pub fn cmd_list(
     let mut projects: Vec<&crate::schema::Project> = radar.projects.iter().collect();
 
     if let Some(b) = bucket {
-        projects.retain(|p| status_bucket_str(&p.status_bucket) == b);
+        projects.retain(|p| crate::present::status_bucket_str(&p.status_bucket) == b);
     }
 
     if !all {
@@ -497,32 +473,16 @@ fn _print_table(projects: &[&crate::schema::Project], out: &mut dyn Write) -> st
 
     let mut rows: Vec<Vec<String>> = Vec::new();
     for p in projects {
-        let agent_label = match &p.agent.active_agent {
-            Some(a) => format!("{a} ({})", agent_activity_str(&p.agent.state)),
-            None => agent_activity_str(&p.agent.state).to_string(),
-        };
-        let dirty = if p.git.is_repo && p.git.is_dirty { "*" } else { " " };
         let branch = match &p.git.branch {
             Some(b) => b.clone(),
             None => "-".to_string(),
         };
-        let name_cell = match &p.parent_path {
-            Some(parent) => format!(
-                "{} (in {})",
-                p.name,
-                std::path::Path::new(parent)
-                    .file_name()
-                    .map(|f| f.to_string_lossy().to_string())
-                    .unwrap_or(parent.clone())
-            ),
-            None => p.name.clone(),
-        };
         rows.push(vec![
-            status_bucket_str(&p.status_bucket).to_string(),
-            name_cell,
-            agent_label,
+            crate::present::status_bucket_str(&p.status_bucket).to_string(),
+            crate::present::name_cell(&p.name, p.parent_path.as_deref()),
+            crate::present::agent_label(&p.agent),
             branch,
-            dirty.to_string(),
+            crate::present::dirty_marker(&p.git).to_string(),
         ]);
     }
 

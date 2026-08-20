@@ -10,3 +10,8 @@ pub mod sensors;
 // types without depending on `swab`. Re-exported under the old path so every
 // existing `crate::schema::...` reference in this crate keeps working unchanged.
 pub use petridish_core::schema;
+
+// `present` moved to `petridish-core` (slice S3) — shared presentation helpers
+// used by both `swab`'s CLI and the incoming `petri` TUI. Re-exported so `swab`
+// call sites in this crate can keep their original `crate::schema::...` style.
+pub use petridish_core::present;
