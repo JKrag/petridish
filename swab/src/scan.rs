@@ -53,7 +53,7 @@ impl ScanPaths {
                 .join("Code")
                 .join("User")
                 .join("workspaceStorage"),
-            events_path: crate::events::events_path(),
+            events_path: home.join(".petridish").join("events.ndjson"),
             quota_path: home.join(".claude").join("last-status.json"),
         }
     }
@@ -62,9 +62,15 @@ impl ScanPaths {
     /// actual `$HOME`-relative locations, never `None`/empty. This is the exact seam the
     /// Python original's production bug lived in; get it right here (see this module's
     /// doc comment above).
+    ///
+    /// `events_path` is overridden via `events::events_path()` (rather than left as
+    /// `for_home`'s plain `home`-relative default) so this still honors the
+    /// `PETRIDISH_EVENTS_PATH` env override that `swab-hook` and its tests rely on.
     pub fn production_defaults() -> Self {
         let home = std::env::var("HOME").expect("HOME must be set");
-        Self::for_home(Path::new(&home))
+        let mut paths = Self::for_home(Path::new(&home));
+        paths.events_path = crate::events::events_path();
+        paths
     }
 }
 
@@ -1024,12 +1030,16 @@ mod tests {
             "workspace_storage_dir must contain `workspaceStorage`, got {ws}"
         );
 
-        // events_path: uses `events::events_path()` which resolves via HOME env (we can't fake
-        // that without unsafe). Check the form: it must contain `.petridish/events.ndjson`.
+        // events_path: composed home-relative, same as the other three paths (production_defaults
+        // is the only one that swaps in events::events_path()'s env-overridable variant).
         let ep = paths.events_path.to_string_lossy().into_owned();
         assert!(
             ep.ends_with(".petridish/events.ndjson") || ep.contains(".petridish/events.ndjson"),
             "events_path must include `.petridish/events.ndjson`, got {ep}"
+        );
+        assert!(
+            paths.events_path.starts_with(fake_home),
+            "events_path must be composed under the given home, got {ep}"
         );
 
         // quota_path: ends in `.claude/last-status.json`.
