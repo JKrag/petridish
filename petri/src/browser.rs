@@ -264,8 +264,18 @@ pub fn render(frame: &mut Frame, radar: &Radar, state: &BrowserState) {
     // all, and the view could never scroll far enough to reach the tail of a
     // list with several sections above it, because the (smaller)
     // project-space index was always less than the row's true line position.
+    // `list_area` is the OUTER rect handed to the bordered Paragraph below —
+    // its top+bottom border rows aren't content rows. Computing `visible_rows`
+    // from the outer height (rather than the inner, post-border height) was a
+    // real bug: the scroll math believed 2 more rows were visible than
+    // actually were, so the selection could move 2 rows past the true bottom
+    // of the visible list — and the detail pane, which always reflects
+    // `state.selected` regardless of scroll, kept showing those still
+    // off-screen rows' details — before `compute_scroll_offset` finally
+    // caught up and scrolled the list.
     let (list_lines, selected_line) = render_list_lines(radar, state);
-    let visible_rows = if list_area.height > 0 { list_area.height as usize } else { 1 };
+    let list_inner_height = list_area.height.saturating_sub(2); // top + bottom border
+    let visible_rows = if list_inner_height > 0 { list_inner_height as usize } else { 1 };
     let scroll_offset = compute_scroll_offset(selected_line, list_lines.len(), visible_rows);
 
     let list_para = Paragraph::new(list_lines)
@@ -709,6 +719,59 @@ mod tests {
             selected_line < scroll_offset + visible_rows,
             "selected line {selected_line} must be within the visible window [{scroll_offset}, {})",
             scroll_offset + visible_rows
+        );
+    }
+
+    /// Regression test for a real scroll bug found via human smoke-testing:
+    /// `render`'s `visible_rows` was computed from the list block's OUTER
+    /// height (the `Rect` handed to the bordered Paragraph), not its inner,
+    /// post-border content height. Because `Borders::ALL` consumes 2 rows
+    /// (top + bottom), the scroll math believed 2 more rows were on screen
+    /// than actually were — so pressing down could move the selection 2 rows
+    /// past the true bottom of the visible list, with the (always-correct,
+    /// scroll-independent) detail pane still showing details for a row that
+    /// had actually scrolled out of view, before the list caught up.
+    ///
+    /// Exercises the real `render()` entry point end-to-end through a
+    /// `TestBackend` buffer (not just `compute_scroll_offset` in isolation)
+    /// so it fails the way the original bug actually manifested.
+    #[test]
+    fn last_selected_row_is_actually_visible_in_the_rendered_buffer() {
+        use ratatui::{backend::TestBackend, Terminal};
+
+        // Enough project rows that a small terminal can't show them all at
+        // once, so a scroll-lag bug has room to manifest.
+        let projects: Vec<Project> = (0..20)
+            .map(|i| project(&format!("p{i}"), &format!("project-{i}"), StatusBucket::Active))
+            .collect();
+        let radar = radar_of(projects);
+        let mut state = BrowserState::new(&radar);
+        for _ in 0..100 {
+            state.move_selection(1); // clamps at the last row
+        }
+
+        // Narrower than `DETAIL_PANE_THRESHOLD` so the detail pane (which
+        // always shows the selected project's name regardless of scroll) is
+        // hidden entirely — the only way "project-19" can appear in the
+        // buffer is if the list itself actually scrolled to show it.
+        let width = 40u16;
+        let height = 15u16; // short enough that not all 20 rows fit
+        let backend = TestBackend::new(width, height);
+        let mut terminal = Terminal::new(backend).expect("TestBackend terminal must construct");
+        terminal.draw(|frame| render(frame, &radar, &state)).expect("draw must not error");
+        let buffer = terminal.backend().buffer();
+        let whole: String = (0..height)
+            .map(|y| {
+                (0..width)
+                    .map(|x| buffer[(x, y)].symbol().chars().next().unwrap_or(' '))
+                    .collect::<String>()
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+
+        assert!(
+            whole.contains("project-19"),
+            "the selected (last) project's row must actually be visible in the rendered list, not just reflected in the detail pane, got:\n{whole}"
         );
     }
 
