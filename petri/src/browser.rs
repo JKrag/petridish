@@ -255,10 +255,18 @@ pub fn render(frame: &mut Frame, radar: &Radar, state: &BrowserState) {
     // List content: section headers + rows. Section headers are rendered as
     // styled lines interleaved with project rows but — because the header
     // lines don't occupy `state.visible` positions and we never highlight a
-    // header — they are not selection stops.
-    let list_lines = render_list_lines(radar, state);
+    // header — they are not selection stops. `selected_line` is the actual
+    // line index of the selected row within `list_lines` (accounting for the
+    // interleaved headers/blank separators) — NOT the same as `state.selected`,
+    // which is an index into `state.visible` (project rows only). Feeding
+    // `state.selected` straight into the scroll math was a real bug: the
+    // header line would scroll out of view the moment the selection moved at
+    // all, and the view could never scroll far enough to reach the tail of a
+    // list with several sections above it, because the (smaller)
+    // project-space index was always less than the row's true line position.
+    let (list_lines, selected_line) = render_list_lines(radar, state);
     let visible_rows = if list_area.height > 0 { list_area.height as usize } else { 1 };
-    let scroll_offset = compute_scroll_offset(state.selected, list_lines.len(), visible_rows);
+    let scroll_offset = compute_scroll_offset(selected_line, list_lines.len(), visible_rows);
 
     let list_para = Paragraph::new(list_lines)
         .block(Block::default().title(" Projects ").borders(Borders::ALL))
@@ -293,41 +301,40 @@ pub fn render(frame: &mut Frame, radar: &Radar, state: &BrowserState) {
 /// whose visible height is `visible_rows` lines. Clamps to the maximum
 /// scrollable offset (list length — visible height). Returns 0 when the list
 /// fits entirely in the area.
+///
+/// Minimal scroll, not eager centering: the offset stays 0 for as long as
+/// the selection fits in the first `visible_rows` lines, and only grows once
+/// the selection would otherwise fall below the bottom of the view — just
+/// enough to keep it at the bottom edge. A real bug, found via human
+/// smoke-testing: the previous "target the middle of the window" formula
+/// scrolled by a line the moment the cursor moved at all (even far from
+/// either edge), which visibly scrolled the first section's header out of
+/// view on literally the very first `j` press.
 fn compute_scroll_offset(
-    selected: Option<usize>,
+    selected_line: Option<usize>,
     list_len: usize,
     visible_rows: usize,
 ) -> usize {
-    if list_len == 0 || visible_rows <= 0 {
+    if list_len == 0 || visible_rows == 0 || visible_rows >= list_len {
         return 0;
     }
-    if visible_rows >= list_len {
-        return 0;
-    }
-    let selected = match selected {
-        Some(p) => p,
+    let selected_line = match selected_line {
+        Some(l) => l,
         None => return 0,
     };
     let max_scroll = list_len - visible_rows;
-    if max_scroll <= 0 {
-        return 0;
-    }
-    // Clamp the selected line to the visible window: its top-of-view offset
-    // must be at most `selected` (so it's not above the top of view) and at
-    // least `selected - (visible_rows - 1)` (so it's not below the bottom).
-    let upper = selected; // can scroll so selection is at the top of view
-    let lower = selected.saturating_sub(visible_rows - 1); // so it's at the bottom
-    let upper = upper.min(max_scroll);
-    let lower = lower.min(max_scroll);
-    if upper < lower { return 0; }
-    // Target: selection roughly in the middle of the visible window.
-    (lower + upper) / 2
+    selected_line.saturating_sub(visible_rows - 1).min(max_scroll)
 }
 
 /// Build the list's lines: section headers interleaved with project rows, in
 /// SECTION_ORDER. Sections with 0 visible projects are skipped entirely.
-fn render_list_lines(radar: &Radar, state: &BrowserState) -> Vec<Line<'static>> {
+/// Returns the lines plus the LINE index of the selected row (`None` if
+/// nothing is selected) — the caller needs the real line position, not
+/// `state.selected` (which only counts project rows, not the headers/blank
+/// separators interleaved between them), to compute a correct scroll offset.
+fn render_list_lines(radar: &Radar, state: &BrowserState) -> (Vec<Line<'static>>, Option<usize>) {
     let mut lines = Vec::new();
+    let mut selected_line: Option<usize> = None;
 
     if state.visible.is_empty() {
         // "Nothing selected" state per petri/SPEC.md §3.1 — render a gentle
@@ -336,7 +343,7 @@ fn render_list_lines(radar: &Radar, state: &BrowserState) -> Vec<Line<'static>> 
             "  (no projects)",
             Style::default().fg(Color::DarkGray),
         )));
-        return lines;
+        return (lines, None);
     }
 
     let mut idx_in_visible = 0usize;
@@ -378,6 +385,9 @@ fn render_list_lines(radar: &Radar, state: &BrowserState) -> Vec<Line<'static>> 
 
         for proj_idx in section_indices {
             let is_selected = state.selected.map(|p| p == idx_in_visible).unwrap_or(false);
+            if is_selected {
+                selected_line = Some(lines.len());
+            }
             lines.push(render_project_row(radar, proj_idx, is_selected));
             idx_in_visible += 1;
         }
@@ -388,7 +398,7 @@ fn render_list_lines(radar: &Radar, state: &BrowserState) -> Vec<Line<'static>> 
         }
     }
 
-    lines
+    (lines, selected_line)
 }
 
 /// Render one project row: glyph (● working / ○ otherwise), name, dirty marker
@@ -602,4 +612,136 @@ fn abbreviate_home(path: &str) -> String {
         }
     }
     path.to_string()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use petridish_core::schema::{AgentState, GitState};
+
+    fn project(id: &str, name: &str, bucket: StatusBucket) -> Project {
+        Project {
+            id: id.to_string(),
+            name: name.to_string(),
+            path: format!("/repos/{id}"),
+            category: "default".to_string(),
+            parent_path: None,
+            is_foreign: false,
+            git: GitState::not_a_repo(),
+            agent: AgentState::idle_unknown(),
+            last_activity_at: None,
+            status_bucket: bucket,
+        }
+    }
+
+    fn radar_of(projects: Vec<Project>) -> Radar {
+        Radar {
+            schema_version: 1,
+            updated_at: chrono::Utc::now(),
+            scan_duration_ms: 0,
+            projects,
+            quota: None,
+        }
+    }
+
+    /// Regression test for a real scroll bug found via human smoke-testing:
+    /// `render_list_lines`'s `selected_line` must be the row's actual LINE
+    /// index (accounting for the section header pushed above it), not
+    /// `state.selected`, which only counts project rows. Feeding the wrong
+    /// index space into `compute_scroll_offset` made the header scroll out
+    /// of view the moment the cursor moved even once, and made the list
+    /// unable to scroll far enough to reach items near the bottom of a list
+    /// with several sections stacked above them.
+    #[test]
+    fn selected_line_accounts_for_the_section_header_above_it() {
+        let radar = radar_of(vec![
+            project("a", "alpha", StatusBucket::Active),
+            project("b", "beta", StatusBucket::Active),
+            project("c", "gamma", StatusBucket::Active),
+        ]);
+        let mut state = BrowserState::new(&radar);
+
+        // Line 0 is the "RUNNING [3]" header, so the first project row (the
+        // default selection) must be line 1, not line 0.
+        let (_, selected_line) = render_list_lines(&radar, &state);
+        assert_eq!(selected_line, Some(1), "the header line must be accounted for");
+
+        state.move_selection(1);
+        let (_, selected_line) = render_list_lines(&radar, &state);
+        assert_eq!(selected_line, Some(2), "moving selection by one project row must move the line index by one, not reset relative to the header");
+
+        state.move_selection(1);
+        let (_, selected_line) = render_list_lines(&radar, &state);
+        assert_eq!(selected_line, Some(3));
+    }
+
+    /// A second, more direct regression check: with enough sections stacked
+    /// above it that the true line index diverges further from the
+    /// project-space index, the scroll offset computed from the correct line
+    /// index must be able to reach the tail of the list — the bug this
+    /// guards against silently capped the reachable offset far short of the
+    /// list's actual end whenever headers preceded the selection.
+    #[test]
+    fn scroll_offset_can_reach_the_tail_of_a_multi_section_list() {
+        let mut projects = Vec::new();
+        for i in 0..3 {
+            projects.push(project(&format!("r{i}"), &format!("running-{i}"), StatusBucket::Active));
+        }
+        for i in 0..10 {
+            projects.push(project(&format!("f{i}"), &format!("flight-{i}"), StatusBucket::InFlight));
+        }
+        let radar = radar_of(projects);
+        let mut state = BrowserState::new(&radar);
+
+        // Move to the very last project row.
+        for _ in 0..20 {
+            state.move_selection(1);
+        }
+
+        let (list_lines, selected_line) = render_list_lines(&radar, &state);
+        let visible_rows = 5usize;
+        let scroll_offset = compute_scroll_offset(selected_line, list_lines.len(), visible_rows);
+
+        // The last project row must be within the visible window: its line
+        // index must be less than `scroll_offset + visible_rows`.
+        let selected_line = selected_line.expect("a project must be selected");
+        assert!(
+            selected_line < scroll_offset + visible_rows,
+            "selected line {selected_line} must be within the visible window [{scroll_offset}, {})",
+            scroll_offset + visible_rows
+        );
+    }
+
+    /// Regression test for a second, related real bug found via human
+    /// smoke-testing: the scroll offset must stay 0 (no scroll at all) as
+    /// long as the selection already fits within the visible window — the
+    /// previous "target the middle of the window" formula scrolled by a
+    /// line the moment the cursor moved even once, which visibly scrolled
+    /// the first section's header out of view on the very first `j` press
+    /// despite there being no need to scroll at all yet.
+    #[test]
+    fn scroll_offset_stays_zero_while_the_selection_already_fits_in_view() {
+        let mut projects = Vec::new();
+        for i in 0..3 {
+            projects.push(project(&format!("r{i}"), &format!("running-{i}"), StatusBucket::Active));
+        }
+        for i in 0..10 {
+            projects.push(project(&format!("f{i}"), &format!("flight-{i}"), StatusBucket::InFlight));
+        }
+        let radar = radar_of(projects);
+        let mut state = BrowserState::new(&radar);
+        let visible_rows = 14usize; // comfortably fits the header + first few rows
+
+        // Move down twice — well within the visible window — and confirm no
+        // scrolling happened at all.
+        for _ in 0..2 {
+            state.move_selection(1);
+            let (list_lines, selected_line) = render_list_lines(&radar, &state);
+            let scroll_offset = compute_scroll_offset(selected_line, list_lines.len(), visible_rows);
+            assert_eq!(
+                scroll_offset, 0,
+                "selection at line {selected_line:?} still fits within {visible_rows} visible rows — must not scroll yet"
+            );
+        }
+    }
 }

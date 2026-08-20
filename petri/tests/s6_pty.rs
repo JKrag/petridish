@@ -16,16 +16,32 @@
 //! never be exercised at all) and route `Space`/`Enter`/`j`/`k` into a live
 //! `DashboardState`. Confirmed failing against the current stub (`lib.rs`
 //! still only knows the Browser) before delegating S6.
+//!
+//! All three tests use `spawn_and_settle_nonempty_with_home` (a scratch
+//! `HOME`), not bare `spawn_and_settle_nonempty` — this file's assertions
+//! assume Dashboard is the default landing screen, which S7 made dependent
+//! on `~/.petridish/petri.toml`'s `last_screen`. A bare spawn inherits the
+//! ambient `$HOME`, which silently broke this exact assumption once a real
+//! developer machine's prefs file happened to say `last_screen = "browser"`
+//! from unrelated manual testing — caught by these tests actually failing
+//! against real environment state, not a fixture.
 
 mod pty_support;
-use pty_support::{fixture_path, spawn_and_settle_nonempty};
+use pty_support::{fixture_path, spawn_and_settle_nonempty_with_home};
 use std::io::Write;
 use std::time::Duration;
 
+fn scratch_home(name: &str) -> std::path::PathBuf {
+    let home = std::env::temp_dir().join(format!("petri_s6_pty_{name}_home_{}", std::process::id()));
+    std::fs::create_dir_all(&home).expect("scratch home dir must be creatable");
+    home
+}
+
 #[test]
 fn initial_frame_shows_the_dashboard_header_and_a_populated_section_label() {
+    let home = scratch_home("initial_frame");
     let (mut session, first_frame) =
-        spawn_and_settle_nonempty(&fixture_path("loaded.json"), 80, 40, Duration::from_secs(5), Duration::from_millis(300), 3);
+        spawn_and_settle_nonempty_with_home(&fixture_path("loaded.json"), 80, 40, &home, Duration::from_secs(5), Duration::from_millis(300), 3);
     session.writer.write_all(b"q").ok();
     let _ = session.wait_with_timeout(Duration::from_secs(5));
 
@@ -42,8 +58,9 @@ fn initial_frame_shows_the_dashboard_header_and_a_populated_section_label() {
 
 #[test]
 fn enter_on_a_row_switches_from_dashboard_to_browser() {
+    let home = scratch_home("enter_switches");
     let (mut session, first_frame) =
-        spawn_and_settle_nonempty(&fixture_path("loaded.json"), 80, 40, Duration::from_secs(5), Duration::from_millis(300), 3);
+        spawn_and_settle_nonempty_with_home(&fixture_path("loaded.json"), 80, 40, &home, Duration::from_secs(5), Duration::from_millis(300), 3);
     assert!(
         first_frame.contains("petri · dashboard"),
         "precondition: petri must start on the Dashboard, or the assertions below would pass vacuously without exercising the Enter->Browser transition at all. Got: {first_frame:?}"
@@ -82,8 +99,9 @@ fn enter_on_a_row_switches_from_dashboard_to_browser() {
 
 #[test]
 fn dashboard_keystrokes_do_not_crash_the_binary() {
+    let home = scratch_home("keystrokes");
     let (mut session, _first_frame) =
-        spawn_and_settle_nonempty(&fixture_path("loaded.json"), 80, 24, Duration::from_secs(5), Duration::from_millis(300), 3);
+        spawn_and_settle_nonempty_with_home(&fixture_path("loaded.json"), 80, 24, &home, Duration::from_secs(5), Duration::from_millis(300), 3);
 
     for keys in [&b"j"[..], b"j", b"k", b" ", b"j", b" ", &[0x1b]] {
         session.writer.write_all(keys).unwrap_or_else(|e| panic!("write {keys:?} must succeed: {e}"));

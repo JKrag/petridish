@@ -69,6 +69,36 @@ pub fn spawn_and_settle_nonempty(
     (session, output)
 }
 
+/// Like `spawn_and_settle_nonempty`, but overrides `HOME` for the child
+/// process (via `Session::spawn_with_home`) — needed for any test whose
+/// assertions depend on `petri`'s startup behavior being independent of
+/// whatever real `~/.petridish/petri.toml` happens to exist on the machine
+/// running the tests (petri/SPEC.md §6, S7). Bare `spawn_and_settle_nonempty`
+/// inherits the ambient `$HOME`, which silently broke the S6 PTY gate's
+/// "Dashboard is the default landing screen" assumption once S7 added real
+/// prefs persistence and a stray `last_screen = "browser"` ended up in a
+/// developer's real prefs file from unrelated manual testing.
+pub fn spawn_and_settle_nonempty_with_home(
+    state_path: &std::path::Path,
+    cols: u16,
+    rows: u16,
+    home: &std::path::Path,
+    timeout: Duration,
+    quiet_for: Duration,
+    attempts: u32,
+) -> (Session, String) {
+    let mut session = Session::spawn_with_home(state_path, cols, rows, home);
+    let mut output = session.settle(timeout, quiet_for);
+    let mut attempt = 1;
+    while output.is_empty() && attempt < attempts {
+        attempt += 1;
+        eprintln!("attempt {attempt}/{attempts}: empty output (suspected PTY race), retrying");
+        session = Session::spawn_with_home(state_path, cols, rows, home);
+        output = session.settle(timeout, quiet_for);
+    }
+    (session, output)
+}
+
 pub struct Session {
     // Kept alive for the whole session even though nothing reads it directly —
     // see this module's doc comment, bug 2.
