@@ -193,21 +193,32 @@ pub fn render(frame: &mut Frame, radar: &Radar, state: &BrowserState) {
         return;
     }
 
-    // Layout: header (row 0) | main (rows 1..H-1) | footer (last row).
+    // Layout: header (row 0) | heavy rule (row 1) | main | footer (last row).
+    // The rule matches the Dashboard's header chrome (dashboard.rs's
+    // header_lines) so Tab between the two screens doesn't feel like a jump
+    // to a differently-styled app.
     let chunks = Layout::vertical([
+        Constraint::Length(1),
         Constraint::Length(1),
         Constraint::Min(0),
         Constraint::Length(1),
     ])
     .split(area);
 
-    // Header: "petri · browser" identifying the app on row 0.
+    // Header: a badged "petri · browser" title — same inverted-color badge
+    // treatment as the Dashboard's title, not just colored text.
     let header = Paragraph::new(Line::from(Span::styled(
-        "petri · browser",
-        Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD),
+        " petri · browser ",
+        Style::default().fg(Color::Black).bg(Color::Cyan).add_modifier(Modifier::BOLD),
     )))
     .wrap(Wrap { trim: false });
     frame.render_widget(header, chunks[0]);
+
+    let rule = Paragraph::new(Line::from(Span::styled(
+        "═".repeat(area.width as usize),
+        Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD),
+    )));
+    frame.render_widget(rule, chunks[1]);
 
     // Footer: bound keymap (spec §5 — advertise only keys actually bound).
     let footer = Paragraph::new(Line::from(Span::styled(
@@ -215,14 +226,14 @@ pub fn render(frame: &mut Frame, radar: &Radar, state: &BrowserState) {
         Style::default().fg(Color::DarkGray),
     )))
     .wrap(Wrap { trim: false });
-    frame.render_widget(footer, chunks[2]);
+    frame.render_widget(footer, chunks[3]);
 
     // Main area: split into list (left) + detail + scrollbar (right), if wide
     // enough for both. Below `DETAIL_PANE_THRESHOLD` the detail pane is hidden
     // entirely to avoid squeezing it into an unreadable sliver.
     let (list_area, detail_inner): (Rect, Option<Rect>) = {
         if area.width >= DETAIL_PANE_THRESHOLD {
-            let main = chunks[1];
+            let main = chunks[2];
             let list_width = (main.width * 2) / 3;
             let detail_and_scrollbar_w = main.width - list_width;
             let detail_width = detail_and_scrollbar_w.saturating_sub(1);
@@ -237,7 +248,7 @@ pub fn render(frame: &mut Frame, radar: &Radar, state: &BrowserState) {
                 (main, None)
             }
         } else {
-            (chunks[1], None)
+            (chunks[2], None)
         }
     };
 
