@@ -45,6 +45,24 @@ pub fn run(state_path: &std::path::Path) -> std::io::Result<u8> {
         return Ok(1);
     }
 
+    // Step 1.5: the initial state read and prefs load ALSO happen before any
+    // terminal mutation, for the same reason as the existence check above —
+    // any eprintln! warning either one produces (a corrupt state file on
+    // first read, a missing/corrupt petri.toml) must land on a normal,
+    // non-alternate-screen stderr. Doing this after EnterAlternateScreen was
+    // a real bug, not a theoretical one: on the very first run (no
+    // petri.toml yet, the expected shape for every new user) the "missing
+    // preferences file" warning collided with the header's first draw and
+    // visibly corrupted it — caught by smoke-testing against real data.
+    let initial_radar = match read_state_file(state_path) {
+        Ok(r) => Some(r),
+        Err(e) => {
+            eprintln!("petri: initial state read failed: {e}");
+            None
+        }
+    };
+    let prefs = prefs::load(&prefs::default_prefs_path());
+
     // Step 2: enter alternate screen + raw mode. If any of these fails we
     // propagate the IO error — we haven't touched terminal state beyond what
     // succeeded, and the OS-level teardown will happen when the process exits.
@@ -64,7 +82,7 @@ pub fn run(state_path: &std::path::Path) -> std::io::Result<u8> {
     install_panic_hook();
 
     // Step 4: event loop.
-    let exit_code = poll_loop(state_path, &mut terminal)?;
+    let exit_code = poll_loop(state_path, &mut terminal, initial_radar, prefs)?;
 
     // Step 5: restore the terminal on the normal (non-panic) exit path.
     {
@@ -106,20 +124,17 @@ enum Screen {
 
 /// The main poll loop: draw the current state once, then only redraw on
 /// meaningful events (keyboard input, resize, mtime change). `q` breaks.
+///
+/// `last_good` and `prefs` are read by the caller (`run`) BEFORE the
+/// alternate screen is entered, not here — see `run`'s Step 1.5 doc comment
+/// for why a warning from either must never fire once the alt screen is
+/// live.
 fn poll_loop(
     state_path: &std::path::Path,
     terminal: &mut ratatui::Terminal<ratatui::backend::CrosstermBackend<std::io::Stdout>>,
+    mut last_good: Option<petridish_core::schema::Radar>,
+    prefs: Prefs,
 ) -> std::io::Result<u8> {
-    let mut last_good: Option<petridish_core::schema::Radar> = None;
-
-    // Initial read — if the file exists but is corrupt, we keep `None` and
-    // render nothing until the file recovers. The loop itself degrades by
-    // keeping whatever `last_good` still holds (a non-panicking invariant).
-    match read_state_file(state_path) {
-        Ok(r) => last_good = Some(r),
-        Err(e) => eprintln!("petri S5 initial state read failed: {e}"),
-    }
-
     // Initial mtime snapshot. We don't draw on ticks where nothing has
     // changed — the initial draw below is unconditional so we always paint
     // something on startup, but subsequent mtime comparisons rely on this
@@ -128,10 +143,6 @@ fn poll_loop(
         .ok()
         .and_then(|m| m.modified().ok());
 
-    // Load preferences (petri/SPEC.md §6). Missing or corrupt file -> defaults,
-    // an eprintln! on stderr — petri/SPEC.md §6: "never a crash, and never a
-    // refusal to start".
-    let prefs = prefs::load(&prefs::default_prefs_path());
     let (mut screen, mut browser_state) = match prefs.last_screen {
         LastScreen::Dashboard => {
             (Screen::Dashboard, None)

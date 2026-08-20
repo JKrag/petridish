@@ -121,9 +121,16 @@ fn running_label_degrades_to_recent_when_no_project_has_an_active_agent() {
 
 #[test]
 fn collapsed_sections_show_their_header_but_hide_their_project_names() {
+    // Height bumped from 80 to 160: this test's intent (collapsed sections
+    // hide their names) is unchanged, but the RUNNING/IN FLIGHT sections'
+    // real row footprint grew once roomy cards became genuinely roomy
+    // (3 content lines + a blank separator per project, not 1 line) — at 80
+    // rows the render would truncate mid-RUNNING and never reach the STALE/
+    // COLD headers this test checks for, for reasons unrelated to what it's
+    // actually testing.
     let radar = load("loaded.json"); // STALE = charlie-*, COLD = delta-*, both collapsed by default
     let state = DashboardState::new(&radar);
-    let lines = rendered_lines(&radar, &state, 200, 80);
+    let lines = rendered_lines(&radar, &state, 200, 160);
     let whole = lines.join("\n");
 
     assert!(whole.contains("STALE"), "STALE's header must render even while collapsed, got:\n{whole}");

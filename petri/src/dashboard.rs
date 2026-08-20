@@ -258,17 +258,29 @@ impl DashboardState {
     }
 }
 
-/// Render the Dashboard into `frame`. Per petri/SPEC.md §3.2:
-/// - Header: `petri · dashboard`, project count, clock, last scan duration.
-/// - `RUNNING` section: roomy cards (glyph, name, `silent Xm · agent-name`,
-///   branch, dirty marker, `commit 1d ago`, `~`-abbreviated path, truncated
-///   session id).
-/// - `IN FLIGHT`/`STALE`/`COLD`: compact rows (name, branch, `✎N`, commit
-///   age, `gh` marker).
+/// Render the Dashboard into `frame`. Per petri/SPEC.md §3.2, and following
+/// petripy's actual chrome (`src/petridish/screens.py`'s `_header`/`_section`)
+/// since the first Rust pass under-used the real estate collapsible sections
+/// were meant to free up:
+/// - Header: a badged `petri · dashboard` title, project count/clock/scan
+///   duration on the right, then a HEAVY double rule (`═`) the full width —
+///   this is the thing that makes the header read as a header, not "a line
+///   of text that nearly disappears into the rest."
+/// - Each section is bracketed by light rules (`─`): one above (skipped for
+///   the very first section, which already sits under the header's heavy
+///   rule) and one below its label line, mirroring petripy's `_section`.
+/// - `RUNNING` section: roomy 3-line cards (name/dirty/uncommitted + silence
+///   & agent; branch + event-or-commit; `~`-abbreviated path + session id)
+///   plus a blank separator line — matching petripy's actual roomy density,
+///   not a single crammed line per project.
+/// - `IN FLIGHT`/`STALE`/`COLD`: compact single-line rows (name, branch,
+///   `✎N`, commit age, `gh` marker).
 /// - Collapsed sections still render their header + count, but no rows.
 /// - **Overflow: truncate, never scroll.** If expanded sections exceed the
 ///   available height, sections emit in priority order (`SECTION_ORDER`) and
-///   stop, with a required `… +N more` marker at the cut.
+///   stop, with a required `… +N more` marker at the cut — accounting for
+///   each roomy card's real 4-line footprint (3 content + 1 blank), not
+///   1 line per item.
 /// - Staleness banner when `radar.updated_at` is older than 24h.
 /// - Must not panic on an empty `radar.projects`, nor at 0×0 or 1×1.
 ///
@@ -287,6 +299,7 @@ pub fn render(frame: &mut ratatui::Frame, radar: &Radar, state: &DashboardState)
     if area.height <= 1 {
         return;
     }
+    let width = area.width as usize;
 
     let elapsed_secs = chrono::Utc::now().signed_duration_since(radar.updated_at).num_seconds().max(0);
     let is_stale = elapsed_secs > 86400;
@@ -297,18 +310,20 @@ pub fn render(frame: &mut ratatui::Frame, radar: &Radar, state: &DashboardState)
     let stale_banner: Option<Line<'static>> = if is_stale {
         Some(Line::from(Span::styled(
             format!(" ⚠ Data stale (updated {} ago)", humanize_secs(elapsed_secs as u64)),
-            Style::default().fg(Color::Red),
+            Style::default().fg(Color::Black).bg(Color::Red).add_modifier(Modifier::BOLD),
         )))
     } else {
         None
     };
 
+    // 2 header lines (title + heavy rule) + 2 footer lines (light rule +
+    // keymap), same accounting discipline as before: every physical row this
+    // function will emit is counted here, so the "+N more" marker can never
+    // be pushed off the bottom of the terminal by a mis-budgeted item.
     let available_content = (area.height as usize)
-        .saturating_sub(2) // header + footer
-        .saturating_sub(if is_stale { 1 } else { 0 });
+        .saturating_sub(4)
+        .saturating_sub(usize::from(is_stale));
 
-    // Build content lines: section headers + project rows, truncating with a
-    // required "+N more" marker the moment we'd exceed available_content.
     let mut content_lines: Vec<Line<'static>> = Vec::new();
     'sections: for (si, bucket) in SECTION_ORDER.iter().enumerate() {
         let members = DashboardState::section_members(radar, *bucket);
@@ -316,18 +331,25 @@ pub fn render(frame: &mut ratatui::Frame, radar: &Radar, state: &DashboardState)
             continue;
         }
 
-        if content_lines.len() >= available_content {
+        let is_first_section = content_lines.is_empty();
+        let chrome_lines = if is_first_section { 2 } else { 3 }; // [rule_above] + label + rule_below
+        if content_lines.len() + chrome_lines > available_content {
             break;
+        }
+        if !is_first_section {
+            content_lines.push(rule_line(width, Color::DarkGray));
         }
         let is_selected_header = matches!(
             state.selected.and_then(|i| state.visible.get(i)),
             Some(DashRow::Header(b)) if *b == *bucket
         );
-        content_lines.push(section_header_line(radar, *bucket, members.len(), is_selected_header));
+        content_lines.push(section_header_line(radar, *bucket, members.len(), is_selected_header, width));
+        content_lines.push(rule_line(width, Color::DarkGray));
 
         if !state.collapsed[si] {
+            let item_span = if *bucket == StatusBucket::Active { 4 } else { 1 };
             for (member_pos, &proj_idx) in members.iter().enumerate() {
-                if content_lines.len() >= available_content {
+                if content_lines.len() + item_span > available_content {
                     let remaining = members.len() - member_pos;
                     content_lines.push(Line::from(Span::styled(
                         format!(" … +{remaining} more"),
@@ -339,54 +361,82 @@ pub fn render(frame: &mut ratatui::Frame, radar: &Radar, state: &DashboardState)
                     state.selected.and_then(|i| state.visible.get(i)),
                     Some(DashRow::Project(idx)) if *idx == proj_idx
                 );
-                content_lines.push(if *bucket == StatusBucket::Active {
-                    roomy_card_line(radar, proj_idx, is_selected_row)
+                if *bucket == StatusBucket::Active {
+                    content_lines.extend(roomy_card_lines(radar, proj_idx, is_selected_row, width));
                 } else {
-                    compact_row_line(radar, proj_idx, is_selected_row)
-                });
+                    content_lines.push(compact_row_line(radar, proj_idx, is_selected_row));
+                }
             }
         }
     }
 
-    let mut lines: Vec<Line<'static>> = Vec::with_capacity(2 + content_lines.len() + usize::from(is_stale));
-    lines.push(header_line(radar, &now, scan_secs));
+    let mut lines: Vec<Line<'static>> = Vec::with_capacity(4 + content_lines.len() + usize::from(is_stale));
+    lines.extend(header_lines(radar, &now, scan_secs, width));
     if let Some(banner) = stale_banner {
         lines.push(banner);
     }
     lines.extend(content_lines);
+    lines.push(rule_line(width, Color::DarkGray));
     lines.push(footer_line());
 
-    // Deliberately NOT using `Wrap` here: each entry in `content_lines` is
-    // counted as exactly one physical row against `available_content` above
-    // — if a long roomy card line were allowed to wrap to two physical rows,
-    // the "+N more" truncation marker could be pushed off the bottom of the
-    // terminal (clipped by the widget boundary) rather than actually shown,
-    // which is exactly the "silent truncation" failure mode the spec calls
-    // out as unacceptable. No wrapping means an overlong line is clipped at
-    // the right edge instead — visually lossy for that one row, but the
+    // Deliberately NOT using `Wrap` here: every line pushed above is counted
+    // as exactly one physical row against `available_content` — if a long
+    // line were allowed to wrap to two physical rows, the "+N more"
+    // truncation marker could be pushed off the bottom of the terminal
+    // (clipped by the widget boundary) rather than actually shown, which is
+    // exactly the "silent truncation" failure mode the spec calls out as
+    // unacceptable. No wrapping means an overlong line is clipped at the
+    // right edge instead — visually lossy for that one row, but the
     // truncation marker itself stays guaranteed-visible.
     let para = Paragraph::new(lines);
     frame.render_widget(para, area);
 }
 
-/// Header line: `petri · dashboard`, project count, clock, scan duration.
-fn header_line(radar: &Radar, now: &chrono::DateTime<chrono::Utc>, scan_secs: f64) -> Line<'static> {
+/// A full-width rule line in the given color — `─` for the light rules that
+/// bracket each section, reused at `Color::DarkGray` for the footer's rule
+/// too. The header's heavy `═` rule is built inline in `header_lines` since
+/// it carries its own bold/bright styling.
+fn rule_line(width: usize, color: Color) -> Line<'static> {
+    Line::from(Span::styled("─".repeat(width), Style::default().fg(color)))
+}
+
+/// Split `left`/`right` across `width` columns, padding between them (at
+/// least one space) — mirrors petripy's `_split`: a stable label on the
+/// left, the volatile value you're actually scanning on the right.
+fn split_line(left: String, right: String, width: usize, left_style: Style, right_style: Style) -> Line<'static> {
+    let left_len = left.chars().count();
+    let right_len = right.chars().count();
+    let pad = width.saturating_sub(left_len + right_len).max(1);
     Line::from(vec![
-        Span::styled("petri · dashboard", Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)),
-        Span::raw("  | "),
-        Span::styled(format!("{} projects", radar.projects.len()), Style::default().fg(Color::White)),
-        Span::raw("  | "),
-        Span::styled(now.format("%H:%M").to_string(), Style::default().fg(Color::DarkGray)),
-        Span::raw("  | "),
-        Span::styled(format!("scan {scan_secs:.1}s"), Style::default().fg(Color::DarkGray)),
+        Span::styled(left, left_style),
+        Span::raw(" ".repeat(pad)),
+        Span::styled(right, right_style),
     ])
 }
 
-/// Section header line: "RUNNING [25]". RUNNING degrades to RECENT when no
+/// Header: a badged title, project count/clock/scan duration on the right,
+/// then a heavy double rule spanning the full width. The badge (inverted
+/// colors on just the app name) plus the heavy rule is what makes this read
+/// as a header at a glance, matching petripy's `_header` — a single plain
+/// line of text was the thing that "nearly disappears into the rest."
+fn header_lines(radar: &Radar, now: &chrono::DateTime<chrono::Utc>, scan_secs: f64, width: usize) -> Vec<Line<'static>> {
+    let right = format!("{} projects · {} · scan {scan_secs:.1}s", radar.projects.len(), now.format("%H:%M"));
+    let title = split_line(
+        " petri · dashboard ".to_string(),
+        format!("{right} "),
+        width,
+        Style::default().fg(Color::Black).bg(Color::Cyan).add_modifier(Modifier::BOLD),
+        Style::default().fg(Color::White),
+    );
+    vec![title, Line::from(Span::styled("═".repeat(width), Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)))]
+}
+
+/// Section header line: " RUNNING" left, "25" right, between the two light
+/// rules `render` pushes around it. RUNNING degrades to RECENT when no
 /// member project has an active agent (`agent.active_agent.is_some()`) —
 /// petri/SPEC.md §3.2's "because RUNNING would then overstate it", documented
 /// interpretation per `s6_snapshot.rs`'s module doc comment.
-fn section_header_line(radar: &Radar, bucket: StatusBucket, count: usize, is_selected: bool) -> Line<'static> {
+fn section_header_line(radar: &Radar, bucket: StatusBucket, count: usize, is_selected: bool, width: usize) -> Line<'static> {
     let label: &str = if bucket == StatusBucket::Active {
         let has_agent = DashboardState::running_membership(radar)
             .iter()
@@ -404,42 +454,64 @@ fn section_header_line(radar: &Radar, bucket: StatusBucket, count: usize, is_sel
     } else {
         Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)
     };
-    Line::from(Span::styled(format!(" {label} [{count}] "), style))
+    split_line(format!(" {label}"), format!("{count} "), width, style, style)
 }
 
-/// Roomy card for a project in the RUNNING section.
-fn roomy_card_line(radar: &Radar, proj_idx: usize, is_selected: bool) -> Line<'static> {
+/// Roomy card for a project in the RUNNING section: three lines (each a
+/// stable left value paired with the volatile right one) plus a blank
+/// separator — petripy's actual roomy density (`format_card`), not a single
+/// line crammed with every field.
+fn roomy_card_lines(radar: &Radar, proj_idx: usize, is_selected: bool, width: usize) -> Vec<Line<'static>> {
     let p = &radar.projects[proj_idx];
     let glyph = match p.agent.state {
         AgentActivity::Working => "●",
         _ => "○",
     };
     let dirty_marker = present::dirty_marker(&p.git);
-    let uncommitted = if p.git.uncommitted_files > 0 { format!("✎{}", p.git.uncommitted_files) } else { String::new() };
-    let branch = p.git.branch.as_deref().unwrap_or("(none)");
-    let commit_age = match p.git.last_commit_at {
-        Some(dt) => commit_ago(dt),
-        None => "(none)".to_string(),
-    };
-    let display_path = abbreviate_home(&p.path);
-    let session = p.agent.session_id.as_deref().unwrap_or("");
+    let uncommitted = if p.git.uncommitted_files > 0 { format!(" ✎{}", p.git.uncommitted_files) } else { String::new() };
+    let has_agent = p.agent.active_agent.is_some();
     let silence_secs = match p.last_activity_at {
         Some(dt) => chrono::Utc::now().signed_duration_since(dt).num_seconds().max(0),
         None => 0,
     };
-    let agent_name = p.agent.active_agent.as_deref().unwrap_or("idle");
+    let right1 = if has_agent {
+        match p.agent.active_agent.as_deref() {
+            Some(agent) => format!("silent {} · {agent}", humanize_secs(silence_secs as u64)),
+            None => format!("silent {}", humanize_secs(silence_secs as u64)),
+        }
+    } else {
+        "no agent".to_string()
+    };
 
-    let style = if is_selected { Style::default().fg(Color::Yellow) } else { Style::default().fg(Color::White) };
+    let branch = p.git.branch.as_deref().unwrap_or("-");
+    let dirty_suffix = if dirty_marker.trim().is_empty() { String::new() } else { format!("  {}", dirty_marker.trim()) };
+    let left2 = format!("     {branch}{dirty_suffix}");
+    let right2 = p.agent.last_event.clone().unwrap_or_else(|| match p.git.last_commit_at {
+        Some(dt) => format!("commit {}", commit_ago(dt)),
+        None => "no commits".to_string(),
+    });
 
-    Line::from(vec![
-        Span::styled(format!(" {glyph} "), style),
-        Span::styled(format!("{}{}{} ", p.name, dirty_marker, uncommitted), style),
-        Span::styled(format!("silent {} · {} ", humanize_secs(silence_secs as u64), agent_name), Style::default().fg(Color::Cyan)),
-        Span::styled(format!("{branch} "), Style::default().fg(Color::Cyan)),
-        Span::styled(format!("commit {commit_age} "), Style::default().fg(Color::DarkGray)),
-        Span::raw(format!("— {display_path} ")),
-        Span::styled(session.to_string(), Style::default().fg(Color::DarkGray)),
-    ])
+    let display_path = abbreviate_home(&p.path);
+    let left3 = format!("     {display_path}");
+    let right3 = match p.agent.session_id.as_deref() {
+        Some(session) => format!("sess {}", &session[..session.len().min(18)]),
+        None => String::new(),
+    };
+
+    let name_style = if is_selected {
+        Style::default().fg(Color::Black).bg(Color::Yellow).add_modifier(Modifier::BOLD)
+    } else {
+        Style::default().fg(Color::White).add_modifier(Modifier::BOLD)
+    };
+    let value_style = Style::default().fg(Color::Cyan);
+    let dim = Style::default().fg(Color::DarkGray);
+
+    vec![
+        split_line(format!(" {glyph} {}{}{}", p.name, dirty_marker, uncommitted), right1, width, name_style, value_style),
+        split_line(left2, right2, width, dim, dim),
+        split_line(left3, right3, width, dim, dim),
+        Line::from(""),
+    ]
 }
 
 /// Compact row for a project in IN FLIGHT / STALE / COLD.
@@ -453,7 +525,11 @@ fn compact_row_line(radar: &Radar, proj_idx: usize, is_selected: bool) -> Line<'
     };
     let gh = if p.git.github_url.is_some() { "[gh]" } else { "" };
 
-    let style = if is_selected { Style::default().fg(Color::Yellow) } else { Style::default().fg(Color::White) };
+    let style = if is_selected {
+        Style::default().fg(Color::Black).bg(Color::Yellow)
+    } else {
+        Style::default().fg(Color::White)
+    };
 
     Line::from(vec![
         Span::styled(format!(" {} ", p.name), style),
