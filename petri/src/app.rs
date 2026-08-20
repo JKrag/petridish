@@ -5,7 +5,13 @@
 //! snapshot/PTY harnesses), not the screen itself (petri/SPEC.md §9).
 
 use petridish_core::schema::Radar;
-use ratatui::Frame;
+use ratatui::{
+    layout::{Constraint, Layout},
+    style::Style,
+    text::Line,
+    widgets::{Paragraph, Wrap},
+    Frame,
+};
 
 /// Render the header + flat project list into `frame`.
 ///
@@ -22,5 +28,33 @@ use ratatui::Frame;
 ///   the "missing state file" case is handled before this function is ever
 ///   called; an empty *parsed* file is different and must render, not crash).
 pub fn render(frame: &mut Frame, radar: &Radar) {
-    todo!("S4: header + flat list rendering")
+    // Guard against 0×0 (a freshly-forked pty reports these; ratatui handles
+    // them on its own, but this explicit check avoids any surprise deep inside
+    // the widget renderers).
+    if frame.area().width == 0 || frame.area().height == 0 {
+        return;
+    }
+
+    // Top row: application header. Later slices replace the trailing label
+    // with `"petri · dashboard"` / `"petri · browser"` per SPEC §3 — for S4,
+    // the contract is simply that `"petri"` appears somewhere in row 0.
+    let chunks = Layout::vertical([Constraint::Length(1), Constraint::Min(0)]).split(frame.area());
+
+    let header = Paragraph::new(Line::from("petri · walking skeleton"))
+        .style(Style::default().bold())
+        .wrap(Wrap { trim: false });
+    frame.render_widget(header, chunks[0]);
+
+    // Flat project list — one paragraph line per project. A single
+    // `Paragraph` is enough and it handles both empty and overflow layouts
+    // without panicking (ratatui's widget pipeline clamps negative sizes to
+    // zero rather than dividing by zero).
+    let body_lines: Vec<Line> = radar
+        .projects
+        .iter()
+        .map(|p| Line::from(p.name.clone()))
+        .collect();
+
+    let list = Paragraph::new(body_lines).wrap(Wrap { trim: false });
+    frame.render_widget(list, chunks[1]);
 }

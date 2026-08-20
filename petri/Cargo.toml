@@ -19,9 +19,17 @@ chrono = { version = "0.4", features = ["serde"] }
 serde = { version = "1", features = ["derive"] }
 toml = "0.8"
 
-# Test-only: PTY end-to-end harness (petri/SPEC.md §8 layer 3, ADR-0003) and
-# fixture deserialization in tests/. Neither is in SPEC §10's runtime dependency
-# list because neither ships in the binary.
+# The state file is JSON — petri parses it in `run`, which the binary targets at
+# runtime (not just tests), so this needs to be a runtime dependency. Spec §10
+# lists `ratatui`/`crossterm`/`petridish-core`; serde_json is the JSON backend
+# for `serde`, which petri-core itself depends on, but as a runtime requirement
+# of *petri* we pull it in here rather than re-exporting petridish-core's
+# dev-only dependency (which would otherwise be the only path for petri to call
+# `serde_json::from_str` without hitting dev-dep visibility).
+serde_json = "1"
+
+# Test-only: PTY end-to-end harness (petri/SPEC.md §8 layer 3, ADR-0003). Not in
+# SPEC §10's runtime dependency list because it never ships in the binary.
+# (serde_json is already a real dependency above, also usable from tests/.)
 [dev-dependencies]
 portable-pty = "0.9"
-serde_json = "1"

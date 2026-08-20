@@ -13,8 +13,9 @@
 //! pixel-exact golden to be captured as a separate follow-up test once S4 lands
 //! and a human has looked at one real frame (ADR-0003 layer 4).
 //!
-//! `petri::app::render`'s current `todo!()` body means every test below FAILS
-//! (panics) rather than errors — confirmed before delegating S4.
+//! Was `#[ignore]`d while `petri::app::render` was a `todo!()` stub (every test
+//! below failed on that basis, confirmed before delegating S4); stripped now
+//! that S4 landed and all five pass.
 
 use petridish_core::schema::Radar;
 use ratatui::{Terminal, backend::TestBackend};
@@ -51,7 +52,6 @@ fn rendered_lines(radar: &Radar, width: u16, height: u16) -> Vec<String> {
 }
 
 #[test]
-#[ignore = "S4 gate: petri::run/app::render not implemented yet; run explicitly with --ignored"]
 fn header_row_identifies_the_app() {
     let radar = load("minimal.json");
     let lines = rendered_lines(&radar, 80, 24);
@@ -63,7 +63,6 @@ fn header_row_identifies_the_app() {
 }
 
 #[test]
-#[ignore = "S4 gate: petri::run/app::render not implemented yet; run explicitly with --ignored"]
 fn every_project_name_is_reachable_on_screen_minimal() {
     let radar = load("minimal.json");
     let lines = rendered_lines(&radar, 80, 24);
@@ -78,7 +77,6 @@ fn every_project_name_is_reachable_on_screen_minimal() {
 }
 
 #[test]
-#[ignore = "S4 gate: petri::run/app::render not implemented yet; run explicitly with --ignored"]
 fn every_project_name_is_reachable_on_screen_normal_at_tall_geometry() {
     // normal.json has 15 projects (petri/SPEC.md §8) — give it enough rows that
     // "doesn't fit" isn't a legitimate excuse for a missing name.
@@ -95,7 +93,6 @@ fn every_project_name_is_reachable_on_screen_normal_at_tall_geometry() {
 }
 
 #[test]
-#[ignore = "S4 gate: petri::run/app::render not implemented yet; run explicitly with --ignored"]
 fn empty_project_list_does_not_panic() {
     let radar = Radar {
         schema_version: 1,
@@ -110,7 +107,6 @@ fn empty_project_list_does_not_panic() {
 }
 
 #[test]
-#[ignore = "S4 gate: petri::run/app::render not implemented yet; run explicitly with --ignored"]
 fn tiny_geometry_does_not_panic() {
     let radar = load("minimal.json");
     // Smallest TestBackend allows (0x0 is only reachable via a real forked pty,
