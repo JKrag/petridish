@@ -4,6 +4,7 @@
 //! with the grouped Browser/Dashboard screens.
 
 pub mod app;
+pub mod browser;
 
 /// Resolved default state-file path: `$HOME/.petridish/projects.json`. Mirrors
 /// `swab::cli::default_state_path` — same reasoning (composed directly so tests
@@ -123,14 +124,10 @@ fn poll_loop(
         // pick up the new terminal size.
         let event_ready = crossterm::event::poll(std::time::Duration::from_secs(1)).unwrap_or(false);
         if event_ready {
-            match crossterm::event::read() {
-                Ok(crossterm::event::Event::Key(key)) => {
-                    eprintln!("[debug] key: {:?}", key.code);
-                    if key.code == crossterm::event::KeyCode::Char('q') {
-                        return Ok(0);
-                    }
+            if let Ok(crossterm::event::Event::Key(key)) = crossterm::event::read() {
+                if key.code == crossterm::event::KeyCode::Char('q') {
+                    return Ok(0);
                 }
-                other => eprintln!("[debug] non-key event: {:?}", other),
             }
         }
 

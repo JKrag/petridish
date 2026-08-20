@@ -28,17 +28,19 @@ use ratatui::{
 ///   the "missing state file" case is handled before this function is ever
 ///   called; an empty *parsed* file is different and must render, not crash).
 pub fn render(frame: &mut Frame, radar: &Radar) {
+    let area = frame.area();
+
     // Guard against 0×0 (a freshly-forked pty reports these; ratatui handles
     // them on its own, but this explicit check avoids any surprise deep inside
     // the widget renderers).
-    if frame.area().width == 0 || frame.area().height == 0 {
+    if area.width == 0 || area.height == 0 {
         return;
     }
 
     // Top row: application header. Later slices replace the trailing label
     // with `"petri · dashboard"` / `"petri · browser"` per SPEC §3 — for S4,
     // the contract is simply that `"petri"` appears somewhere in row 0.
-    let chunks = Layout::vertical([Constraint::Length(1), Constraint::Min(0)]).split(frame.area());
+    let chunks = Layout::vertical([Constraint::Length(1), Constraint::Min(0)]).split(area);
 
     let header = Paragraph::new(Line::from("petri · walking skeleton"))
         .style(Style::default().bold())
