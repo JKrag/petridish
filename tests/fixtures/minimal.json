@@ -1,0 +1,34 @@
+{
+  "schema_version": 1,
+  "updated_at": "2026-08-20T09:00:00Z",
+  "scan_duration_ms": 52,
+  "projects": [
+    {
+      "id": "min-a1b2c3d4",
+      "name": "minimal-test",
+      "path": "/Users/jankrag/repos/minimal-test",
+      "category": "JKrag",
+      "parent_path": null,
+      "is_foreign": false,
+      "git": {
+        "is_repo": true,
+        "branch": "main",
+        "is_dirty": false,
+        "uncommitted_files": 0,
+        "last_commit_at": "2026-08-19T18:30:00Z",
+        "mine_last_commit_at": "2026-08-19T18:30:00Z",
+        "github_url": null
+      },
+      "agent": {
+        "state": "idle",
+        "active_agent": null,
+        "last_event": null,
+        "last_event_at": null,
+        "session_id": null
+      },
+      "last_activity_at": null,
+      "status_bucket": "cold"
+    }
+  ],
+  "quota": null
+}

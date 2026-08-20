@@ -1,0 +1,190 @@
+{
+  "schema_version": 99,
+  "updated_at": "2026-08-14T03:22:07Z",
+  "scan_duration_ms": 419,
+  "projects": [
+    {
+      "id": "hs-01a2b3c4",
+      "name": "日本語プロジェクト-workspace",
+      "path": "/Users/jankrag/repos/JKrag/日本語-プロジェクト",
+      "category": "JKrag",
+      "parent_path": null,
+      "is_foreign": false,
+      "git": {
+        "is_repo": false,
+        "branch": null,
+        "is_dirty": false,
+        "uncommitted_files": 0,
+        "last_commit_at": null,
+        "mine_last_commit_at": null,
+        "github_url": null
+      },
+      "agent": {
+        "state": "idle",
+        "active_agent": null,
+        "last_event": null,
+        "last_event_at": null,
+        "session_id": null
+      },
+      "last_activity_at": null,
+      "status_bucket": "cold"
+    },
+    {
+      "id": "hs-02d4e5f6",
+      "name": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "path": "/Users/jankrag/repos/JKrag/aaa-long-name",
+      "category": "JKrag",
+      "parent_path": "/users/jankrag/repos/vanished/long-lost-parent",
+      "is_foreign": false,
+      "git": {
+        "is_repo": true,
+        "branch": "main",
+        "is_dirty": false,
+        "uncommitted_files": 0,
+        "last_commit_at": "2026-07-10T14:15:00Z",
+        "mine_last_commit_at": "2026-07-10T14:15:00Z",
+        "github_url": null
+      },
+      "agent": {
+        "state": "idle",
+        "active_agent": null,
+        "last_event": null,
+        "last_event_at": null,
+        "session_id": null
+      },
+      "last_activity_at": null,
+      "status_bucket": "cold"
+    },
+    {
+      "id": "hs-03f6a7b8",
+      "name": "horizon-gateway",
+      "path": "/Users/jankrag/repos/JKrag/horizon-gateway",
+      "category": "JKrag",
+      "parent_path": null,
+      "is_foreign": false,
+      "git": {
+        "is_repo": true,
+        "branch": "main",
+        "is_dirty": false,
+        "uncommitted_files": 0,
+        "last_commit_at": "2026-07-05T21:30:00Z",
+        "mine_last_commit_at": "2026-07-05T21:30:00Z",
+        "github_url": "https://github.com/JKrag/horizon-gateway"
+      },
+      "agent": {
+        "state": "idle",
+        "active_agent": null,
+        "last_event": null,
+        "last_event_at": "2026-07-06T19:45:00Z",
+        "session_id": null
+      },
+      "last_activity_at": "2026-07-06T19:45:00Z",
+      "status_bucket": "cold"
+    },
+    {
+      "id": "hs-04b8c9d0",
+      "name": "iron-depot",
+      "path": "/Users/jankrag/repos/JKrag/iron-depot",
+      "category": "JKrag",
+      "parent_path": null,
+      "is_foreign": false,
+      "git": {
+        "is_repo": true,
+        "branch": "develop",
+        "is_dirty": false,
+        "uncommitted_files": 0,
+        "last_commit_at": "2026-08-01T08:20:00Z",
+        "mine_last_commit_at": "2026-08-01T08:20:00Z",
+        "github_url": null
+      },
+      "agent": {
+        "state": "idle",
+        "active_agent": null,
+        "last_event": null,
+        "last_event_at": "2026-08-05T14:10:00Z",
+        "session_id": null
+      },
+      "last_activity_at": "2026-08-05T14:10:00Z",
+      "status_bucket": "cold"
+    },
+    {
+      "id": "hs-05d0e1f2",
+      "name": "jupiter-cache",
+      "path": "/Users/jankrag/repos/JKrag/jupiter-cache",
+      "category": "JKrag",
+      "parent_path": null,
+      "is_foreign": false,
+      "git": {
+        "is_repo": true,
+        "branch": "main",
+        "is_dirty": true,
+        "uncommitted_files": 4,
+        "last_commit_at": "2026-06-28T17:55:00Z",
+        "mine_last_commit_at": "2026-06-28T17:55:00Z",
+        "github_url": "https://github.com/JKrag/jupiter-cache"
+      },
+      "agent": {
+        "state": "idle",
+        "active_agent": null,
+        "last_event": null,
+        "last_event_at": "2026-07-01T11:30:00Z",
+        "session_id": null
+      },
+      "last_activity_at": "2026-07-01T11:30:00Z",
+      "status_bucket": "cold"
+    },
+    {
+      "id": "hs-06a2b3c4",
+      "name": "krypton-metrics",
+      "path": "/Users/jankrag/repos/JKrag/krypton-metrics",
+      "category": "JKrag",
+      "parent_path": null,
+      "is_foreign": false,
+      "git": {
+        "is_repo": true,
+        "branch": "main",
+        "is_dirty": false,
+        "uncommitted_files": 0,
+        "last_commit_at": "2026-07-22T09:40:00Z",
+        "mine_last_commit_at": "2026-07-22T09:40:00Z",
+        "github_url": null
+      },
+      "agent": {
+        "state": "idle",
+        "active_agent": null,
+        "last_event": null,
+        "last_event_at": "2026-07-25T16:50:00Z",
+        "session_id": null
+      },
+      "last_activity_at": "2026-07-25T16:50:00Z",
+      "status_bucket": "cold"
+    },
+    {
+      "id": "hs-07c4d5e6",
+      "name": "lunar-fetcher",
+      "path": "/Users/jankrag/repos/JKrag/lunar-fetcher",
+      "category": "JKrag",
+      "parent_path": null,
+      "is_foreign": true,
+      "git": {
+        "is_repo": false,
+        "branch": null,
+        "is_dirty": false,
+        "uncommitted_files": 0,
+        "last_commit_at": null,
+        "mine_last_commit_at": null,
+        "github_url": null
+      },
+      "agent": {
+        "state": "idle",
+        "active_agent": null,
+        "last_event": null,
+        "last_event_at": null,
+        "session_id": null
+      },
+      "last_activity_at": null,
+      "status_bucket": "cold"
+    }
+  ],
+  "quota": null
+}

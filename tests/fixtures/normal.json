@@ -1,0 +1,398 @@
+{
+  "schema_version": 1,
+  "updated_at": "2026-08-20T09:15:00Z",
+  "scan_duration_ms": 312,
+  "projects": [
+    {
+      "id": "np-a01a2b3c",
+      "name": "alpha-project",
+      "path": "/Users/jankrag/repos/JKrag/alpha-project",
+      "category": "JKrag",
+      "parent_path": null,
+      "is_foreign": false,
+      "git": {
+        "is_repo": true,
+        "branch": "main",
+        "is_dirty": false,
+        "uncommitted_files": 2,
+        "last_commit_at": "2026-08-19T14:22:00Z",
+        "mine_last_commit_at": "2026-08-19T14:22:00Z",
+        "github_url": "https://github.com/JKrag/alpha-project"
+      },
+      "agent": {
+        "state": "working",
+        "active_agent": "claude-code",
+        "last_event": "PreToolUse",
+        "last_event_at": "2026-08-20T09:14:30Z",
+        "session_id": "a1b2c3d4-e5f6-7890-abcd-ef1234567890"
+      },
+      "last_activity_at": "2026-08-20T09:14:30Z",
+      "status_bucket": "active"
+    },
+    {
+      "id": "np-b02d4e5f",
+      "name": "brisbane-engine",
+      "path": "/Users/jankrag/repos/JKrag/brisbane-engine",
+      "category": "JKrag",
+      "parent_path": null,
+      "is_foreign": false,
+      "git": {
+        "is_repo": true,
+        "branch": "develop",
+        "is_dirty": true,
+        "uncommitted_files": 7,
+        "last_commit_at": "2026-08-19T11:05:00Z",
+        "mine_last_commit_at": "2026-08-18T15:30:00Z",
+        "github_url": "https://github.com/JKrag/brisbane-engine"
+      },
+      "agent": {
+        "state": "recent",
+        "active_agent": "copilot",
+        "last_event": "InsertSnippet",
+        "last_event_at": "2026-08-20T08:45:12Z",
+        "session_id": "b2c3d4e5-f6a7-8901-bcde-f12345678901"
+      },
+      "last_activity_at": "2026-08-20T08:45:12Z",
+      "status_bucket": "active"
+    },
+    {
+      "id": "np-c03f6a7b",
+      "name": "catalyst-ui",
+      "path": "/Users/jankrag/repos/JKrag/catalyst-ui",
+      "category": "JKrag",
+      "parent_path": null,
+      "is_foreign": false,
+      "git": {
+        "is_repo": true,
+        "branch": "feature/dashboard",
+        "is_dirty": false,
+        "uncommitted_files": 0,
+        "last_commit_at": "2026-08-18T16:44:00Z",
+        "mine_last_commit_at": "2026-08-18T16:44:00Z",
+        "github_url": "https://github.com/JKrag/catalyst-ui"
+      },
+      "agent": {
+        "state": "working",
+        "active_agent": "claude-code",
+        "last_event": "Write",
+        "last_event_at": "2026-08-20T07:10:55Z",
+        "session_id": "c3d4e5f6-a7b8-9012-cdef-123456789012"
+      },
+      "last_activity_at": "2026-08-20T07:10:55Z",
+      "status_bucket": "active"
+    },
+    {
+      "id": "np-d04b8c9d",
+      "name": "deltaflow",
+      "path": "/Users/jankrag/repos/JKrag/deltaflow",
+      "category": "JKrag",
+      "parent_path": null,
+      "is_foreign": false,
+      "git": {
+        "is_repo": true,
+        "branch": "main",
+        "is_dirty": false,
+        "uncommitted_files": 0,
+        "last_commit_at": "2026-08-17T20:00:00Z",
+        "mine_last_commit_at": "2026-08-17T20:00:00Z",
+        "github_url": null
+      },
+      "agent": {
+        "state": "recent",
+        "active_agent": "claude-code",
+        "last_event": "Read",
+        "last_event_at": "2026-08-19T19:05:44Z",
+        "session_id": "d4e5f6a7-b8c9-0123-defa-234567890123"
+      },
+      "last_activity_at": "2026-08-19T19:05:44Z",
+      "status_bucket": "active"
+    },
+    {
+      "id": "np-e05d0e1f",
+      "name": "ember-core",
+      "path": "/Users/jankrag/repos/JKrag/ember-core",
+      "category": "JKrag",
+      "parent_path": null,
+      "is_foreign": false,
+      "git": {
+        "is_repo": true,
+        "branch": "release/v2",
+        "is_dirty": true,
+        "uncommitted_files": 3,
+        "last_commit_at": "2026-08-18T10:15:00Z",
+        "mine_last_commit_at": "2026-08-17T14:22:00Z",
+        "github_url": "https://github.com/JKrag/ember-core"
+      },
+      "agent": {
+        "state": "idle",
+        "active_agent": null,
+        "last_event": null,
+        "last_event_at": "2026-08-19T12:30:00Z",
+        "session_id": null
+      },
+      "last_activity_at": "2026-08-19T12:30:00Z",
+      "status_bucket": "in_flight"
+    },
+    {
+      "id": "np-f06f2a3b",
+      "name": "forest-net",
+      "path": "/Users/jankrag/repos/JKrag/forest-net",
+      "category": "JKrag",
+      "parent_path": null,
+      "is_foreign": false,
+      "git": {
+        "is_repo": true,
+        "branch": "main",
+        "is_dirty": false,
+        "uncommitted_files": 0,
+        "last_commit_at": "2026-08-19T08:50:00Z",
+        "mine_last_commit_at": "2026-08-19T08:50:00Z",
+        "github_url": "https://github.com/JKrag/forest-net"
+      },
+      "agent": {
+        "state": "recent",
+        "active_agent": "claude-code",
+        "last_event": "Write",
+        "last_event_at": "2026-08-20T06:22:11Z",
+        "session_id": "e4f5a6b7-c8d9-0123-efab-345678901234"
+      },
+      "last_activity_at": "2026-08-20T06:22:11Z",
+      "status_bucket": "in_flight"
+    },
+    {
+      "id": "np-a07c4d5e",
+      "name": "glacier-db",
+      "path": "/Users/jankrag/repos/JKrag/glacier-db",
+      "category": "JKrag",
+      "parent_path": null,
+      "is_foreign": false,
+      "git": {
+        "is_repo": true,
+        "branch": "develop",
+        "is_dirty": false,
+        "uncommitted_files": 0,
+        "last_commit_at": "2026-08-17T22:40:00Z",
+        "mine_last_commit_at": "2026-08-15T09:12:00Z",
+        "github_url": null
+      },
+      "agent": {
+        "state": "idle",
+        "active_agent": null,
+        "last_event": null,
+        "last_event_at": "2026-08-17T23:00:00Z",
+        "session_id": null
+      },
+      "last_activity_at": "2026-08-17T23:00:00Z",
+      "status_bucket": "in_flight"
+    },
+    {
+      "id": "np-b08e6f7a",
+      "name": "horizon-gui",
+      "path": "/Users/jankrag/repos/JKrag/horizon-gui",
+      "category": "JKrag",
+      "parent_path": null,
+      "is_foreign": false,
+      "git": {
+        "is_repo": true,
+        "branch": "fix/latency",
+        "is_dirty": true,
+        "uncommitted_files": 1,
+        "last_commit_at": "2026-08-19T15:33:00Z",
+        "mine_last_commit_at": "2026-08-19T15:33:00Z",
+        "github_url": "https://github.com/JKrag/horizon-gui"
+      },
+      "agent": {
+        "state": "working",
+        "active_agent": "claude-code",
+        "last_event": "TodoWrite",
+        "last_event_at": "2026-08-20T09:10:05Z",
+        "session_id": "f5a6b7c8-d9e0-1234-fabc-456789012345"
+      },
+      "last_activity_at": "2026-08-20T09:10:05Z",
+      "status_bucket": "in_flight"
+    },
+    {
+      "id": "np-c09a8b1c",
+      "name": "icebox",
+      "path": "/Users/jankrag/repos/JKrag/icebox",
+      "category": "JKrag",
+      "parent_path": null,
+      "is_foreign": false,
+      "git": {
+        "is_repo": true,
+        "branch": "main",
+        "is_dirty": false,
+        "uncommitted_files": 0,
+        "last_commit_at": "2026-08-01T11:00:00Z",
+        "mine_last_commit_at": "2026-08-01T11:00:00Z",
+        "github_url": "https://github.com/JKrag/icebox"
+      },
+      "agent": {
+        "state": "idle",
+        "active_agent": null,
+        "last_event": null,
+        "last_event_at": "2026-08-05T17:00:00Z",
+        "session_id": null
+      },
+      "last_activity_at": "2026-08-05T17:00:00Z",
+      "status_bucket": "stale"
+    },
+    {
+      "id": "np-d01b2d3e",
+      "name": "jewel-api",
+      "path": "/Users/jankrag/repos/JKrag/jewel-api",
+      "category": "JKrag",
+      "parent_path": null,
+      "is_foreign": false,
+      "git": {
+        "is_repo": true,
+        "branch": "develop",
+        "is_dirty": false,
+        "uncommitted_files": 0,
+        "last_commit_at": "2026-07-28T14:20:00Z",
+        "mine_last_commit_at": "2026-07-28T14:20:00Z",
+        "github_url": null
+      },
+      "agent": {
+        "state": "idle",
+        "active_agent": null,
+        "last_event": null,
+        "last_event_at": "2026-08-02T19:45:00Z",
+        "session_id": null
+      },
+      "last_activity_at": "2026-08-02T19:45:00Z",
+      "status_bucket": "stale"
+    },
+    {
+      "id": "np-e02d4f5a",
+      "name": "keystone-lib",
+      "path": "/Users/jankrag/repos/JKrag/keystone-lib",
+      "category": "JKrag",
+      "parent_path": null,
+      "is_foreign": false,
+      "git": {
+        "is_repo": true,
+        "branch": "main",
+        "is_dirty": false,
+        "uncommitted_files": 0,
+        "last_commit_at": "2026-08-05T09:10:00Z",
+        "mine_last_commit_at": "2026-08-05T09:10:00Z",
+        "github_url": "https://github.com/JKrag/keystone-lib"
+      },
+      "agent": {
+        "state": "idle",
+        "active_agent": null,
+        "last_event": null,
+        "last_event_at": "2026-08-10T08:30:00Z",
+        "session_id": null
+      },
+      "last_activity_at": "2026-08-10T08:30:00Z",
+      "status_bucket": "stale"
+    },
+    {
+      "id": "np-f03f6a7b",
+      "name": "lantern",
+      "path": "/Users/jankrag/repos/JKrag/lantern",
+      "category": "JKrag",
+      "parent_path": null,
+      "is_foreign": false,
+      "git": {
+        "is_repo": true,
+        "branch": "main",
+        "is_dirty": false,
+        "uncommitted_files": 0,
+        "last_commit_at": "2026-08-12T17:55:00Z",
+        "mine_last_commit_at": "2026-08-12T17:55:00Z",
+        "github_url": null
+      },
+      "agent": {
+        "state": "idle",
+        "active_agent": null,
+        "last_event": null,
+        "last_event_at": "2026-08-15T20:10:00Z",
+        "session_id": null
+      },
+      "last_activity_at": "2026-08-15T20:10:00Z",
+      "status_bucket": "stale"
+    },
+    {
+      "id": "np-a04b8c9d",
+      "name": "mocha-py",
+      "path": "/Users/jankrag/repos/JKrag/mocha-py",
+      "category": "JKrag",
+      "parent_path": null,
+      "is_foreign": false,
+      "git": {
+        "is_repo": true,
+        "branch": "main",
+        "is_dirty": false,
+        "uncommitted_files": 0,
+        "last_commit_at": "2026-07-15T21:30:00Z",
+        "mine_last_commit_at": "2026-07-15T21:30:00Z",
+        "github_url": null
+      },
+      "agent": {
+        "state": "idle",
+        "active_agent": null,
+        "last_event": null,
+        "last_event_at": null,
+        "session_id": null
+      },
+      "last_activity_at": null,
+      "status_bucket": "cold"
+    },
+    {
+      "id": "np-b05d0e1f",
+      "name": "nexus-cli",
+      "path": "/Users/jankrag/repos/JKrag/nexus-cli",
+      "category": "JKrag",
+      "parent_path": null,
+      "is_foreign": false,
+      "git": {
+        "is_repo": true,
+        "branch": "main",
+        "is_dirty": false,
+        "uncommitted_files": 0,
+        "last_commit_at": "2026-07-20T16:15:00Z",
+        "mine_last_commit_at": "2026-07-20T16:15:00Z",
+        "github_url": null
+      },
+      "agent": {
+        "state": "idle",
+        "active_agent": null,
+        "last_event": null,
+        "last_event_at": null,
+        "session_id": null
+      },
+      "last_activity_at": null,
+      "status_bucket": "cold"
+    },
+    {
+      "id": "np-c06f2a3b",
+      "name": "opal-web",
+      "path": "/Users/jankrag/repos/JKrag/opal-web",
+      "category": "JKrag",
+      "parent_path": null,
+      "is_foreign": false,
+      "git": {
+        "is_repo": true,
+        "branch": "main",
+        "is_dirty": false,
+        "uncommitted_files": 0,
+        "last_commit_at": "2026-06-30T10:00:00Z",
+        "mine_last_commit_at": "2026-06-30T10:00:00Z",
+        "github_url": null
+      },
+      "agent": {
+        "state": "idle",
+        "active_agent": null,
+        "last_event": null,
+        "last_event_at": null,
+        "session_id": null
+      },
+      "last_activity_at": null,
+      "status_bucket": "cold"
+    }
+  ],
+  "quota": null
+}
