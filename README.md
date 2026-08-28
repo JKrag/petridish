@@ -90,6 +90,50 @@ in_flight  fastfood-filter  copilot (idle)         main
 cold       old-experiment   idle                   main
 ```
 
+## Shell integration: quick-jump between projects
+
+A `cd`-in-your-current-shell project switcher, for opening a new terminal and jumping
+straight to a project without remembering its path — including when the folder name
+doesn't match what you'd search for (e.g. this repo's folder is still `project-radar`,
+but its GitHub remote is `JKrag/petridish`, and `pj` matches on both). Not installed by
+anything above — add it yourself to `~/.zshrc` (requires `fzf` and `jq`, e.g.
+`brew install fzf jq`):
+
+```sh
+pj() {
+  local sel
+  sel=$(swab list --all --json \
+    | jq -r '.[] | (.git.github_url // "") as $gh
+        | ($gh | if . == "" then "" else (split("/") | .[-2:] | join("/")) end) as $org_repo
+        | (if $org_repo == "" then .name else "\(.name)  (\($org_repo))" end) as $label
+        | "\($label)\t\(.path)"' \
+    | awk -F'\t' '{printf "%-45s\t%s\n", $1, $2}' \
+    | fzf --prompt="jump to project> " --delimiter=$'\t' --nth=1 \
+          --query="'$1" --select-1 --exit-0 \
+    | cut -f2)
+  [[ -z "$sel" ]] && return 1
+  cd "$sel" || return 1
+}
+```
+
+- `pj` alone opens an fzf picker over every project `swab` knows about — folder name,
+  and (when the project has a GitHub remote) its `org/repo` alongside it, e.g.
+  `project-radar  (JKrag/petridish)`. The trailing column is the path that gets `cd`'d
+  into; matching is restricted to the name/org-repo column so a query never accidentally
+  matches something buried in the filesystem path.
+- `pj <query>` prefilters to that query; if exactly one project matches, it jumps there
+  directly with no picker. Because the GitHub org is searchable, `pj eficode-academy/`
+  narrows to every repo under that org even if they're scattered across folders instead
+  of tidily grouped by org.
+- The query is auto-prefixed with a leading `'` (fzf's exact-match token syntax), so
+  `pj petri` only matches names/org-repos containing the literal substring `petri` —
+  not fzf's usual scattered-letters fuzzy matching, which was matching too many
+  unrelated projects to reliably auto-jump. If you want loose fuzzy matching to browse
+  around once the picker is open, just backspace that leading `'` yourself.
+- Relies on `swab list --json`'s `name`/`git.github_url`/`path` fields, so it stays in
+  sync with whatever `swab scan` last wrote to `~/.petridish/projects.json` — no
+  separate index to maintain.
+
 ## Config
 
 `~/.petridish/config.toml` — entirely optional; every field has a default. Run
