@@ -326,14 +326,23 @@ pub fn render(frame: &mut ratatui::Frame, radar: &Radar, state: &DashboardState)
     };
 
     // 2 header lines (title + heavy rule) + 2 footer lines (light rule +
-    // keymap), same accounting discipline as before: every physical row this
-    // function will emit is counted here, so the "+N more" marker can never
-    // be pushed off the bottom of the terminal by a mis-budgeted item.
+    // keymap) + 1 reserved row for a cross-section "not shown" summary (see
+    // `skipped_sections` below) — a real 80-project fleet in a 16-row corner
+    // split showed this is not a theoretical case: STALE/COLD can fail to
+    // fit even their own header, and without this reserved row they vanished
+    // with zero indication they existed, which is exactly the "silent
+    // truncation" failure mode the spec exists to rule out. Every physical
+    // row this function will emit is counted here, so neither marker can be
+    // pushed off the bottom of the terminal by a mis-budgeted item.
     let available_content = (area.height as usize)
-        .saturating_sub(4)
+        .saturating_sub(5)
         .saturating_sub(usize::from(is_stale));
 
     let compact_tier = available_content <= COMPACT_TIER_MAX_CONTENT_ROWS;
+
+    // Sections that couldn't fit even their own header+count, tracked so a
+    // single summary row can name them instead of them silently disappearing.
+    let mut skipped_sections: Vec<(StatusBucket, usize)> = Vec::new();
 
     let mut content_lines: Vec<Line<'static>> = Vec::new();
     'sections: for (si, bucket) in SECTION_ORDER.iter().enumerate() {
@@ -345,6 +354,16 @@ pub fn render(frame: &mut ratatui::Frame, radar: &Radar, state: &DashboardState)
         let is_first_section = content_lines.is_empty();
         let chrome_lines = if is_first_section { 2 } else { 3 }; // [rule_above] + label + rule_below
         if content_lines.len() + chrome_lines > available_content {
+            // Budget only ever grows tighter from here, so every remaining
+            // section (this one included) is unreachable — record all of
+            // them in one pass rather than breaking silently.
+            skipped_sections.push((*bucket, members.len()));
+            for later_bucket in SECTION_ORDER.iter().skip(si + 1) {
+                let later_members = DashboardState::section_members(radar, *later_bucket);
+                if !later_members.is_empty() {
+                    skipped_sections.push((*later_bucket, later_members.len()));
+                }
+            }
             break;
         }
         if !is_first_section {
@@ -384,6 +403,21 @@ pub fn render(frame: &mut ratatui::Frame, radar: &Radar, state: &DashboardState)
         }
     }
 
+    if !skipped_sections.is_empty() {
+        let summary = skipped_sections
+            .iter()
+            .map(|(bucket, count)| {
+                let label = SECTION_LABELS.iter().find(|(b, _)| b == bucket).map(|(_, l)| *l).unwrap_or("?");
+                format!("{label} +{count}")
+            })
+            .collect::<Vec<_>>()
+            .join("  ·  ");
+        content_lines.push(Line::from(Span::styled(
+            format!(" … not shown: {summary} — resize taller"),
+            Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD),
+        )));
+    }
+
     let mut lines: Vec<Line<'static>> = Vec::with_capacity(4 + content_lines.len() + usize::from(is_stale));
     lines.extend(header_lines(radar, &now, scan_secs, width));
     if let Some(banner) = stale_banner {
@@ -404,6 +438,24 @@ pub fn render(frame: &mut ratatui::Frame, radar: &Radar, state: &DashboardState)
     // truncation marker itself stays guaranteed-visible.
     let para = Paragraph::new(lines);
     frame.render_widget(para, area);
+}
+
+/// Pad or truncate (with a trailing `…`) to exactly `w` display columns, so a
+/// variable-length field (branch names in particular: `master` vs
+/// `analysis/cross-registry-identity`) doesn't push every later column in a
+/// compact row out of alignment with the rows above and below it. Byte-safe
+/// truncation point via `char_indices` — branch names can contain non-ASCII.
+fn fixed_width(s: &str, w: usize) -> String {
+    let char_count = s.chars().count();
+    if char_count <= w {
+        format!("{s}{}", " ".repeat(w - char_count))
+    } else if w == 0 {
+        String::new()
+    } else {
+        let keep = w - 1;
+        let truncated: String = s.chars().take(keep).collect();
+        format!("{truncated}…")
+    }
 }
 
 /// A full-width rule line in the given color — `─` for the light rules that
@@ -526,9 +578,9 @@ fn compact_running_row_line(radar: &Radar, proj_idx: usize, is_selected: bool) -
 
     Line::from(vec![
         Span::styled(format!(" {glyph} "), glyph_style),
-        Span::styled(format!("{}{dirty_marker} ", p.name), name_style),
-        Span::styled(format!("{branch} "), Style::default().fg(Color::Cyan)),
-        Span::styled(format!("{silence_str} "), silence_style),
+        Span::styled(format!("{} ", fixed_width(&format!("{}{dirty_marker}", p.name), 26)), name_style),
+        Span::styled(format!("{} ", fixed_width(branch, 22)), Style::default().fg(Color::Cyan)),
+        Span::styled(format!("{} ", fixed_width(&silence_str, 12)), silence_style),
         Span::styled(agent.to_string(), dim),
     ])
 }
@@ -609,9 +661,9 @@ fn compact_row_line(radar: &Radar, proj_idx: usize, is_selected: bool) -> Line<'
     };
 
     Line::from(vec![
-        Span::styled(format!(" {} ", p.name), style),
-        Span::styled(format!("{branch} "), Style::default().fg(Color::Cyan)),
-        Span::styled(format!("{uncommitted} "), Style::default().fg(Color::DarkGray)),
+        Span::styled(format!(" {} ", fixed_width(&p.name, 26)), style),
+        Span::styled(format!("{} ", fixed_width(branch, 22)), Style::default().fg(Color::Cyan)),
+        Span::styled(format!("{} ", fixed_width(&uncommitted, 4)), Style::default().fg(Color::DarkGray)),
         Span::styled(format!("{commit_age} "), Style::default().fg(Color::DarkGray)),
         Span::styled(gh, Style::default().fg(Color::Green)),
     ])
