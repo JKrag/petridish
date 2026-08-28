@@ -35,6 +35,15 @@ use ratatui::{
     widgets::Paragraph,
 };
 
+/// Below this many *content* rows (post chrome, see `render`'s
+/// `available_content`), RUNNING drops from roomy 4-line cards to the same
+/// single-line compact row IN FLIGHT/STALE/COLD already use. This is the
+/// "corner iTerm split" case worked out in the dashboard redesign discussion:
+/// a real 21-row split is wide enough for a roomy card's fields but too
+/// short to show more than a handful of them, so density is driven by row
+/// budget, not column width — width is spent widening the one line instead.
+const COMPACT_TIER_MAX_CONTENT_ROWS: usize = 16;
+
 /// Fixed section order, same as `browser::SECTION_ORDER`.
 pub const SECTION_ORDER: [StatusBucket; 4] = [
     StatusBucket::Active,
@@ -324,6 +333,8 @@ pub fn render(frame: &mut ratatui::Frame, radar: &Radar, state: &DashboardState)
         .saturating_sub(4)
         .saturating_sub(usize::from(is_stale));
 
+    let compact_tier = available_content <= COMPACT_TIER_MAX_CONTENT_ROWS;
+
     let mut content_lines: Vec<Line<'static>> = Vec::new();
     'sections: for (si, bucket) in SECTION_ORDER.iter().enumerate() {
         let members = DashboardState::section_members(radar, *bucket);
@@ -347,7 +358,8 @@ pub fn render(frame: &mut ratatui::Frame, radar: &Radar, state: &DashboardState)
         content_lines.push(rule_line(width, Color::DarkGray));
 
         if !state.collapsed[si] {
-            let item_span = if *bucket == StatusBucket::Active { 4 } else { 1 };
+            let roomy_running = *bucket == StatusBucket::Active && !compact_tier;
+            let item_span = if roomy_running { 4 } else { 1 };
             for (member_pos, &proj_idx) in members.iter().enumerate() {
                 if content_lines.len() + item_span > available_content {
                     let remaining = members.len() - member_pos;
@@ -361,8 +373,10 @@ pub fn render(frame: &mut ratatui::Frame, radar: &Radar, state: &DashboardState)
                     state.selected.and_then(|i| state.visible.get(i)),
                     Some(DashRow::Project(idx)) if *idx == proj_idx
                 );
-                if *bucket == StatusBucket::Active {
+                if roomy_running {
                     content_lines.extend(roomy_card_lines(radar, proj_idx, is_selected_row, width));
+                } else if *bucket == StatusBucket::Active {
+                    content_lines.push(compact_running_row_line(radar, proj_idx, is_selected_row));
                 } else {
                     content_lines.push(compact_row_line(radar, proj_idx, is_selected_row));
                 }
@@ -457,6 +471,68 @@ fn section_header_line(radar: &Radar, bucket: StatusBucket, count: usize, is_sel
     split_line(format!(" {label}"), format!("{count} "), width, style, style)
 }
 
+/// Truecolor gradient on silence age: fresh (<1m, still likely mid-turn) →
+/// aging (<1h, worth a glance) → cold (≥1h, silent long enough to actually
+/// worry about). SPEC.md §4 mandated the ANSI-16 palette "to inherit the
+/// user's terminal theme" — a deliberate call made back when this doc was the
+/// unstarted plan for a curses port; superseded by an explicit product
+/// decision to go truecolor for a distinct, screenshot-worthy identity now
+/// that ratatui is actually in use. The glyph *allowlist* (Unicode 1.1 only,
+/// `petri/SPEC.md` §4) is a different, still-binding constraint — it exists
+/// because of a real macOS `wcwidth` bug, not planning-doc caution.
+fn silence_tier_color(secs: i64) -> Color {
+    if secs < 60 {
+        Color::Rgb(0x4f, 0xe6, 0xa0) // fresh — bioluminescent green
+    } else if secs < 3600 {
+        Color::Rgb(0xf0, 0xb8, 0x4f) // aging — amber
+    } else {
+        Color::Rgb(0x6b, 0x7a, 0x74) // cold — muted grey-green
+    }
+}
+
+/// Compact single-line row for a RUNNING project once the Dashboard has
+/// dropped into the compact density tier (`COMPACT_TIER_MAX_CONTENT_ROWS`).
+/// Same fields a roomy card carries, on one line: glyph, name, dirty marker,
+/// branch, silence age — silence age still carries the gradient, since
+/// "which run is stalling" is exactly what this row exists to answer at a
+/// glance.
+fn compact_running_row_line(radar: &Radar, proj_idx: usize, is_selected: bool) -> Line<'static> {
+    let p = &radar.projects[proj_idx];
+    let silence_secs = match p.last_activity_at {
+        Some(dt) => chrono::Utc::now().signed_duration_since(dt).num_seconds().max(0),
+        None => i64::MAX / 2,
+    };
+    let tier_color = silence_tier_color(silence_secs);
+    let glyph = match p.agent.state {
+        AgentActivity::Working => "●",
+        _ => "○",
+    };
+    let dirty_marker = present::dirty_marker(&p.git);
+    let branch = p.git.branch.as_deref().unwrap_or("-");
+    let silence_str = match p.last_activity_at {
+        Some(_) => format!("silent {}", humanize_secs(silence_secs as u64)),
+        None => "silent -".to_string(),
+    };
+    let agent = p.agent.active_agent.as_deref().unwrap_or("");
+
+    let name_style = if is_selected {
+        Style::default().fg(Color::Black).bg(Color::Yellow).add_modifier(Modifier::BOLD)
+    } else {
+        Style::default().fg(Color::White).add_modifier(Modifier::BOLD)
+    };
+    let glyph_style = if is_selected { name_style } else { Style::default().fg(tier_color) };
+    let dim = Style::default().fg(Color::DarkGray);
+    let silence_style = if is_selected { name_style } else { Style::default().fg(tier_color) };
+
+    Line::from(vec![
+        Span::styled(format!(" {glyph} "), glyph_style),
+        Span::styled(format!("{}{dirty_marker} ", p.name), name_style),
+        Span::styled(format!("{branch} "), Style::default().fg(Color::Cyan)),
+        Span::styled(format!("{silence_str} "), silence_style),
+        Span::styled(agent.to_string(), dim),
+    ])
+}
+
 /// Roomy card for a project in the RUNNING section: three lines (each a
 /// stable left value paired with the volatile right one) plus a blank
 /// separator — petripy's actual roomy density (`format_card`), not a single
@@ -498,16 +574,17 @@ fn roomy_card_lines(radar: &Radar, proj_idx: usize, is_selected: bool, width: us
         None => String::new(),
     };
 
+    let tier_color = silence_tier_color(silence_secs);
     let name_style = if is_selected {
         Style::default().fg(Color::Black).bg(Color::Yellow).add_modifier(Modifier::BOLD)
     } else {
         Style::default().fg(Color::White).add_modifier(Modifier::BOLD)
     };
-    let value_style = Style::default().fg(Color::Cyan);
+    let silence_style = if is_selected { name_style } else { Style::default().fg(tier_color).add_modifier(Modifier::BOLD) };
     let dim = Style::default().fg(Color::DarkGray);
 
     vec![
-        split_line(format!(" {glyph} {}{}{}", p.name, dirty_marker, uncommitted), right1, width, name_style, value_style),
+        split_line(format!(" {glyph} {}{}{}", p.name, dirty_marker, uncommitted), right1, width, name_style, silence_style),
         split_line(left2, right2, width, dim, dim),
         split_line(left3, right3, width, dim, dim),
         Line::from(""),
