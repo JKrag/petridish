@@ -44,6 +44,26 @@ use ratatui::{
 /// budget, not column width — width is spent widening the one line instead.
 const COMPACT_TIER_MAX_CONTENT_ROWS: usize = 16;
 
+/// The dashboard's truecolor identity (superseding SPEC.md §4's ANSI-16
+/// mandate, per the redesign discussion — that constraint was written for
+/// the unstarted curses-era plan and isn't binding now that ratatui is in
+/// real use). One palette shared by chrome and data, not two that happen to
+/// coexist: `COLOR_ACCENT` is the app's own color (badge, selection,
+/// dividers); `COLOR_FRESH`/`COLOR_AGING`/`COLOR_COLD` are the same
+/// green→amber→grey silence gradient `silence_tier_color` uses, reused here
+/// so a section's *label* color previews the state of what's inside it
+/// (RUNNING reads green-ish, STALE/COLD read grey) instead of every section
+/// header being a flat, undifferentiated yellow.
+const COLOR_ACCENT: Color = Color::Rgb(0x33, 0xe2, 0xac);
+const COLOR_FRESH: Color = Color::Rgb(0x4f, 0xe6, 0xa0);
+const COLOR_AGING: Color = Color::Rgb(0xf0, 0xb8, 0x4f);
+const COLOR_COLD: Color = Color::Rgb(0x6b, 0x7a, 0x74);
+const COLOR_DIMMER: Color = Color::Rgb(0x48, 0x54, 0x4f);
+const COLOR_FG: Color = Color::Rgb(0xd9, 0xe6, 0xe0);
+const COLOR_DIM: Color = Color::Rgb(0x64, 0x76, 0x6f);
+const COLOR_BRANCH: Color = Color::Rgb(0x8f, 0xa3, 0x9b);
+const COLOR_DANGER: Color = Color::Rgb(0xef, 0x6a, 0x5b);
+
 /// Fixed section order, same as `browser::SECTION_ORDER`.
 pub const SECTION_ORDER: [StatusBucket; 4] = [
     StatusBucket::Active,
@@ -344,7 +364,7 @@ pub fn render(frame: &mut ratatui::Frame, radar: &Radar, state: &DashboardState)
     let stale_banner: Option<Line<'static>> = if is_stale {
         Some(Line::from(Span::styled(
             format!(" ⚠ Data stale (updated {} ago)", humanize_secs(elapsed_secs as u64)),
-            Style::default().fg(Color::Black).bg(Color::Red).add_modifier(Modifier::BOLD),
+            Style::default().fg(Color::Black).bg(COLOR_DANGER).add_modifier(Modifier::BOLD),
         )))
     } else {
         None
@@ -409,7 +429,7 @@ pub fn render(frame: &mut ratatui::Frame, radar: &Radar, state: &DashboardState)
                     let remaining = members.len() - member_pos;
                     content_lines.push(Line::from(Span::styled(
                         format!(" … +{remaining} more"),
-                        Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD),
+                        Style::default().fg(COLOR_AGING).add_modifier(Modifier::BOLD),
                     )));
                     continue 'sections;
                 }
@@ -439,7 +459,7 @@ pub fn render(frame: &mut ratatui::Frame, radar: &Radar, state: &DashboardState)
             .join("  ·  ");
         content_lines.push(Line::from(Span::styled(
             format!(" … not shown: {summary} — resize taller"),
-            Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD),
+            Style::default().fg(COLOR_AGING).add_modifier(Modifier::BOLD),
         )));
     }
 
@@ -516,10 +536,10 @@ fn header_lines(radar: &Radar, now: &chrono::DateTime<chrono::Utc>, scan_secs: f
         " petri · dashboard ".to_string(),
         format!("{right} "),
         width,
-        Style::default().fg(Color::Black).bg(Color::Cyan).add_modifier(Modifier::BOLD),
-        Style::default().fg(Color::White),
+        Style::default().fg(Color::Black).bg(COLOR_ACCENT).add_modifier(Modifier::BOLD),
+        Style::default().fg(COLOR_FG),
     );
-    vec![title, Line::from(Span::styled("═".repeat(width), Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)))]
+    vec![title, Line::from(Span::styled("═".repeat(width), Style::default().fg(COLOR_ACCENT).add_modifier(Modifier::BOLD)))]
 }
 
 /// Section header line: " RUNNING" left, "25" right, between the two light
@@ -540,10 +560,20 @@ fn section_header_line(radar: &Radar, bucket: StatusBucket, count: usize, is_sel
             .map(|(_, l)| *l)
             .expect("SECTION_LABELS covers all buckets in SECTION_ORDER")
     };
+    // Section label previews the state of what's inside it, reusing the same
+    // gradient `silence_tier_color` applies per-project: RUNNING reads
+    // fresh-green, IN FLIGHT amber, STALE/COLD grey — one palette, not a
+    // flat yellow for every section regardless of what it actually holds.
+    let label_color = match bucket {
+        StatusBucket::Active => COLOR_FRESH,
+        StatusBucket::InFlight => COLOR_AGING,
+        StatusBucket::Stale => COLOR_COLD,
+        StatusBucket::Cold => COLOR_DIMMER,
+    };
     let style = if is_selected {
-        Style::default().fg(Color::Black).bg(Color::Yellow).add_modifier(Modifier::BOLD)
+        Style::default().fg(Color::Black).bg(COLOR_ACCENT).add_modifier(Modifier::BOLD)
     } else {
-        Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)
+        Style::default().fg(label_color).add_modifier(Modifier::BOLD)
     };
     split_line(format!(" {label}"), format!("{count} "), width, style, style)
 }
@@ -563,9 +593,9 @@ fn silence_tier_color(secs: i64) -> Color {
     // separate set of cutoffs invented for color alone — one silence
     // vocabulary for the whole app, not two that quietly disagree.
     match petridish_core::schema::agent_state_for_silence(secs) {
-        AgentActivity::Working => Color::Rgb(0x4f, 0xe6, 0xa0), // fresh — bioluminescent green
-        AgentActivity::Recent => Color::Rgb(0xf0, 0xb8, 0x4f),  // aging — amber
-        AgentActivity::Idle => Color::Rgb(0x6b, 0x7a, 0x74),    // cold — muted grey-green
+        AgentActivity::Working => COLOR_FRESH,
+        AgentActivity::Recent => COLOR_AGING,
+        AgentActivity::Idle => COLOR_COLD,
     }
 }
 
@@ -595,18 +625,18 @@ fn compact_running_row_line(radar: &Radar, proj_idx: usize, is_selected: bool) -
     let agent = p.agent.active_agent.as_deref().unwrap_or("");
 
     let name_style = if is_selected {
-        Style::default().fg(Color::Black).bg(Color::Yellow).add_modifier(Modifier::BOLD)
+        Style::default().fg(Color::Black).bg(COLOR_ACCENT).add_modifier(Modifier::BOLD)
     } else {
-        Style::default().fg(Color::White).add_modifier(Modifier::BOLD)
+        Style::default().fg(COLOR_FG).add_modifier(Modifier::BOLD)
     };
     let glyph_style = if is_selected { name_style } else { Style::default().fg(tier_color) };
-    let dim = Style::default().fg(Color::DarkGray);
+    let dim = Style::default().fg(COLOR_DIM);
     let silence_style = if is_selected { name_style } else { Style::default().fg(tier_color) };
 
     Line::from(vec![
         Span::styled(format!(" {glyph} "), glyph_style),
         Span::styled(format!("{} ", fixed_width(&format!("{}{dirty_marker}", p.name), 26)), name_style),
-        Span::styled(format!("{} ", fixed_width(branch, 22)), Style::default().fg(Color::Cyan)),
+        Span::styled(format!("{} ", fixed_width(branch, 22)), Style::default().fg(COLOR_BRANCH)),
         Span::styled(format!("{} ", fixed_width(&silence_str, 12)), silence_style),
         Span::styled(agent.to_string(), dim),
     ])
@@ -655,12 +685,12 @@ fn roomy_card_lines(radar: &Radar, proj_idx: usize, is_selected: bool, width: us
 
     let tier_color = silence_tier_color(silence_secs);
     let name_style = if is_selected {
-        Style::default().fg(Color::Black).bg(Color::Yellow).add_modifier(Modifier::BOLD)
+        Style::default().fg(Color::Black).bg(COLOR_ACCENT).add_modifier(Modifier::BOLD)
     } else {
-        Style::default().fg(Color::White).add_modifier(Modifier::BOLD)
+        Style::default().fg(COLOR_FG).add_modifier(Modifier::BOLD)
     };
     let silence_style = if is_selected { name_style } else { Style::default().fg(tier_color).add_modifier(Modifier::BOLD) };
-    let dim = Style::default().fg(Color::DarkGray);
+    let dim = Style::default().fg(COLOR_DIM);
 
     vec![
         split_line(format!(" {glyph} {}{}{}", p.name, dirty_marker, uncommitted), right1, width, name_style, silence_style),
@@ -682,17 +712,17 @@ fn compact_row_line(radar: &Radar, proj_idx: usize, is_selected: bool) -> Line<'
     let gh = if p.git.github_url.is_some() { "[gh]" } else { "" };
 
     let style = if is_selected {
-        Style::default().fg(Color::Black).bg(Color::Yellow)
+        Style::default().fg(Color::Black).bg(COLOR_ACCENT)
     } else {
-        Style::default().fg(Color::White)
+        Style::default().fg(COLOR_FG)
     };
 
     Line::from(vec![
         Span::styled(format!(" {} ", fixed_width(&p.name, 26)), style),
-        Span::styled(format!("{} ", fixed_width(branch, 22)), Style::default().fg(Color::Cyan)),
-        Span::styled(format!("{} ", fixed_width(&uncommitted, 4)), Style::default().fg(Color::DarkGray)),
-        Span::styled(format!("{commit_age} "), Style::default().fg(Color::DarkGray)),
-        Span::styled(gh, Style::default().fg(Color::Green)),
+        Span::styled(format!("{} ", fixed_width(branch, 22)), Style::default().fg(COLOR_BRANCH)),
+        Span::styled(format!("{} ", fixed_width(&uncommitted, 4)), Style::default().fg(COLOR_DIM)),
+        Span::styled(format!("{commit_age} "), Style::default().fg(COLOR_DIM)),
+        Span::styled(gh, Style::default().fg(COLOR_ACCENT)),
     ])
 }
 
@@ -700,7 +730,7 @@ fn compact_row_line(radar: &Radar, proj_idx: usize, is_selected: bool) -> Line<'
 fn footer_line() -> Line<'static> {
     Line::from(Span::styled(
         " j/k move  Space toggle  Enter open/browser  Tab Browser  q quit ",
-        Style::default().fg(Color::DarkGray),
+        Style::default().fg(COLOR_DIM),
     ))
 }
 
