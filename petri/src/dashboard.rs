@@ -90,6 +90,29 @@ fn section_index(bucket: &StatusBucket) -> usize {
     SECTION_ORDER.iter().position(|b| b == bucket).expect("bucket not in SECTION_ORDER")
 }
 
+/// Ceiling on how far "quietest first" can promote a project up the RUNNING
+/// list (ADR-0001's original ordering, unbounded). Real-world use surfaced
+/// the failure mode: a project whose agent session has just sat open and
+/// unused for days will always be quieter than one you actively prompted a
+/// few minutes ago, so unbounded quietest-first let the days-old forgotten
+/// tab permanently bury the session someone was actually mid-run on — the
+/// opposite of "the stalled run is the one that needs you." Past this
+/// ceiling, silence has stopped meaning "might be stalled" and started
+/// meaning "probably forgotten," so those projects sort into one group
+/// *below* everything still under the ceiling, instead of competing with it
+/// on raw duration. They stay in RUNNING (per ADR-0001 — a live agent
+/// process in a forgotten tab still counts), just not at the top of it.
+const RUNNING_ATTENTION_CEILING_S: i64 = 3 * 60 * 60; // 3 hours
+
+/// Silence in seconds for sort purposes: `None` (never had any activity) is
+/// maximally silent, same convention the pre-ceiling sort used.
+fn silence_secs_for_sort(p: &Project) -> i64 {
+    match p.last_activity_at {
+        Some(dt) => chrono::Utc::now().signed_duration_since(dt).num_seconds().max(0),
+        None => i64::MAX,
+    }
+}
+
 impl DashboardState {
     /// Membership for the `RUNNING` (Active) section per ADR-0001: a project
     /// counts as running if its own `status_bucket` is `Active`, OR it has at
@@ -97,8 +120,10 @@ impl DashboardState {
     /// whose own `status_bucket` is `Active`. `is_foreign` projects are
     /// always excluded. Display-only — never mutates `status_bucket`.
     ///
-    /// Ordered quietest first: oldest `last_activity_at` first, `None`
-    /// treated as maximally silent (sorts before any `Some`).
+    /// Ordered quietest-first *within* `RUNNING_ATTENTION_CEILING_S`, then
+    /// everything past that ceiling as one group below it (also
+    /// quietest-first internally) — see the constant's doc comment for why
+    /// unbounded quietest-first got replaced.
     ///
     /// Associated function (no `self`) so `DashboardState::running_membership(&radar)`
     /// is directly callable — matches `petri/tests/s6_dashboard.rs`'s call sites.
@@ -125,14 +150,14 @@ impl DashboardState {
             .collect();
 
         members.sort_by(|&a, &b| {
-            let a_activity = radar.projects[a].last_activity_at;
-            let b_activity = radar.projects[b].last_activity_at;
-            match (a_activity, b_activity) {
-                (None, None) => std::cmp::Ordering::Equal,
-                (None, Some(_)) => std::cmp::Ordering::Less,
-                (Some(_), None) => std::cmp::Ordering::Greater,
-                (Some(at_a), Some(at_b)) => at_a.cmp(&at_b),
-            }
+            let a_secs = silence_secs_for_sort(&radar.projects[a]);
+            let b_secs = silence_secs_for_sort(&radar.projects[b]);
+            let a_forgotten = a_secs >= RUNNING_ATTENTION_CEILING_S;
+            let b_forgotten = b_secs >= RUNNING_ATTENTION_CEILING_S;
+            // Group first (fresh group before the forgotten group), then
+            // *longer* silence first within a group — silence in seconds
+            // grows with age, so this is `b` vs `a`, not `a` vs `b`.
+            a_forgotten.cmp(&b_forgotten).then(b_secs.cmp(&a_secs))
         });
 
         members
@@ -533,12 +558,14 @@ fn section_header_line(radar: &Radar, bucket: StatusBucket, count: usize, is_sel
 /// `petri/SPEC.md` §4) is a different, still-binding constraint — it exists
 /// because of a real macOS `wcwidth` bug, not planning-doc caution.
 fn silence_tier_color(secs: i64) -> Color {
-    if secs < 60 {
-        Color::Rgb(0x4f, 0xe6, 0xa0) // fresh — bioluminescent green
-    } else if secs < 3600 {
-        Color::Rgb(0xf0, 0xb8, 0x4f) // aging — amber
-    } else {
-        Color::Rgb(0x6b, 0x7a, 0x74) // cold — muted grey-green
+    // Reuses the canonical Working/Recent/Idle thresholds
+    // (`AGENT_WORKING_MAX_S` = 90s, `AGENT_RECENT_MAX_S` = 30m) rather than a
+    // separate set of cutoffs invented for color alone — one silence
+    // vocabulary for the whole app, not two that quietly disagree.
+    match petridish_core::schema::agent_state_for_silence(secs) {
+        AgentActivity::Working => Color::Rgb(0x4f, 0xe6, 0xa0), // fresh — bioluminescent green
+        AgentActivity::Recent => Color::Rgb(0xf0, 0xb8, 0x4f),  // aging — amber
+        AgentActivity::Idle => Color::Rgb(0x6b, 0x7a, 0x74),    // cold — muted grey-green
     }
 }
 

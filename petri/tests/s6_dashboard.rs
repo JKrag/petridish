@@ -278,22 +278,34 @@ fn running_membership_does_not_pull_in_a_parent_whose_worktree_child_is_not_acti
 }
 
 #[test]
-fn running_membership_orders_quietest_first_with_none_treated_as_maximally_silent() {
+fn running_membership_orders_quietest_first_within_the_attention_ceiling_then_the_forgotten_group() {
+    // Superseded by real-world use (see `RUNNING_ATTENTION_CEILING_S`'s doc
+    // comment in dashboard.rs): unbounded quietest-first let a project idle
+    // for days permanently outrank one actively prompted minutes ago. Now
+    // "quietest first" only competes within `RUNNING_ATTENTION_CEILING_S`
+    // (3h); everything past it — silence that means "probably forgotten,"
+    // not "might be stalled" — sorts as one group below, quietest-first
+    // internally too, but never above the still-fresh group.
     let now = Utc::now();
-    let mut recently_active = project("r1", "recently-active", StatusBucket::Active);
-    recently_active.last_activity_at = Some(now - ChronoDuration::hours(1));
+    let mut fresh_active = project("f1", "fresh-active", StatusBucket::Active);
+    fresh_active.last_activity_at = Some(now - ChronoDuration::minutes(5));
     let mut long_silent = project("s1", "long-silent", StatusBucket::Active);
     long_silent.last_activity_at = Some(now - ChronoDuration::hours(10));
     let never_seen = project("n1", "never-seen", StatusBucket::Active); // last_activity_at: None
+    let mut recently_active = project("r1", "recently-active", StatusBucket::Active);
+    recently_active.last_activity_at = Some(now - ChronoDuration::hours(1));
 
-    // Deliberately inserted out of quiet-order to prove `running_membership`
-    // sorts rather than preserving input order.
-    let radar = radar_of(vec![recently_active, long_silent, never_seen]);
+    // Deliberately inserted out of order to prove `running_membership` sorts
+    // rather than preserving input order.
+    let radar = radar_of(vec![fresh_active, long_silent, never_seen, recently_active]);
     let membership = DashboardState::running_membership(&radar);
 
     assert_eq!(
         membership,
-        vec![2, 1, 0],
-        "quietest first: None (never-seen, index 2) is maximally silent, then 10h-silent (index 1), then 1h-silent (index 0) last — petri/SPEC.md §3.2: \"the stalled run is the one that needs you\""
+        vec![3, 0, 2, 1],
+        "within the 3h ceiling, quietest first: 1h-silent (index 3) before 5m-silent (index 0); \
+         past the ceiling, quietest first but demoted as a group: never-seen/None (index 2, \
+         maximally silent) before 10h-silent (index 1) — the forgotten group never outranks the \
+         fresh one, but keeps quietest-first ordering internally"
     );
 }
