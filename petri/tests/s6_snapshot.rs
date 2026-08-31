@@ -224,3 +224,30 @@ fn compact_running_row_does_not_render_a_sparkline() {
         "the compact tier must not render any sparkline glyph, got:\n{whole}"
     );
 }
+
+#[test]
+fn roomy_running_card_renders_a_git_sparkline_on_line_one() {
+    let mut p = project("p1", "spark-project", StatusBucket::Active);
+    p.agent.active_agent = Some("claude-code".to_string());
+    p.agent_activity = vec![0]; // flat -- isolates the git sparkline from the agent one below
+    p.git.daily_commits = vec![0, 0, 5, 0, 3, 0, 0, 0, 0, 0, 0, 0, 0, 2];
+    let radar = radar_of(vec![p]);
+    let state = DashboardState::new(&radar);
+    let lines = rendered_lines(&radar, &state, 100, 40);
+
+    // Line 0 is the header, line 1 the top rule, line 2 the RUNNING section header, line 3
+    // its rule, line 4 the project's own line 1 (name/dirty ... git sparkline ... silent).
+    let card_line1 = &lines[4];
+    assert!(
+        card_line1.chars().any(|c| ('\u{2582}'..='\u{2588}').contains(&c)),
+        "line 1 of the roomy card must contain at least one non-zero-level git sparkline bar, got:\n{card_line1:?}"
+    );
+    assert!(
+        card_line1.contains("spark-project"),
+        "line 1 must still show the project name alongside the sparkline, got:\n{card_line1:?}"
+    );
+    assert!(
+        card_line1.contains("claude-code"),
+        "line 1 must still show the right-hand agent info alongside the sparkline, got:\n{card_line1:?}"
+    );
+}

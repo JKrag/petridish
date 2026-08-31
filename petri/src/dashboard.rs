@@ -527,6 +527,37 @@ fn split_line(left: String, right: String, width: usize, left_style: Style, righ
     ])
 }
 
+/// Three-part version of `split_line`: `left`, then a small fixed gap, then `middle`, then
+/// whatever space remains before `right`. Exists for roomy cards with real unused width in
+/// the middle of line 1 (name/dirty on the left, "silent Xm · agent" on the right) --
+/// currently used to slot the git-activity sparkline in there rather than growing the card
+/// with another line.
+fn split_line3(
+    left: String,
+    middle: String,
+    right: String,
+    width: usize,
+    left_style: Style,
+    middle_style: Style,
+    right_style: Style,
+) -> Line<'static> {
+    let left_len = left.chars().count();
+    let middle_len = middle.chars().count();
+    let right_len = right.chars().count();
+
+    let gap1 = 2usize.min(width.saturating_sub(left_len));
+    let used = left_len + gap1 + middle_len;
+    let gap2 = width.saturating_sub(used + right_len).max(1);
+
+    Line::from(vec![
+        Span::styled(left, left_style),
+        Span::raw(" ".repeat(gap1)),
+        Span::styled(middle, middle_style),
+        Span::raw(" ".repeat(gap2)),
+        Span::styled(right, right_style),
+    ])
+}
+
 /// Header: a badged title, project count/clock/scan duration on the right,
 /// then a heavy double rule spanning the full width. The badge (inverted
 /// colors on just the app name) plus the heavy rule is what makes this read
@@ -694,14 +725,29 @@ fn roomy_card_lines(radar: &Radar, proj_idx: usize, is_selected: bool, width: us
     let silence_style = if is_selected { name_style } else { Style::default().fg(tier_color).add_modifier(Modifier::BOLD) };
     let dim = Style::default().fg(COLOR_DIM);
 
-    let sparkline = sparkline_glyphs(&p.agent_activity);
+    let sparkline = sparkline_glyphs(&p.agent_activity, SPARKLINE_WIDTH);
     let left4 = Line::from(vec![
         Span::raw("     "),
         Span::styled(sparkline, Style::default().fg(tier_color)),
     ]);
 
+    // Git's own activity timeline, deliberately separate from the agent sparkline above
+    // (different cadence -- daily commits, not per-tick events -- and may split into its own
+    // widget later per the redesign discussion). For now it just fills the otherwise-empty
+    // middle of line 1, colored with the branch color rather than the silence gradient so the
+    // two sparklines read as two different things at a glance, not two copies of one thing.
+    let git_sparkline = sparkline_glyphs(&p.git.daily_commits, petridish_core::schema::GIT_ACTIVITY_WINDOW_DAYS);
+
     vec![
-        split_line(format!(" {glyph} {}{}{}", p.name, dirty_marker, uncommitted), right1, width, name_style, silence_style),
+        split_line3(
+            format!(" {glyph} {}{}{}", p.name, dirty_marker, uncommitted),
+            git_sparkline,
+            right1,
+            width,
+            name_style,
+            Style::default().fg(COLOR_BRANCH),
+            silence_style,
+        ),
         split_line(left2, right2, width, dim, dim),
         split_line(left3, right3, width, dim, dim),
         left4,
@@ -714,25 +760,29 @@ fn roomy_card_lines(radar: &Radar, proj_idx: usize, is_selected: bool, width: us
 /// gap that rule exists for), same rigor as every other glyph this module already renders.
 const SPARKLINE_GLYPHS: [char; 8] = ['▁', '▂', '▃', '▄', '▅', '▆', '▇', '█'];
 
-/// On-screen width (in samples) of the roomy-card sparkline -- deliberately narrower than
-/// the full `AGENT_ACTIVITY_WINDOW` (60) ring; this is a glance-value shape indicator, not a
-/// full-resolution chart.
+/// On-screen width (in samples) of the roomy-card agent sparkline -- deliberately narrower
+/// than the full `AGENT_ACTIVITY_WINDOW` (60) ring; this is a glance-value shape indicator,
+/// not a full-resolution chart.
 const SPARKLINE_WIDTH: usize = 20;
 
-/// Renders the trailing `SPARKLINE_WIDTH` samples of `agent_activity` (oldest first, this
-/// tick last) as a compact block-glyph string. Levels are normalized against the max count
-/// *within the visible window*, not the whole ring, so one busy stretch that's since scrolled
-/// off doesn't permanently flatten the rest of the sparkline into the lowest bar. Fewer than
-/// `SPARKLINE_WIDTH` samples (a freshly-discovered project, or the daemon just restarted) are
-/// left-padded with the lowest bar rather than shortened, so every sparkline occupies the
-/// same on-screen width regardless of how much history exists yet.
-fn sparkline_glyphs(agent_activity: &[u32]) -> String {
-    let start = agent_activity.len().saturating_sub(SPARKLINE_WIDTH);
-    let window = &agent_activity[start..];
+/// Renders the trailing `width` samples of `samples` (oldest first, most recent last) as a
+/// compact block-glyph string. Levels are normalized against the max count *within the
+/// visible window*, not the whole input, so one busy stretch that's since scrolled off
+/// doesn't permanently flatten the rest of the sparkline into the lowest bar. Fewer than
+/// `width` samples (a freshly-discovered project, the daemon just restarted, or -- for git --
+/// a repo younger than the activity window) are left-padded with the lowest bar rather than
+/// shortened, so every sparkline occupies the same on-screen width regardless of how much
+/// history exists yet. Shared by both the agent-activity sparkline (`p.agent_activity`,
+/// `width = SPARKLINE_WIDTH`) and the git daily-commits sparkline (`p.git.daily_commits`,
+/// `width = GIT_ACTIVITY_WINDOW_DAYS`) -- same visual language, deliberately different colors
+/// at the call site so the two timelines stay visually distinguishable.
+fn sparkline_glyphs(samples: &[u32], width: usize) -> String {
+    let start = samples.len().saturating_sub(width);
+    let window = &samples[start..];
     let max = window.iter().copied().max().unwrap_or(0);
-    let pad = SPARKLINE_WIDTH.saturating_sub(window.len());
+    let pad = width.saturating_sub(window.len());
 
-    let mut out = String::with_capacity(SPARKLINE_WIDTH);
+    let mut out = String::with_capacity(width);
     for _ in 0..pad {
         out.push(SPARKLINE_GLYPHS[0]);
     }
@@ -825,7 +875,7 @@ mod sparkline_tests {
 
     #[test]
     fn empty_ring_renders_all_lowest_bars() {
-        let out = sparkline_glyphs(&[]);
+        let out = sparkline_glyphs(&[], SPARKLINE_WIDTH);
         assert_eq!(out.chars().count(), SPARKLINE_WIDTH);
         assert!(out.chars().all(|c| c == SPARKLINE_GLYPHS[0]));
     }
@@ -833,7 +883,7 @@ mod sparkline_tests {
     #[test]
     fn all_zero_ring_renders_all_lowest_bars_not_a_flat_high_bar() {
         let ring = vec![0u32; SPARKLINE_WIDTH];
-        let out = sparkline_glyphs(&ring);
+        let out = sparkline_glyphs(&ring, SPARKLINE_WIDTH);
         assert!(
             out.chars().all(|c| c == SPARKLINE_GLYPHS[0]),
             "an all-zero window must render as the lowest bar throughout, got {out:?}"
@@ -845,7 +895,7 @@ mod sparkline_tests {
         // Three real samples, all with the same nonzero count -> the rightmost three
         // chars are the max-level bar, everything to their left is left-pad.
         let ring = vec![5u32, 5, 5];
-        let out: Vec<char> = sparkline_glyphs(&ring).chars().collect();
+        let out: Vec<char> = sparkline_glyphs(&ring, SPARKLINE_WIDTH).chars().collect();
         assert_eq!(out.len(), SPARKLINE_WIDTH);
         let pad = SPARKLINE_WIDTH - 3;
         assert!(
@@ -869,7 +919,7 @@ mod sparkline_tests {
         let visible_spike_idx = ring.len() - 1;
         ring[visible_spike_idx] = 5;
 
-        let out: Vec<char> = sparkline_glyphs(&ring).chars().collect();
+        let out: Vec<char> = sparkline_glyphs(&ring, SPARKLINE_WIDTH).chars().collect();
         assert_eq!(out.len(), SPARKLINE_WIDTH);
         assert_eq!(
             *out.last().unwrap(), SPARKLINE_GLYPHS[SPARKLINE_GLYPHS.len() - 1],
@@ -890,7 +940,7 @@ mod sparkline_tests {
         let mut ring = vec![0u32; SPARKLINE_WIDTH - 2];
         ring.push(2); // half of the window's max
         ring.push(4); // the window's max -> must render as the top bar
-        let out: Vec<char> = sparkline_glyphs(&ring).chars().collect();
+        let out: Vec<char> = sparkline_glyphs(&ring, SPARKLINE_WIDTH).chars().collect();
         assert_eq!(*out.last().unwrap(), SPARKLINE_GLYPHS[SPARKLINE_GLYPHS.len() - 1]);
         let half_level = out[out.len() - 2];
         assert_ne!(
@@ -901,5 +951,41 @@ mod sparkline_tests {
             half_level, SPARKLINE_GLYPHS[SPARKLINE_GLYPHS.len() - 1],
             "half of the window's max should not render identically to the max itself: {out:?}"
         );
+    }
+
+    #[test]
+    fn split_line3_places_all_three_segments_in_order() {
+        let line = split_line3(
+            "L".to_string(),
+            "M".to_string(),
+            "R".to_string(),
+            40,
+            Style::default(),
+            Style::default(),
+            Style::default(),
+        );
+        let rendered: String = line.spans.iter().map(|s| s.content.as_ref()).collect();
+        let l_pos = rendered.find('L').unwrap();
+        let m_pos = rendered.find('M').unwrap();
+        let r_pos = rendered.find('R').unwrap();
+        assert!(l_pos < m_pos, "left must precede middle: {rendered:?}");
+        assert!(m_pos < r_pos, "middle must precede right: {rendered:?}");
+    }
+
+    #[test]
+    fn split_line3_never_panics_when_content_overflows_width() {
+        // left+middle+right longer than width -- must degrade to a wider-than-terminal
+        // line (ratatui clips at render time), never panic on an underflowing subtraction.
+        let line = split_line3(
+            "x".repeat(30),
+            "y".repeat(30),
+            "z".repeat(30),
+            10,
+            Style::default(),
+            Style::default(),
+            Style::default(),
+        );
+        let rendered: String = line.spans.iter().map(|s| s.content.as_ref()).collect();
+        assert!(rendered.contains('x') && rendered.contains('y') && rendered.contains('z'));
     }
 }
