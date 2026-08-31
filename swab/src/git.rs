@@ -47,6 +47,12 @@ use std::path::Path;
 
 /// Parses an ISO-8601 timestamp from `text`. Returns `None` on empty, unparseable, or
 /// malformed input — never panics. The output is always timezone-aware UTC.
+///
+/// `#[cfg(test)]`: only ever called from this module's own tests (as a fixture-date-string
+/// parser to build expected values) — pre-existing dead code in production builds, not
+/// introduced by any of this branch's changes. Gated rather than deleted since deleting it
+/// would just mean re-writing the same test helper under a different name.
+#[cfg(test)]
 fn parse_date(text: &str) -> Option<DateTime<Utc>> {
     let text = text.trim();
     if text.is_empty() {
