@@ -118,8 +118,14 @@ The ambient monitor: "does anything need me?" across a fleet of unattended runs.
   first** (longest-silent at the top — the stalled run is the one that needs you).
   Label degrades to `RECENT` when nothing in the section has an agent at all,
   because `RUNNING` would then overstate it.
-  - Roomy cards: glyph, name, `silent 3m · claude-code`, branch, dirty marker,
-    `commit 1d ago (you)`, `~`-abbreviated path, truncated session id.
+  - Roomy cards: glyph, name, overall silence in the header; a `git` zone row
+    (branch, dirty marker, commit age, git-activity sparkline) and an `agent`
+    zone row (agent name, session id, agent-activity sparkline), each pairing
+    its own facts with its own sparkline rather than two look-alike bars
+    stacked with no visual link to either one's data; `~`-abbreviated path.
+    Superseded by the wide-terminal screen-fill redesign: a card's original
+    single flat line (`silent 3m · claude-code`, `commit 1d ago (you)`) is now
+    split across the two zone rows above.
   - **Worktree nesting:** an active worktree indents under its parent when the
     parent is also in this section; when it is not, it falls back to the
     `name (in parent-name)` suffix form `swab list` uses. Display-only — the
@@ -127,6 +133,19 @@ The ambient monitor: "does anything need me?" across a fleet of unattended runs.
 - **`IN FLIGHT` / `STALE` / `COLD`** — compact rows: name, branch, `✎N`, commit
   age, `gh` marker. A parent with worktree children in any bucket shows
   `name · N worktrees` on its own row rather than listing them.
+- **Sections lay their items out in a grid, not a single always-narrow column.**
+  Superseded by the wide-terminal screen-fill redesign: at real working widths
+  petri was rendering every section as one column regardless of how much
+  terminal width was available, leaving roughly half the screen blank. Column
+  count is derived from width (`dashboard.rs`'s `grid_columns`/`plan_layout`);
+  items are assigned row-major (left column, then right, then the next row
+  down) so the selection cursor stays the flat sequence described below —
+  `j`/`k` just hops card-to-card, wrapping row to row, with no change to
+  `DashboardState`. The agent-activity sparkline's sample count scales with
+  the card's own allocated width (more width shows more real history, up to
+  the ring's own retention ceiling); the git-activity sparkline does not scale
+  the same way, since there is no more daily-commit history to show than the
+  fixed retention window already holds.
 - **Sections are collapsible.** A collapsed section keeps its header and count and
   yields its rows' space to the sections left open. Defaults: `RUNNING` and
   `IN FLIGHT` expanded, `STALE` and `COLD` collapsed. This is how real estate gets
