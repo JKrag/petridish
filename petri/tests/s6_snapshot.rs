@@ -226,28 +226,39 @@ fn compact_running_row_does_not_render_a_sparkline() {
 }
 
 #[test]
-fn roomy_running_card_renders_a_git_sparkline_on_line_one() {
+fn roomy_running_card_renders_a_git_zone_row_with_its_own_sparkline() {
+    // Redesign (dashboard card layout review): the git and agent sparklines each get their
+    // own labeled zone row instead of sharing line 1, so a card's facts and the sparkline
+    // that summarizes them are never split across unrelated lines.
     let mut p = project("p1", "spark-project", StatusBucket::Active);
     p.agent.active_agent = Some("claude-code".to_string());
     p.agent_activity = vec![0]; // flat -- isolates the git sparkline from the agent one below
+    p.git.branch = Some("main".to_string());
     p.git.daily_commits = vec![0, 0, 5, 0, 3, 0, 0, 0, 0, 0, 0, 0, 0, 2];
     let radar = radar_of(vec![p]);
     let state = DashboardState::new(&radar);
     let lines = rendered_lines(&radar, &state, 100, 40);
 
     // Line 0 is the header, line 1 the top rule, line 2 the RUNNING section header, line 3
-    // its rule, line 4 the project's own line 1 (name/dirty ... git sparkline ... silent).
-    let card_line1 = &lines[4];
+    // its rule, line 4 the card's header (name), line 5 the card's `git` zone row.
+    let header_line = &lines[4];
+    let git_row = &lines[5];
+    let agent_row = &lines[6];
+
     assert!(
-        card_line1.chars().any(|c| ('\u{2582}'..='\u{2588}').contains(&c)),
-        "line 1 of the roomy card must contain at least one non-zero-level git sparkline bar, got:\n{card_line1:?}"
+        header_line.contains("spark-project"),
+        "the card header must show the project name, got:\n{header_line:?}"
     );
     assert!(
-        card_line1.contains("spark-project"),
-        "line 1 must still show the project name alongside the sparkline, got:\n{card_line1:?}"
+        git_row.contains("git") && git_row.contains("main"),
+        "the git zone row must show its own label and branch, got:\n{git_row:?}"
     );
     assert!(
-        card_line1.contains("claude-code"),
-        "line 1 must still show the right-hand agent info alongside the sparkline, got:\n{card_line1:?}"
+        git_row.chars().any(|c| ('\u{2582}'..='\u{2588}').contains(&c)),
+        "the git zone row must contain at least one non-zero-level git sparkline bar, got:\n{git_row:?}"
+    );
+    assert!(
+        agent_row.contains("agent") && agent_row.contains("claude-code"),
+        "the agent zone row must show its own label and the active agent, got:\n{agent_row:?}"
     );
 }

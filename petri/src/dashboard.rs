@@ -527,34 +527,46 @@ fn split_line(left: String, right: String, width: usize, left_style: Style, righ
     ])
 }
 
-/// Three-part version of `split_line`: `left`, then a small fixed gap, then `middle`, then
-/// whatever space remains before `right`. Exists for roomy cards with real unused width in
-/// the middle of line 1 (name/dirty on the left, "silent Xm · agent" on the right) --
-/// currently used to slot the git-activity sparkline in there rather than growing the card
-/// with another line.
-fn split_line3(
-    left: String,
-    middle: String,
-    right: String,
-    width: usize,
-    left_style: Style,
-    middle_style: Style,
-    right_style: Style,
-) -> Line<'static> {
-    let left_len = left.chars().count();
-    let middle_len = middle.chars().count();
-    let right_len = right.chars().count();
+/// A card's `git` or `agent` zone row: a colored, fixed-width row label (`"git    "` /
+/// `"agent  "`, padded to `ZONE_LABEL_WIDTH` so both rows' facts start at the same column),
+/// then that zone's own facts, then — right-aligned, same column across every card in the
+/// section — that zone's own sparkline plus a scale tag (`"14d"`, `"20m"`). Exists so a
+/// card's two sparklines (agent-activity, ~one per minute; git daily-commits, one per day)
+/// never sit stacked with no visual anchor to the facts they summarize — the redesign this
+/// replaces (a single line with the git sparkline dropped into unused middle space) read as
+/// "two similar bars thrown at the wall," per the design review that prompted this file's
+/// rewrite. Label color carries the zone identity; the scale tag is the non-color fallback
+/// so the two rows stay distinguishable under `NO_COLOR` too.
+const ZONE_LABEL_WIDTH: usize = 7;
 
-    let gap1 = 2usize.min(width.saturating_sub(left_len));
-    let used = left_len + gap1 + middle_len;
-    let gap2 = width.saturating_sub(used + right_len).max(1);
+/// Parameters for `zone_row` — bundled into a struct (rather than nine positional
+/// arguments) purely to keep the call sites in `roomy_card_lines` readable and to stay
+/// under clippy's too-many-arguments threshold.
+struct ZoneRowSpec {
+    indent: &'static str,
+    label: &'static str,
+    label_style: Style,
+    facts: String,
+    facts_style: Style,
+    sparkline: String,
+    spark_style: Style,
+    tag: String,
+}
+
+fn zone_row(spec: ZoneRowSpec, width: usize) -> Line<'static> {
+    let label_padded = format!("{:<ZONE_LABEL_WIDTH$}", spec.label);
+    let left_len = spec.indent.chars().count() + label_padded.chars().count() + spec.facts.chars().count();
+    let right_len = spec.sparkline.chars().count() + 2 + spec.tag.chars().count();
+    let pad = width.saturating_sub(left_len + right_len).max(1);
 
     Line::from(vec![
-        Span::styled(left, left_style),
-        Span::raw(" ".repeat(gap1)),
-        Span::styled(middle, middle_style),
-        Span::raw(" ".repeat(gap2)),
-        Span::styled(right, right_style),
+        Span::raw(spec.indent),
+        Span::styled(label_padded, spec.label_style),
+        Span::styled(spec.facts, spec.facts_style),
+        Span::raw(" ".repeat(pad)),
+        Span::styled(spec.sparkline, spec.spark_style),
+        Span::raw("  "),
+        Span::styled(spec.tag, Style::default().fg(COLOR_DIM)),
     ])
 }
 
@@ -675,10 +687,13 @@ fn compact_running_row_line(radar: &Radar, proj_idx: usize, is_selected: bool) -
     ])
 }
 
-/// Roomy card for a project in the RUNNING section: three lines (each a
-/// stable left value paired with the volatile right one) plus a blank
-/// separator — petripy's actual roomy density (`format_card`), not a single
-/// line crammed with every field.
+/// Roomy card for a project in the RUNNING section: a header line (identity —
+/// glyph, name, dirty markers, overall silence), a `git` zone row (branch,
+/// commit age, git-activity sparkline), an `agent` zone row (agent name,
+/// session, agent-activity sparkline), and the path — plus a blank separator.
+/// Each sparkline sits directly beside the facts it summarizes rather than
+/// two look-alike bars stacked with nothing tying either to its own data —
+/// see `zone_row`'s doc comment for why.
 fn roomy_card_lines(radar: &Radar, proj_idx: usize, is_selected: bool, width: usize) -> Vec<Line<'static>> {
     let p = &radar.projects[proj_idx];
     let glyph = match p.agent.state {
@@ -692,28 +707,10 @@ fn roomy_card_lines(radar: &Radar, proj_idx: usize, is_selected: bool, width: us
         Some(dt) => chrono::Utc::now().signed_duration_since(dt).num_seconds().max(0),
         None => 0,
     };
-    let right1 = if has_agent {
-        match p.agent.active_agent.as_deref() {
-            Some(agent) => format!("silent {} · {agent}", humanize_secs(silence_secs as u64)),
-            None => format!("silent {}", humanize_secs(silence_secs as u64)),
-        }
+    let header_right = if has_agent {
+        format!("silent {}", humanize_secs(silence_secs as u64))
     } else {
         "no agent".to_string()
-    };
-
-    let branch = p.git.branch.as_deref().unwrap_or("-");
-    let dirty_suffix = if dirty_marker.trim().is_empty() { String::new() } else { format!("  {}", dirty_marker.trim()) };
-    let left2 = format!("     {branch}{dirty_suffix}");
-    let right2 = p.agent.last_event.clone().unwrap_or_else(|| match p.git.last_commit_at {
-        Some(dt) => format!("commit {}", commit_ago(dt)),
-        None => "no commits".to_string(),
-    });
-
-    let display_path = abbreviate_home(&p.path);
-    let left3 = format!("     {display_path}");
-    let right3 = match p.agent.session_id.as_deref() {
-        Some(session) => format!("sess {}", &session[..session.len().min(18)]),
-        None => String::new(),
     };
 
     let tier_color = silence_tier_color(silence_secs);
@@ -724,35 +721,72 @@ fn roomy_card_lines(radar: &Radar, proj_idx: usize, is_selected: bool, width: us
     };
     let silence_style = if is_selected { name_style } else { Style::default().fg(tier_color).add_modifier(Modifier::BOLD) };
     let dim = Style::default().fg(COLOR_DIM);
+    let zone_label_style = |color: Color| {
+        if is_selected { name_style } else { Style::default().fg(color).add_modifier(Modifier::BOLD) }
+    };
 
-    let sparkline = sparkline_glyphs(&p.agent_activity, SPARKLINE_WIDTH);
-    let left4 = Line::from(vec![
-        Span::raw("     "),
-        Span::styled(sparkline, Style::default().fg(tier_color)),
-    ]);
+    let header = split_line(
+        format!(" {glyph} {}{}{}", p.name, dirty_marker, uncommitted),
+        header_right,
+        width,
+        name_style,
+        silence_style,
+    );
 
-    // Git's own activity timeline, deliberately separate from the agent sparkline above
-    // (different cadence -- daily commits, not per-tick events -- and may split into its own
-    // widget later per the redesign discussion). For now it just fills the otherwise-empty
-    // middle of line 1, colored with the branch color rather than the silence gradient so the
-    // two sparklines read as two different things at a glance, not two copies of one thing.
+    // git zone: branch + commit age, paired with git's own daily-commits sparkline (one
+    // sample/day over GIT_ACTIVITY_WINDOW_DAYS — a real "how alive is this branch" signal,
+    // not the agent's per-minute activity).
+    let branch = p.git.branch.as_deref().unwrap_or("-");
+    let dirty_suffix = if dirty_marker.trim().is_empty() { String::new() } else { format!(" {}", dirty_marker.trim()) };
+    let commit_fact = match p.git.last_commit_at {
+        Some(dt) => format!("commit {}", commit_ago(dt)),
+        None => "no commits".to_string(),
+    };
+    let git_facts = format!("{branch}{dirty_suffix} · {commit_fact}");
     let git_sparkline = sparkline_glyphs(&p.git.daily_commits, petridish_core::schema::GIT_ACTIVITY_WINDOW_DAYS);
+    let git_row = zone_row(
+        ZoneRowSpec {
+            indent: "     ",
+            label: "git",
+            label_style: zone_label_style(COLOR_BRANCH),
+            facts: git_facts,
+            facts_style: dim,
+            sparkline: git_sparkline,
+            spark_style: Style::default().fg(COLOR_BRANCH),
+            tag: format!("{}d", petridish_core::schema::GIT_ACTIVITY_WINDOW_DAYS),
+        },
+        width,
+    );
 
-    vec![
-        split_line3(
-            format!(" {glyph} {}{}{}", p.name, dirty_marker, uncommitted),
-            git_sparkline,
-            right1,
-            width,
-            name_style,
-            Style::default().fg(COLOR_BRANCH),
-            silence_style,
-        ),
-        split_line(left2, right2, width, dim, dim),
-        split_line(left3, right3, width, dim, dim),
-        left4,
-        Line::from(""),
-    ]
+    // agent zone: agent name + session, paired with the agent-activity sparkline (one
+    // sample/tick, ~SPARKLINE_WIDTH minutes of history — the silence-tier gradient, same
+    // color language the header's "silent Xm" already uses for this project).
+    let agent_facts = match p.agent.active_agent.as_deref() {
+        Some(agent) => match p.agent.session_id.as_deref() {
+            Some(session) => format!("{agent} · sess {}", &session[..session.len().min(18)]),
+            None => agent.to_string(),
+        },
+        None => "idle".to_string(),
+    };
+    let agent_sparkline = sparkline_glyphs(&p.agent_activity, SPARKLINE_WIDTH);
+    let agent_row = zone_row(
+        ZoneRowSpec {
+            indent: "     ",
+            label: "agent",
+            label_style: zone_label_style(tier_color),
+            facts: agent_facts,
+            facts_style: dim,
+            sparkline: agent_sparkline,
+            spark_style: Style::default().fg(tier_color),
+            tag: format!("{SPARKLINE_WIDTH}m"),
+        },
+        width,
+    );
+
+    let display_path = abbreviate_home(&p.path);
+    let path_row = Line::from(Span::styled(format!("     {display_path}"), dim));
+
+    vec![header, git_row, agent_row, path_row, Line::from("")]
 }
 
 /// Unicode block elements U+2581-2588 ("Block Elements", standardized in Unicode 1.0/1.1) --
@@ -954,36 +988,46 @@ mod sparkline_tests {
     }
 
     #[test]
-    fn split_line3_places_all_three_segments_in_order() {
-        let line = split_line3(
-            "L".to_string(),
-            "M".to_string(),
-            "R".to_string(),
-            40,
-            Style::default(),
-            Style::default(),
-            Style::default(),
+    fn zone_row_places_label_facts_and_sparkline_in_order_with_the_tag_last() {
+        let line = zone_row(
+            ZoneRowSpec {
+                indent: "  ",
+                label: "git",
+                label_style: Style::default(),
+                facts: "FACTS".to_string(),
+                facts_style: Style::default(),
+                sparkline: "SPARK".to_string(),
+                spark_style: Style::default(),
+                tag: "14d".to_string(),
+            },
+            60,
         );
         let rendered: String = line.spans.iter().map(|s| s.content.as_ref()).collect();
-        let l_pos = rendered.find('L').unwrap();
-        let m_pos = rendered.find('M').unwrap();
-        let r_pos = rendered.find('R').unwrap();
-        assert!(l_pos < m_pos, "left must precede middle: {rendered:?}");
-        assert!(m_pos < r_pos, "middle must precede right: {rendered:?}");
+        let label_pos = rendered.find("git").unwrap();
+        let facts_pos = rendered.find("FACTS").unwrap();
+        let spark_pos = rendered.find("SPARK").unwrap();
+        let tag_pos = rendered.find("14d").unwrap();
+        assert!(label_pos < facts_pos, "label must precede facts: {rendered:?}");
+        assert!(facts_pos < spark_pos, "facts must precede the sparkline: {rendered:?}");
+        assert!(spark_pos < tag_pos, "the sparkline must precede its scale tag: {rendered:?}");
     }
 
     #[test]
-    fn split_line3_never_panics_when_content_overflows_width() {
-        // left+middle+right longer than width -- must degrade to a wider-than-terminal
-        // line (ratatui clips at render time), never panic on an underflowing subtraction.
-        let line = split_line3(
-            "x".repeat(30),
-            "y".repeat(30),
-            "z".repeat(30),
+    fn zone_row_never_panics_when_content_overflows_width() {
+        // facts+sparkline longer than width -- must degrade to a wider-than-terminal line
+        // (ratatui clips at render time), never panic on an underflowing subtraction.
+        let line = zone_row(
+            ZoneRowSpec {
+                indent: "  ",
+                label: "agent",
+                label_style: Style::default(),
+                facts: "x".repeat(30),
+                facts_style: Style::default(),
+                sparkline: "y".repeat(30),
+                spark_style: Style::default(),
+                tag: "z".repeat(30),
+            },
             10,
-            Style::default(),
-            Style::default(),
-            Style::default(),
         );
         let rendered: String = line.spans.iter().map(|s| s.content.as_ref()).collect();
         assert!(rendered.contains('x') && rendered.contains('y') && rendered.contains('z'));
