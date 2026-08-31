@@ -178,6 +178,8 @@ fn build_project(
     thresholds_active_h: f64,
     thresholds_in_flight_h: f64,
     thresholds_stale_h: f64,
+    prev_agent_activity: Option<&Vec<u32>>,
+    events_count_this_tick: u32,
 ) -> schema::Project {
     let resolved_str = resolved.to_string_lossy().into_owned();
 
@@ -219,6 +221,17 @@ fn build_project(
         .unwrap_or_else(|| resolved_str.clone());
 
     let id = sha1_id(&resolved_str);
+
+    // Carry the previous tick's ring forward and append this tick's sample -- this is the
+    // only place multi-sample agent-activity history exists (events.ndjson itself is
+    // compacted+truncated every tick, see events.rs's module doc). Capped at
+    // AGENT_ACTIVITY_WINDOW so the ring doesn't grow unbounded across the daemon's lifetime.
+    let mut agent_activity = prev_agent_activity.cloned().unwrap_or_default();
+    agent_activity.push(events_count_this_tick);
+    if agent_activity.len() > schema::AGENT_ACTIVITY_WINDOW {
+        let excess = agent_activity.len() - schema::AGENT_ACTIVITY_WINDOW;
+        agent_activity.drain(0..excess);
+    }
 
     // parent_path: if the resolved path contains a segment literally equal to `.worktrees`
     // anywhere, parent_path is the string form of the path components BEFORE that segment.
@@ -275,6 +288,7 @@ fn build_project(
         agent,
         last_activity_at,
         status_bucket,
+        agent_activity,
     }
 }
 
@@ -286,7 +300,7 @@ fn build_project(
 /// `last_activity_at` = max(`mine_last_commit_at`, merged signal's `at`). Final sort:
 /// `last_activity_at` descending (`None` last), then `name` ascending. Times the whole tick
 /// for `scan_duration_ms`. Never panics — see the sensor degrade-never-abort invariant.
-pub fn run_scan(config: &Config, paths: &ScanPaths) -> Radar {
+pub fn run_scan(config: &Config, paths: &ScanPaths, previous: Option<&Radar>) -> Radar {
     let tick_start = Instant::now();
 
     // Now-as-UTC — `Radar.updated_at` is UTC, and agent-state thresholding uses the same
@@ -319,10 +333,18 @@ pub fn run_scan(config: &Config, paths: &ScanPaths) -> Radar {
     )
     .unwrap_or_default();
 
-    let events_signals: HashMap<String, schema::AgentSignal> =
-        std::panic::catch_unwind(AssertUnwindSafe(|| {
-            crate::events::read_and_compact(&paths.events_path, config, EVENTS_MAX_BYTES)
-        }))
+    let (events_signals, events_counts): (
+        HashMap<String, schema::AgentSignal>,
+        HashMap<String, u32>,
+    ) = std::panic::catch_unwind(AssertUnwindSafe(|| {
+        crate::events::read_and_compact(&paths.events_path, config, EVENTS_MAX_BYTES)
+    }))
+    .unwrap_or_default();
+
+    // Previous tick's agent-activity rings, keyed by resolved path (== `Project::path`) so
+    // they can be carried forward regardless of any other field changing.
+    let prev_activity: HashMap<String, Vec<u32>> = previous
+        .map(|r| r.projects.iter().map(|p| (p.path.clone(), p.agent_activity.clone())).collect())
         .unwrap_or_default();
 
     // `quota` is account-global (not per-project), so read once. `read_quota` never panics —
@@ -371,6 +393,7 @@ pub fn run_scan(config: &Config, paths: &ScanPaths) -> Radar {
         .map(|root| {
             let resolved = PathBuf::from(&root);
             let signal = merged.get(&root);
+            let events_count_this_tick = events_counts.get(&root).copied().unwrap_or(0);
             // `build_project` computes `is_foreign` itself (matches Python's `_build_project`,
             // which also calls `is_foreign` fresh per project with no precomputed cache).
             build_project(
@@ -381,6 +404,8 @@ pub fn run_scan(config: &Config, paths: &ScanPaths) -> Radar {
                 t_active,
                 t_in_flight,
                 t_stale,
+                prev_activity.get(&root),
+                events_count_this_tick,
             )
         })
         .collect();
@@ -420,7 +445,15 @@ pub fn write_scan(
     paths: &ScanPaths,
     state_path: &Path,
 ) -> std::io::Result<Radar> {
-    let radar = run_scan(config, paths);
+    // Best-effort read of the previous tick's output, purely to carry `agent_activity`
+    // rings forward (invariant #5 in spirit: a missing/corrupt/pre-this-field state file
+    // degrades to "no history yet" -- every project's ring just starts fresh -- never an
+    // error or a panic).
+    let previous: Option<Radar> = std::fs::read_to_string(state_path)
+        .ok()
+        .and_then(|s| serde_json::from_str(&s).ok());
+
+    let radar = run_scan(config, paths, previous.as_ref());
     schema::write_atomic(state_path, &radar)?;
     Ok(radar)
 }
@@ -578,7 +611,7 @@ mod tests {
         );
         let paths = ScanPaths::for_home(home);
         let config = test_config(vec![project_dir.to_path_buf()]);
-        run_scan(&config, &paths)
+        run_scan(&config, &paths, None)
     }
 
     /// Unique identifier for temp directories, safe across runs.
@@ -698,7 +731,7 @@ mod tests {
 
         let config = test_config(vec![repo.clone()]);
         // run_scan MUST NOT panic; the tick should still complete with claude + events signals.
-        let radar = run_scan(&config, &paths);
+        let radar = run_scan(&config, &paths, None);
         assert_eq!(
             radar.projects.len(), 1,
             "corrupted copilot path must not collapse the tick: {:?}",
@@ -735,7 +768,7 @@ mod tests {
 
             let paths = ScanPaths::for_home(&tmp.path);
             let config = test_config(vec![repo.clone()]);
-            let radar = run_scan(&config, &paths);
+            let radar = run_scan(&config, &paths, None);
 
             assert_eq!(radar.projects.len(), 1, "[{label}] expected one project");
             assert_eq!(
@@ -760,7 +793,7 @@ mod tests {
 
         let config = test_config(vec![fixture.path.clone()]);
         let paths = ScanPaths::for_home(&fixture.path);
-        let radar = run_scan(&config, &paths);
+        let radar = run_scan(&config, &paths, None);
 
         assert_eq!(radar.projects.len(), 1);
         let p = &radar.projects[0];
@@ -826,7 +859,7 @@ mod tests {
         // config.roots does NOT include `outside` — the transcript's cwd is the ONLY way
         // to reach it.
         let config = test_config(vec![fixture.path.join("does_not_exist")]);
-        let radar = run_scan(&config, &paths);
+        let radar = run_scan(&config, &paths, None);
 
         assert_eq!(
             radar.projects.len(), 1,
@@ -877,7 +910,7 @@ mod tests {
         // would see empty. For this test we call run_scan once and assert the result.
 
         let config = test_config(vec![repo.clone()]);
-        let radar = run_scan(&config, &paths);
+        let radar = run_scan(&config, &paths, None);
 
         assert_eq!(radar.projects.len(), 1, "two sources for same root -> one Project");
         // The newer-at wins — events is 30s old, claude is 600s old. The winning signal's
@@ -905,8 +938,8 @@ mod tests {
         let paths = ScanPaths::for_home(&fixture.path);
         let config = test_config(vec![repo1.clone(), repo2.clone()]);
 
-        let radar_a = run_scan(&config, &paths);
-        let radar_b = run_scan(&config, &paths);
+        let radar_a = run_scan(&config, &paths, None);
+        let radar_b = run_scan(&config, &paths, None);
 
         // Same inputs -> same ids for each project (by index, since both runs yield
         // identical sort order).
@@ -955,6 +988,31 @@ mod tests {
         assert_eq!(written, deserialized, "round-trip Radar must equal written");
     }
 
+    /// write_scan degrades a corrupt/malformed existing state file to "no previous history"
+    /// rather than erroring or panicking (invariant #5 in spirit) -- every project's
+    /// `agent_activity` ring just starts fresh.
+    #[test]
+    fn write_scan_tolerates_corrupt_previous_state_file() {
+        let fixture = Tmp::new("write_scan_corrupt_previous");
+        let repo = fixture.path.join("repo");
+        std::fs::create_dir_all(&repo).expect("mkdir repo");
+        std::fs::create_dir_all(repo.join(".git")).expect("mkdir .git");
+
+        let state_path = fixture.path.join("state.json");
+        std::fs::write(&state_path, "{ not valid json at all").expect("write garbage state file");
+
+        let config = test_config(vec![repo.clone()]);
+        let paths = ScanPaths::for_home(&fixture.path);
+
+        let written = write_scan(&config, &paths, &state_path)
+            .expect("write_scan must succeed even over a corrupt previous state file");
+        assert_eq!(written.projects.len(), 1);
+        assert_eq!(
+            written.projects[0].agent_activity, vec![0u32],
+            "corrupt previous state -> ring starts fresh at exactly one sample"
+        );
+    }
+
     // ═══ Test 11: Production-defaults regression. ═════════════════════════════════
 
     #[test]
@@ -991,7 +1049,7 @@ mod tests {
         // check on `for_home` itself.
 
         let config = test_config(vec![repo.clone()]);
-        let radar = run_scan(&config, &paths);
+        let radar = run_scan(&config, &paths, None);
 
         // The tick must produce a project with claude-code as the active agent.
         // If `for_home` had silently defaulted any of its path components (the original bug's
@@ -1075,7 +1133,7 @@ mod tests {
 
         let paths = ScanPaths::for_home(&fixture.path);
         let config = test_config(vec![repo_a.clone(), repo_b.clone()]);
-        let radar = run_scan(&config, &paths);
+        let radar = run_scan(&config, &paths, None);
 
         // Alpha is more recent (5min old) than Beta (2h); should be first in descending order.
         assert_eq!(radar.projects.len(), 2);
@@ -1094,7 +1152,7 @@ mod tests {
 
         let paths = ScanPaths::for_home(&fixture.path);
         let config = test_config(vec![repo.clone()]);
-        let radar = run_scan(&config, &paths);
+        let radar = run_scan(&config, &paths, None);
 
         assert_eq!(radar.projects.len(), 1, "expected one project");
         assert_eq!(
@@ -1120,7 +1178,7 @@ mod tests {
 
         let paths = ScanPaths::for_home(&fixture.path);
         let config = test_config(vec![child.clone()]);
-        let radar = run_scan(&config, &paths);
+        let radar = run_scan(&config, &paths, None);
 
         assert_eq!(radar.projects.len(), 1, "expected one project");
         let p = &radar.projects[0];
@@ -1177,6 +1235,97 @@ mod tests {
         assert_eq!(
             project.parent_path, None,
             "missing parent_path key must deserialize as None"
+        );
+        assert!(
+            project.agent_activity.is_empty(),
+            "missing agent_activity key must deserialize as an empty Vec, not error"
+        );
+        assert!(
+            project.git.daily_commits.is_empty(),
+            "missing git.daily_commits key must deserialize as an empty Vec, not error"
+        );
+    }
+
+    // ═══ agent_activity: carried forward across ticks and capped at the window. ═══════
+
+    /// Test: a project's `agent_activity` ring is empty on a project's first-ever tick (no
+    /// `previous` Radar), then carries forward and appends across a second tick.
+    #[test]
+    fn agent_activity_ring_carries_forward_across_ticks() {
+        let fixture = Tmp::new("agent_activity_carry");
+        let repo = fixture.path.join("repo");
+        std::fs::create_dir_all(&repo).expect("mkdir repo");
+        std::fs::create_dir_all(repo.join(".git")).expect("mkdir .git");
+
+        let paths = ScanPaths::for_home(&fixture.path);
+        let config = test_config(vec![repo.clone()]);
+
+        // Tick 1: no previous Radar, no events -> ring has exactly one entry (this tick's
+        // sample), and it's 0 (no events.ndjson activity).
+        let radar1 = run_scan(&config, &paths, None);
+        assert_eq!(radar1.projects.len(), 1);
+        assert_eq!(
+            radar1.projects[0].agent_activity, vec![0u32],
+            "first-ever tick must start the ring with exactly one (zero) sample"
+        );
+
+        // Tick 2: feed one real event for this root, and carry radar1 forward as `previous`.
+        std::fs::create_dir_all(fixture.path.join(".petridish")).expect("mkdir .petridish");
+        std::fs::write(
+            &fixture.path.join(".petridish/events.ndjson"),
+            format!(
+                "{{\"cwd\":\"{}\",\"at\":\"2026-01-01T00:00:00Z\"}}\n",
+                repo.to_str().unwrap()
+            ),
+        )
+        .expect("write events");
+
+        let radar2 = run_scan(&config, &paths, Some(&radar1));
+        assert_eq!(
+            radar2.projects[0].agent_activity, vec![0u32, 1u32],
+            "second tick must carry tick 1's sample forward and append tick 2's count: {:?}",
+            radar2.projects[0].agent_activity
+        );
+    }
+
+    /// Test: the ring never grows past `AGENT_ACTIVITY_WINDOW` -- oldest samples drop off
+    /// the front as new ones are appended.
+    #[test]
+    fn agent_activity_ring_caps_at_window_dropping_oldest() {
+        let fixture = Tmp::new("agent_activity_cap");
+        let repo = fixture.path.join("repo");
+        std::fs::create_dir_all(&repo).expect("mkdir repo");
+        std::fs::create_dir_all(repo.join(".git")).expect("mkdir .git");
+
+        let paths = ScanPaths::for_home(&fixture.path);
+        let config = test_config(vec![repo.clone()]);
+
+        // Seed a `previous` Radar whose ring is already at the cap, with a recognizable
+        // oldest value (99) that must be evicted once a new sample is appended.
+        let mut full_ring = vec![0u32; schema::AGENT_ACTIVITY_WINDOW];
+        full_ring[0] = 99;
+        let mut seeded_project = build_project(
+            &repo.canonicalize().unwrap(), &config, None, chrono::Utc::now(), 48.0, 336.0, 1440.0, None, 0,
+        );
+        seeded_project.agent_activity = full_ring;
+        let previous = Radar {
+            schema_version: 1,
+            updated_at: chrono::Utc::now(),
+            scan_duration_ms: 0,
+            projects: vec![seeded_project],
+            quota: None,
+        };
+
+        let radar = run_scan(&config, &paths, Some(&previous));
+        let ring = &radar.projects[0].agent_activity;
+        assert_eq!(
+            ring.len(), schema::AGENT_ACTIVITY_WINDOW,
+            "ring must stay capped at AGENT_ACTIVITY_WINDOW, got len {}", ring.len()
+        );
+        assert!(
+            !ring.contains(&99),
+            "oldest sample (99) must have been evicted once the ring exceeded the cap: {:?}",
+            ring
         );
     }
 }

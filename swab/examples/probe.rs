@@ -131,7 +131,7 @@ fn main() {
                 .get("max_bytes")
                 .and_then(Value::as_u64)
                 .unwrap_or(5_242_880);
-            signal_map_to_json(events::read_and_compact(&path, &cfg, max_bytes))
+            signal_map_to_json(events::read_and_compact(&path, &cfg, max_bytes).0)
         }
         "quota_read" => {
             let home = args.get("home").and_then(Value::as_str).map(PathBuf::from);

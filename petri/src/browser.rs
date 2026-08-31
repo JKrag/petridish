@@ -665,6 +665,7 @@ mod tests {
             agent: AgentState::idle_unknown(),
             last_activity_at: None,
             status_bucket: bucket,
+            agent_activity: Vec::new(),
         }
     }
 

@@ -122,6 +122,7 @@ mod tests {
             last_commit_at: None,
             mine_last_commit_at: None,
             github_url: None,
+            daily_commits: Vec::new(),
         };
         assert_eq!(dirty_marker(&git), "*");
     }
@@ -142,6 +143,7 @@ mod tests {
             last_commit_at: None,
             mine_last_commit_at: None,
             github_url: None,
+            daily_commits: Vec::new(),
         };
         assert_eq!(dirty_marker(&git), " ");
     }

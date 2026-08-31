@@ -63,6 +63,7 @@ fn project(id: &str, name: &str, bucket: StatusBucket) -> Project {
         agent: AgentState::idle_unknown(),
         last_activity_at: None,
         status_bucket: bucket,
+        agent_activity: Vec::new(),
     }
 }
 

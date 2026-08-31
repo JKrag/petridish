@@ -633,6 +633,7 @@ mod tests {
             agent: crate::schema::AgentState::idle_unknown(),
             last_activity_at: Some(Utc::now()),
             status_bucket: bucket,
+            agent_activity: Vec::new(),
         }
     }
 
@@ -829,6 +830,7 @@ mod tests {
                 agent: crate::schema::AgentState::idle_unknown(),
                 last_activity_at: Some(now - chrono::Duration::hours(2)), // older
                 status_bucket: StatusBucket::Active,
+                agent_activity: Vec::new(),
             },
             SchemaProject {
                 id: "b".into(),
@@ -841,6 +843,7 @@ mod tests {
                 agent: crate::schema::AgentState::idle_unknown(),
                 last_activity_at: Some(Utc::now()), // newest
                 status_bucket: StatusBucket::Active,
+                agent_activity: Vec::new(),
             },
         ]);
         write_fixture_radar(&state_path, radar);

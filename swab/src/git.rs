@@ -94,6 +94,7 @@ pub fn scan(path: &Path, author_patterns: &[String], author_since: &str) -> GitS
         last_commit_at: None,
         mine_last_commit_at: None,
         github_url: None,
+        daily_commits: Vec::new(),
     };
 
     result.branch = branch_name(&repo);
@@ -122,7 +123,45 @@ pub fn scan(path: &Path, author_patterns: &[String], author_since: &str) -> GitS
         result.github_url = github_url(&raw);
     }
 
+    result.daily_commits = daily_commit_counts(&repo, Utc::now());
+
     result
+}
+
+/// Buckets commits from HEAD into `GIT_ACTIVITY_WINDOW_DAYS` trailing daily counts, oldest
+/// first, today last. Recomputed fresh every call (unlike `Project::agent_activity`, git
+/// already retains its own commit history so there's nothing to carry forward).
+///
+/// Stops walking once a commit predates the window, on the same "revwalk visits commits in
+/// roughly commit-time-descending order" assumption `author_since_revwalk` above already
+/// relies on — an approximation, not a guarantee (merge commits can interleave), but
+/// consistent with the rest of this module rather than a new invented convention.
+pub(crate) fn daily_commit_counts(repo: &gix::Repository, now: DateTime<Utc>) -> Vec<u32> {
+    let window = crate::schema::GIT_ACTIVITY_WINDOW_DAYS;
+    let mut buckets = vec![0u32; window];
+
+    let Ok(head_id) = repo.head_id() else { return buckets };
+    let Ok(walk) = repo.rev_walk([head_id]).all() else { return buckets };
+
+    let today = now.date_naive();
+    let window_start = today - chrono::Duration::days(window as i64 - 1);
+
+    for info in walk.filter_map(|i| i.ok()) {
+        let Ok(commit) = info.object() else { continue };
+        let Ok(time) = commit.time() else { continue };
+        let Some(commit_time) = gix_time_to_utc(time) else { continue };
+        let commit_date = commit_time.date_naive();
+        if commit_date < window_start {
+            break;
+        }
+        // A commit dated in the future (clock skew) clamps into today's bucket rather than
+        // panicking on a negative index.
+        let days_ago = (today - commit_date).num_days().clamp(0, window as i64 - 1);
+        let idx = (window as i64 - 1 - days_ago) as usize;
+        buckets[idx] += 1;
+    }
+
+    buckets
 }
 
 /// Mirrors `git rev-parse --abbrev-ref HEAD`'s exact behavior, including its one surprising
@@ -645,5 +684,97 @@ mod tests {
     #[test]
     fn scan_nonexistent_path_does_not_panic() {
         scan(Path::new("/swab_no_such_dir_xyzzy99"), &[], "3 years");
+    }
+
+    /// Commit at an arbitrary real point in time (relative to `Utc::now()` at test-run time,
+    /// not a fixed pinned date like `GIT_ENV` -- `daily_commit_counts` buckets relative to
+    /// "today", so the fixture's commits must move with it).
+    fn git_commit_days_ago(dir: &Path, filename: &str, days_ago: i64) {
+        let date = (Utc::now() - chrono::Duration::days(days_ago))
+            .to_rfc3339_opts(chrono::SecondsFormat::Secs, true);
+        let path = dir.join(filename);
+        fs::write(&path, "content").expect("write file");
+        let env = [
+            ("GIT_AUTHOR_DATE", date.as_str()),
+            ("GIT_COMMITTER_DATE", date.as_str()),
+            ("GIT_AUTHOR_NAME", "Test Author"),
+            ("GIT_AUTHOR_EMAIL", "author@example.com"),
+            ("GIT_COMMITTER_NAME", "Test Committer"),
+            ("GIT_COMMITTER_EMAIL", "committer@example.com"),
+        ];
+        assert!(Command::new("git")
+            .args(["-C", dir.to_str().unwrap(), "add", filename])
+            .envs(env)
+            .spawn().expect("git spawn")
+            .wait().expect("git add wait")
+            .success());
+        assert!(Command::new("git")
+            .args(["-C", dir.to_str().unwrap(), "commit", "--no-gpg-sign", "-m", "dated commit"])
+            .envs(env)
+            .spawn().expect("git spawn")
+            .wait().expect("git commit wait")
+            .success());
+    }
+
+    #[test]
+    fn daily_commit_counts_buckets_by_day_and_excludes_outside_window() {
+        let dir = make_tmp_dir("daily_commits_basic");
+        git_init(&dir);
+        // Oldest first, matching real chain topology (root -> ... -> HEAD), so the revwalk's
+        // descending-commit-time assumption (shared with `author_since_revwalk`) holds.
+        git_commit_days_ago(&dir, "old.txt", 20); // outside the 14-day window
+        git_commit_days_ago(&dir, "recent.txt", 3); // inside the window
+        git_commit_days_ago(&dir, "today.txt", 0); // today
+
+        let repo = gix::open(&dir).expect("repo must open");
+        let buckets = daily_commit_counts(&repo, Utc::now());
+
+        assert_eq!(
+            buckets.len(), crate::schema::GIT_ACTIVITY_WINDOW_DAYS,
+            "buckets must always be exactly GIT_ACTIVITY_WINDOW_DAYS long"
+        );
+        let window = crate::schema::GIT_ACTIVITY_WINDOW_DAYS;
+        assert_eq!(buckets[window - 1], 1, "today's bucket (last) must count the today commit");
+        assert_eq!(buckets[window - 1 - 3], 1, "the 3-days-ago commit must land in its own bucket");
+        assert_eq!(
+            buckets.iter().sum::<u32>(), 2,
+            "the 20-days-ago commit is outside the window and must not be counted: {buckets:?}"
+        );
+    }
+
+    #[test]
+    fn daily_commit_counts_repo_with_no_commits_is_all_zero() {
+        let dir = make_tmp_dir("daily_commits_empty");
+        git_init(&dir);
+        let repo = gix::open(&dir).expect("repo must open");
+        let buckets = daily_commit_counts(&repo, Utc::now());
+        assert_eq!(
+            buckets, vec![0u32; crate::schema::GIT_ACTIVITY_WINDOW_DAYS],
+            "an unborn-HEAD repo must yield an all-zero window, never panic"
+        );
+    }
+
+    #[test]
+    fn scan_populates_daily_commits_for_a_real_repo() {
+        let dir = make_tmp_dir("daily_commits_via_scan");
+        git_init(&dir);
+        git_commit_days_ago(&dir, "today.txt", 0);
+
+        let state = scan(&dir, &[], "3 years");
+        assert!(state.is_repo);
+        assert_eq!(
+            state.daily_commits.len(), crate::schema::GIT_ACTIVITY_WINDOW_DAYS,
+            "scan() must populate daily_commits at the full window length"
+        );
+        assert_eq!(
+            *state.daily_commits.last().unwrap(), 1,
+            "today's commit must show up in today's (last) bucket"
+        );
+    }
+
+    #[test]
+    fn not_a_repo_has_empty_daily_commits() {
+        let state = GitState::not_a_repo();
+        assert!(state.daily_commits.is_empty(), "non-repo must have no daily_commits data");
     }
 }

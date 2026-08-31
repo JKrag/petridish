@@ -65,6 +65,19 @@ pub const AGENT_WORKING_MAX_S: i64 = 90;
 /// Silence below this many seconds (and not `Working`) => `AgentActivity::Recent`.
 pub const AGENT_RECENT_MAX_S: i64 = 1800;
 
+/// Samples kept in `Project::agent_activity`, one appended per `swab scan` tick (~60s tick
+/// interval -> the full ring spans roughly one hour). Carried forward across ticks by the
+/// aggregator itself -- `events.ndjson` cannot supply this history on its own, since it's
+/// compacted to a single newest-signal-per-root and truncated every tick (see
+/// `swab/src/events.rs`'s module doc). Investigated and confirmed via a real read of this
+/// machine's `~/.petridish/events.ndjson` before this field was added.
+pub const AGENT_ACTIVITY_WINDOW: usize = 60;
+
+/// Trailing days of daily commit counts kept in `GitState::daily_commits`. Unlike agent
+/// activity, this needs no cross-tick carry-forward -- git already retains its own commit
+/// history, so it's recomputed fresh from real history every tick.
+pub const GIT_ACTIVITY_WINDOW_DAYS: usize = 14;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum AgentActivity {
@@ -93,6 +106,11 @@ pub struct GitState {
     #[serde(with = "iso_second_opt")]
     pub mine_last_commit_at: Option<DateTime<Utc>>,
     pub github_url: Option<String>,
+    /// Daily commit counts for the trailing `GIT_ACTIVITY_WINDOW_DAYS` days, oldest first,
+    /// today last. Empty when `is_repo` is false. `#[serde(default)]` so a `projects.json`
+    /// written before this field existed still deserializes.
+    #[serde(default)]
+    pub daily_commits: Vec<u32>,
 }
 
 impl GitState {
@@ -107,6 +125,7 @@ impl GitState {
             last_commit_at: None,
             mine_last_commit_at: None,
             github_url: None,
+            daily_commits: Vec::new(),
         }
     }
 }
@@ -148,6 +167,13 @@ pub struct Project {
     #[serde(with = "iso_second_opt")]
     pub last_activity_at: Option<DateTime<Utc>>,
     pub status_bucket: StatusBucket,
+    /// Per-tick agent-event counts for the trailing `AGENT_ACTIVITY_WINDOW` ticks, oldest
+    /// first, this tick last. Maintained by `swab scan` carrying it forward from the previous
+    /// `projects.json` and appending one new sample per tick -- see `AGENT_ACTIVITY_WINDOW`'s
+    /// doc for why this can't be derived from `events.ndjson` alone. `#[serde(default)]` so a
+    /// `projects.json` written before this field existed still deserializes.
+    #[serde(default)]
+    pub agent_activity: Vec<u32>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
