@@ -239,11 +239,16 @@ fn roomy_running_card_renders_a_git_zone_row_with_its_own_sparkline() {
     let state = DashboardState::new(&radar);
     let lines = rendered_lines(&radar, &state, 100, 40);
 
-    // Line 0 is the header, line 1 the top rule, line 2 the RUNNING section header, line 3
-    // its rule, line 4 the card's header (name), line 5 the card's `git` zone row.
-    let header_line = &lines[4];
-    let git_row = &lines[5];
-    let agent_row = &lines[6];
+    // Find the card's header (name) line by content rather than a pinned index — the card is
+    // now wrapped in a bordered `Block`, which shifts every line below it by one row, and a
+    // future chrome tweak shouldn't need this test rewritten a third time.
+    let header_idx = lines
+        .iter()
+        .position(|l| l.contains("spark-project"))
+        .expect("the card header must show the project name somewhere on screen");
+    let header_line = &lines[header_idx];
+    let git_row = &lines[header_idx + 1];
+    let agent_row = &lines[header_idx + 2];
 
     assert!(
         header_line.contains("spark-project"),

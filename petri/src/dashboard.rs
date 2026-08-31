@@ -33,7 +33,7 @@ use ratatui::{
     layout::{Constraint, Layout, Rect},
     style::{Color, Modifier, Style},
     text::{Line, Span},
-    widgets::Paragraph,
+    widgets::{Block, BorderType, Paragraph},
 };
 
 /// Below this many *content* rows (post chrome, see `render`'s
@@ -62,6 +62,21 @@ const MIN_COMPACT_COL_WIDTH: usize = 45;
 const MAX_GRID_COLUMNS: usize = 4;
 /// Blank columns of separation between adjacent grid columns.
 const COLUMN_GUTTER: usize = 2;
+
+/// Physical rows a roomy card's bordered box occupies: 4 content lines (header, `git` zone,
+/// `agent` zone, path) + 1 top + 1 bottom border row. Grid-cell bounding + selection review:
+/// the earlier borderless card design left grid cells with no visual edge (nothing to tell the
+/// eye where one project's card ends and the next column's begins) and highlighted the
+/// selected card by painting background color under individual text spans, which left ragged
+/// gaps wherever a span didn't reach the card's full width. A real border fixes both: it's the
+/// cell boundary the grid was missing, and its color is the selection signal (`render_section`'s
+/// roomy branch) — the canonical "border color = focus" pattern (`references/visual-patterns.md`
+/// → *Typography in monospace* / *Borders*), so text inside the card no longer needs its own
+/// background fill to show selection.
+const ROOMY_CARD_BOX_ROWS: usize = 6;
+/// Indent for a roomy card's `git`/`agent`/path rows relative to its header — shorter than the
+/// pre-border design's 5 spaces since the border itself now provides the card's left edge.
+const ZONE_INDENT: &str = "  ";
 
 /// The dashboard's truecolor identity (superseding SPEC.md §4's ANSI-16
 /// mandate, per the redesign discussion — that constraint was written for
@@ -451,7 +466,11 @@ pub fn plan_layout(area: Rect, radar: &Radar, collapsed: CollapsedState) -> Dash
         used += chrome_rows;
 
         let roomy = *bucket == StatusBucket::Active && !compact_tier;
-        let item_span = if roomy { 5 } else { 1 };
+        // Roomy card physical footprint: 4 content lines + a 2-row border (`ROOMY_CARD_BOX_ROWS`)
+        // + a 1-row gap before the next card in the same column. The border itself is now what
+        // separates one card from the next (and, via its color, signals selection) — see
+        // `render_section`'s roomy branch.
+        let item_span = if roomy { ROOMY_CARD_BOX_ROWS + 1 } else { 1 };
         let min_col_width = if roomy { MIN_ROOMY_CARD_WIDTH } else { MIN_COMPACT_COL_WIDTH };
         let columns = grid_columns(min_col_width, width);
         let card_width = column_width(width, columns);
@@ -627,22 +646,18 @@ fn render_section(
 
     if section.items_shown > 0 {
         let columns = section.columns.max(1);
-        let mut column_lines: Vec<Vec<Line<'static>>> = vec![Vec::new(); columns];
-        let roomy = section.item_span == 5;
+        let roomy = section.item_span == ROOMY_CARD_BOX_ROWS + 1;
 
+        // Row-major assignment (column c gets items c, c+columns, c+2*columns, …) — this is
+        // what keeps `j`/`k` walking `DashboardState`'s flat `Vec<DashRow>` in plain reading
+        // order (left column, then right, then the next row down) even though the grid renders
+        // multiple columns; see this module's doc comment on why the cursor didn't need to
+        // become 2D for this. Stacking each column's own items top-down independently (below)
+        // still lines up row-for-row across columns because every card/row in a section has the
+        // same fixed height, regardless of how many total items landed in that column.
+        let mut column_members: Vec<Vec<usize>> = vec![Vec::new(); columns];
         for (i, &proj_idx) in members.iter().take(section.items_shown).enumerate() {
-            let col = i % columns;
-            let is_selected_row = matches!(
-                state.selected.and_then(|i| state.visible.get(i)),
-                Some(DashRow::Project(idx)) if *idx == proj_idx
-            );
-            if roomy {
-                column_lines[col].extend(roomy_card_lines(radar, proj_idx, is_selected_row, section.card_width));
-            } else if section.bucket == StatusBucket::Active {
-                column_lines[col].push(compact_running_row_line(radar, proj_idx, is_selected_row));
-            } else {
-                column_lines[col].push(compact_row_line(radar, proj_idx, is_selected_row));
-            }
+            column_members[i % columns].push(proj_idx);
         }
 
         let mut column_constraints: Vec<Constraint> = Vec::with_capacity(columns * 2);
@@ -653,9 +668,64 @@ fn render_section(
             }
         }
         let column_rects = Layout::horizontal(column_constraints).split(grid_rect);
-        for (c, lines) in column_lines.into_iter().enumerate() {
-            // Every other Rect is a gutter spacer (unstyled, nothing rendered into it).
-            frame.render_widget(Paragraph::new(lines), column_rects[c * 2]);
+
+        for (c, proj_indices) in column_members.into_iter().enumerate() {
+            let col_rect = column_rects[c * 2];
+            if roomy {
+                let inner_width = section.card_width.saturating_sub(2);
+                let mut card_constraints: Vec<Constraint> = Vec::with_capacity(proj_indices.len() * 2);
+                for i in 0..proj_indices.len() {
+                    card_constraints.push(Constraint::Length(ROOMY_CARD_BOX_ROWS as u16));
+                    if i + 1 < proj_indices.len() {
+                        card_constraints.push(Constraint::Length(1)); // gap before the next card
+                    }
+                }
+                let card_rects = Layout::vertical(card_constraints).split(col_rect);
+                for (i, &proj_idx) in proj_indices.iter().enumerate() {
+                    let is_selected = matches!(
+                        state.selected.and_then(|i| state.visible.get(i)),
+                        Some(DashRow::Project(idx)) if *idx == proj_idx
+                    );
+                    let border_style = if is_selected {
+                        Style::default().fg(COLOR_ACCENT).add_modifier(Modifier::BOLD)
+                    } else {
+                        Style::default().fg(COLOR_DIMMER)
+                    };
+                    let block = Block::bordered().border_type(BorderType::Rounded).border_style(border_style);
+                    let lines = roomy_card_lines(radar, proj_idx, inner_width);
+                    frame.render_widget(Paragraph::new(lines).block(block), card_rects[i * 2]);
+                }
+            } else {
+                let lines: Vec<Line<'static>> = proj_indices
+                    .iter()
+                    .map(|&proj_idx| {
+                        let is_selected = matches!(
+                            state.selected.and_then(|i| state.visible.get(i)),
+                            Some(DashRow::Project(idx)) if *idx == proj_idx
+                        );
+                        if section.bucket == StatusBucket::Active {
+                            compact_running_row_line(radar, proj_idx, is_selected, section.card_width)
+                        } else {
+                            compact_row_line(radar, proj_idx, is_selected, section.card_width)
+                        }
+                    })
+                    .collect();
+                frame.render_widget(Paragraph::new(lines), col_rect);
+            }
+        }
+
+        // A vertical rule between compact-row columns — the grid-cell-bounding fix for the
+        // one grid type that isn't already boxed. Roomy cards get their own border on all four
+        // sides (above), so a second boundary line here would be a redundant signal for real
+        // per the clutter-audit rule against stacking multiple cues for one fact.
+        if !roomy && columns > 1 {
+            for c in 0..columns - 1 {
+                let gutter_rect = column_rects[c * 2 + 1];
+                let bar: Vec<Line<'static>> = (0..gutter_rect.height)
+                    .map(|_| Line::from(Span::styled(" │", Style::default().fg(COLOR_DIMMER))))
+                    .collect();
+                frame.render_widget(Paragraph::new(bar), gutter_rect);
+            }
         }
     }
 
@@ -833,7 +903,7 @@ fn silence_tier_color(secs: i64) -> Color {
 /// branch, silence age — silence age still carries the gradient, since
 /// "which run is stalling" is exactly what this row exists to answer at a
 /// glance.
-fn compact_running_row_line(radar: &Radar, proj_idx: usize, is_selected: bool) -> Line<'static> {
+fn compact_running_row_line(radar: &Radar, proj_idx: usize, is_selected: bool, card_width: usize) -> Line<'static> {
     let p = &radar.projects[proj_idx];
     let silence_secs = match p.last_activity_at {
         Some(dt) => chrono::Utc::now().signed_duration_since(dt).num_seconds().max(0),
@@ -852,32 +922,34 @@ fn compact_running_row_line(radar: &Radar, proj_idx: usize, is_selected: bool) -
     };
     let agent = p.agent.active_agent.as_deref().unwrap_or("");
 
-    let name_style = if is_selected {
-        Style::default().fg(Color::Black).bg(COLOR_ACCENT).add_modifier(Modifier::BOLD)
-    } else {
-        Style::default().fg(COLOR_FG).add_modifier(Modifier::BOLD)
-    };
-    let glyph_style = if is_selected { name_style } else { Style::default().fg(tier_color) };
-    let dim = Style::default().fg(COLOR_DIM);
-    let silence_style = if is_selected { name_style } else { Style::default().fg(tier_color) };
+    let name_field = format!("{} ", fixed_width(&format!("{}{dirty_marker}", p.name), 26));
+    let branch_field = format!("{} ", fixed_width(branch, 22));
+    let silence_field = format!("{} ", fixed_width(&silence_str, 12));
+
+    if is_selected {
+        return solid_selected_line(&format!(" {glyph} {name_field}{branch_field}{silence_field}{agent}"), card_width);
+    }
 
     Line::from(vec![
-        Span::styled(format!(" {glyph} "), glyph_style),
-        Span::styled(format!("{} ", fixed_width(&format!("{}{dirty_marker}", p.name), 26)), name_style),
-        Span::styled(format!("{} ", fixed_width(branch, 22)), Style::default().fg(COLOR_BRANCH)),
-        Span::styled(format!("{} ", fixed_width(&silence_str, 12)), silence_style),
-        Span::styled(agent.to_string(), dim),
+        Span::styled(format!(" {glyph} "), Style::default().fg(tier_color)),
+        Span::styled(name_field, Style::default().fg(COLOR_FG).add_modifier(Modifier::BOLD)),
+        Span::styled(branch_field, Style::default().fg(COLOR_BRANCH)),
+        Span::styled(silence_field, Style::default().fg(tier_color)),
+        Span::styled(agent.to_string(), Style::default().fg(COLOR_DIM)),
     ])
 }
 
-/// Roomy card for a project in the RUNNING section: a header line (identity —
-/// glyph, name, dirty markers, overall silence), a `git` zone row (branch,
-/// commit age, git-activity sparkline), an `agent` zone row (agent name,
-/// session, agent-activity sparkline), and the path — plus a blank separator.
-/// Each sparkline sits directly beside the facts it summarizes rather than
-/// two look-alike bars stacked with nothing tying either to its own data —
-/// see `zone_row`'s doc comment for why.
-fn roomy_card_lines(radar: &Radar, proj_idx: usize, is_selected: bool, card_width: usize) -> Vec<Line<'static>> {
+/// Roomy card for a project in the RUNNING section: a header line (identity — glyph, name,
+/// dirty markers, overall silence), a `git` zone row (branch, commit age, git-activity
+/// sparkline), an `agent` zone row (agent name, session, agent-activity sparkline), and the
+/// path. Each sparkline sits directly beside the facts it summarizes rather than two look-alike
+/// bars stacked with nothing tying either to its own data — see `zone_row`'s doc comment for
+/// why. `card_width` is the card's *inner* content width (its allocated column width minus the
+/// 2 columns its border consumes — see `ROOMY_CARD_BOX_ROWS`'s doc comment) — `render_section`
+/// wraps these 4 lines in a `Block` whose border color carries the selection signal, so nothing
+/// in here needs to change when a card is selected; that's what fixed the ragged
+/// background-only-under-some-spans highlight the border replaced.
+fn roomy_card_lines(radar: &Radar, proj_idx: usize, card_width: usize) -> Vec<Line<'static>> {
     let p = &radar.projects[proj_idx];
     let glyph = match p.agent.state {
         AgentActivity::Working => "●",
@@ -897,16 +969,10 @@ fn roomy_card_lines(radar: &Radar, proj_idx: usize, is_selected: bool, card_widt
     };
 
     let tier_color = silence_tier_color(silence_secs);
-    let name_style = if is_selected {
-        Style::default().fg(Color::Black).bg(COLOR_ACCENT).add_modifier(Modifier::BOLD)
-    } else {
-        Style::default().fg(COLOR_FG).add_modifier(Modifier::BOLD)
-    };
-    let silence_style = if is_selected { name_style } else { Style::default().fg(tier_color).add_modifier(Modifier::BOLD) };
+    let name_style = Style::default().fg(COLOR_FG).add_modifier(Modifier::BOLD);
+    let silence_style = Style::default().fg(tier_color).add_modifier(Modifier::BOLD);
     let dim = Style::default().fg(COLOR_DIM);
-    let zone_label_style = |color: Color| {
-        if is_selected { name_style } else { Style::default().fg(color).add_modifier(Modifier::BOLD) }
-    };
+    let zone_label_style = |color: Color| Style::default().fg(color).add_modifier(Modifier::BOLD);
 
     let header = split_line(
         format!(" {glyph} {}{}{}", p.name, dirty_marker, uncommitted),
@@ -929,7 +995,7 @@ fn roomy_card_lines(radar: &Radar, proj_idx: usize, is_selected: bool, card_widt
     let git_sparkline = sparkline_glyphs(&p.git.daily_commits, petridish_core::schema::GIT_ACTIVITY_WINDOW_DAYS);
     let git_row = zone_row(
         ZoneRowSpec {
-            indent: "     ",
+            indent: ZONE_INDENT,
             label: "git",
             label_style: zone_label_style(COLOR_BRANCH),
             facts: git_facts,
@@ -961,7 +1027,7 @@ fn roomy_card_lines(radar: &Radar, proj_idx: usize, is_selected: bool, card_widt
     let agent_sparkline = sparkline_glyphs(&p.agent_activity, agent_spark_width);
     let agent_row = zone_row(
         ZoneRowSpec {
-            indent: "     ",
+            indent: ZONE_INDENT,
             label: "agent",
             label_style: zone_label_style(tier_color),
             facts: agent_facts,
@@ -974,9 +1040,9 @@ fn roomy_card_lines(radar: &Radar, proj_idx: usize, is_selected: bool, card_widt
     );
 
     let display_path = abbreviate_home(&p.path);
-    let path_row = Line::from(Span::styled(format!("     {display_path}"), dim));
+    let path_row = Line::from(Span::styled(format!("{ZONE_INDENT}{display_path}"), dim));
 
-    vec![header, git_row, agent_row, path_row, Line::from("")]
+    vec![header, git_row, agent_row, path_row]
 }
 
 /// Unicode block elements U+2581-2588 ("Block Elements", standardized in Unicode 1.0/1.1) --
@@ -997,7 +1063,7 @@ const SPARKLINE_WIDTH: usize = 20;
 /// AGENT_ACTIVITY_WINDOW]` so a narrow card still gets a legible sparkline and a very wide one
 /// doesn't ask for more samples than the ring actually keeps.
 fn agent_sparkline_width_for(card_width: usize) -> usize {
-    let overhead = 5 /* indent */ + ZONE_LABEL_WIDTH + 20 /* minimal facts */ + 2 /* gap */ + 4 /* tag */;
+    let overhead = ZONE_INDENT.len() + ZONE_LABEL_WIDTH + 20 /* minimal facts */ + 2 /* gap */ + 4 /* tag */;
     card_width
         .saturating_sub(overhead)
         .clamp(SPARKLINE_WIDTH, petridish_core::schema::AGENT_ACTIVITY_WINDOW)
@@ -1037,7 +1103,7 @@ fn sparkline_glyphs(samples: &[u32], width: usize) -> String {
 }
 
 /// Compact row for a project in IN FLIGHT / STALE / COLD.
-fn compact_row_line(radar: &Radar, proj_idx: usize, is_selected: bool) -> Line<'static> {
+fn compact_row_line(radar: &Radar, proj_idx: usize, is_selected: bool, card_width: usize) -> Line<'static> {
     let p = &radar.projects[proj_idx];
     let branch = p.git.branch.as_deref().unwrap_or("(none)");
     let uncommitted = if p.git.uncommitted_files > 0 { format!("✎{}", p.git.uncommitted_files) } else { String::new() };
@@ -1047,19 +1113,35 @@ fn compact_row_line(radar: &Radar, proj_idx: usize, is_selected: bool) -> Line<'
     };
     let gh = if p.git.github_url.is_some() { "[gh]" } else { "" };
 
-    let style = if is_selected {
-        Style::default().fg(Color::Black).bg(COLOR_ACCENT)
-    } else {
-        Style::default().fg(COLOR_FG)
-    };
+    let name_field = format!(" {} ", fixed_width(&p.name, 26));
+    let branch_field = format!("{} ", fixed_width(branch, 22));
+    let uncommitted_field = format!("{} ", fixed_width(&uncommitted, 4));
+
+    if is_selected {
+        return solid_selected_line(&format!("{name_field}{branch_field}{uncommitted_field}{commit_age} {gh}"), card_width);
+    }
 
     Line::from(vec![
-        Span::styled(format!(" {} ", fixed_width(&p.name, 26)), style),
-        Span::styled(format!("{} ", fixed_width(branch, 22)), Style::default().fg(COLOR_BRANCH)),
-        Span::styled(format!("{} ", fixed_width(&uncommitted, 4)), Style::default().fg(COLOR_DIM)),
+        Span::styled(name_field, Style::default().fg(COLOR_FG)),
+        Span::styled(branch_field, Style::default().fg(COLOR_BRANCH)),
+        Span::styled(uncommitted_field, Style::default().fg(COLOR_DIM)),
         Span::styled(format!("{commit_age} "), Style::default().fg(COLOR_DIM)),
         Span::styled(gh, Style::default().fg(COLOR_ACCENT)),
     ])
+}
+
+/// A selected compact row's highlight: one solid, continuously-colored bar across the row's
+/// full `card_width`, instead of per-field background fills that leave unstyled gaps wherever a
+/// field's own text doesn't reach its column width (that ragged-highlight bug is what this
+/// replaces — see `ROOMY_CARD_BOX_ROWS`'s doc comment for the equivalent fix on roomy cards).
+/// This is the reverse-video convention applied literally: field-level color is deliberately
+/// dropped in favor of one unambiguous highlighted bar, matching "reverse video is the canonical
+/// current-selection signal" (`references/visual-patterns.md` → *Typography in monospace*).
+fn solid_selected_line(content: &str, card_width: usize) -> Line<'static> {
+    Line::from(Span::styled(
+        fixed_width(content, card_width),
+        Style::default().fg(Color::Black).bg(COLOR_ACCENT).add_modifier(Modifier::BOLD),
+    ))
 }
 
 /// Footer: the keymap advertising only keys actually bound (petri/SPEC.md §5).
