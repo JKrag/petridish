@@ -185,3 +185,42 @@ fn does_not_panic_at_tiny_geometry() {
     let state = DashboardState::new(&radar);
     let _ = rendered_lines(&radar, &state, 1, 1);
 }
+
+#[test]
+fn roomy_running_card_renders_a_sparkline_from_agent_activity() {
+    let mut p = project("p1", "spark-project", StatusBucket::Active);
+    p.agent.active_agent = Some("claude-code".to_string());
+    p.agent_activity = vec![0, 0, 5, 0, 3];
+    let radar = radar_of(vec![p]);
+    let state = DashboardState::new(&radar);
+    // Tall enough that RUNNING renders in the roomy tier, not the compact one
+    // (`COMPACT_TIER_MAX_CONTENT_ROWS` — see `dashboard.rs`).
+    let lines = rendered_lines(&radar, &state, 100, 40);
+    let whole = lines.join("\n");
+    assert!(
+        whole.contains('▁'),
+        "the sparkline's zero/pad-level bar (U+2581) must render, got:\n{whole}"
+    );
+    assert!(
+        whole.chars().any(|c| ('\u{2582}'..='\u{2588}').contains(&c)),
+        "at least one non-zero-level bar must render for the nonzero samples, got:\n{whole}"
+    );
+}
+
+#[test]
+fn compact_running_row_does_not_render_a_sparkline() {
+    // Per the handoff's design: the sparkline is a roomy-tier-only enrichment. Force the
+    // compact tier via a short terminal (below COMPACT_TIER_MAX_CONTENT_ROWS worth of
+    // content rows) and confirm no sparkline glyph appears.
+    let mut p = project("p1", "spark-project", StatusBucket::Active);
+    p.agent.active_agent = Some("claude-code".to_string());
+    p.agent_activity = vec![9; 20]; // would otherwise definitely render non-lowest bars
+    let radar = radar_of(vec![p]);
+    let state = DashboardState::new(&radar);
+    let lines = rendered_lines(&radar, &state, 100, 12);
+    let whole = lines.join("\n");
+    assert!(
+        !whole.chars().any(|c| ('\u{2581}'..='\u{2588}').contains(&c)),
+        "the compact tier must not render any sparkline glyph, got:\n{whole}"
+    );
+}

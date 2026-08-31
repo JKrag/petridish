@@ -423,7 +423,9 @@ pub fn render(frame: &mut ratatui::Frame, radar: &Radar, state: &DashboardState)
 
         if !state.collapsed[si] {
             let roomy_running = *bucket == StatusBucket::Active && !compact_tier;
-            let item_span = if roomy_running { 4 } else { 1 };
+            // 5 lines per roomy card: 3 content lines + the sparkline + the blank
+            // separator (see `roomy_card_lines`) -- must track its actual line count.
+            let item_span = if roomy_running { 5 } else { 1 };
             for (member_pos, &proj_idx) in members.iter().enumerate() {
                 if content_lines.len() + item_span > available_content {
                     let remaining = members.len() - member_pos;
@@ -692,12 +694,58 @@ fn roomy_card_lines(radar: &Radar, proj_idx: usize, is_selected: bool, width: us
     let silence_style = if is_selected { name_style } else { Style::default().fg(tier_color).add_modifier(Modifier::BOLD) };
     let dim = Style::default().fg(COLOR_DIM);
 
+    let sparkline = sparkline_glyphs(&p.agent_activity);
+    let left4 = Line::from(vec![
+        Span::raw("     "),
+        Span::styled(sparkline, Style::default().fg(tier_color)),
+    ]);
+
     vec![
         split_line(format!(" {glyph} {}{}{}", p.name, dirty_marker, uncommitted), right1, width, name_style, silence_style),
         split_line(left2, right2, width, dim, dim),
         split_line(left3, right3, width, dim, dim),
+        left4,
         Line::from(""),
     ]
+}
+
+/// Unicode block elements U+2581-2588 ("Block Elements", standardized in Unicode 1.0/1.1) --
+/// within petri's Unicode-1.1-only glyph rule (petri/SPEC.md §4, the real macOS `wcwidth`
+/// gap that rule exists for), same rigor as every other glyph this module already renders.
+const SPARKLINE_GLYPHS: [char; 8] = ['▁', '▂', '▃', '▄', '▅', '▆', '▇', '█'];
+
+/// On-screen width (in samples) of the roomy-card sparkline -- deliberately narrower than
+/// the full `AGENT_ACTIVITY_WINDOW` (60) ring; this is a glance-value shape indicator, not a
+/// full-resolution chart.
+const SPARKLINE_WIDTH: usize = 20;
+
+/// Renders the trailing `SPARKLINE_WIDTH` samples of `agent_activity` (oldest first, this
+/// tick last) as a compact block-glyph string. Levels are normalized against the max count
+/// *within the visible window*, not the whole ring, so one busy stretch that's since scrolled
+/// off doesn't permanently flatten the rest of the sparkline into the lowest bar. Fewer than
+/// `SPARKLINE_WIDTH` samples (a freshly-discovered project, or the daemon just restarted) are
+/// left-padded with the lowest bar rather than shortened, so every sparkline occupies the
+/// same on-screen width regardless of how much history exists yet.
+fn sparkline_glyphs(agent_activity: &[u32]) -> String {
+    let start = agent_activity.len().saturating_sub(SPARKLINE_WIDTH);
+    let window = &agent_activity[start..];
+    let max = window.iter().copied().max().unwrap_or(0);
+    let pad = SPARKLINE_WIDTH.saturating_sub(window.len());
+
+    let mut out = String::with_capacity(SPARKLINE_WIDTH);
+    for _ in 0..pad {
+        out.push(SPARKLINE_GLYPHS[0]);
+    }
+    for &count in window {
+        let level = if count == 0 || max == 0 {
+            0
+        } else {
+            let scaled = (count as f64 / max as f64) * (SPARKLINE_GLYPHS.len() - 1) as f64;
+            (scaled.round() as usize).clamp(1, SPARKLINE_GLYPHS.len() - 1)
+        };
+        out.push(SPARKLINE_GLYPHS[level]);
+    }
+    out
 }
 
 /// Compact row for a project in IN FLIGHT / STALE / COLD.
@@ -769,4 +817,89 @@ fn abbreviate_home(path: &str) -> String {
         }
     }
     path.to_string()
+}
+
+#[cfg(test)]
+mod sparkline_tests {
+    use super::*;
+
+    #[test]
+    fn empty_ring_renders_all_lowest_bars() {
+        let out = sparkline_glyphs(&[]);
+        assert_eq!(out.chars().count(), SPARKLINE_WIDTH);
+        assert!(out.chars().all(|c| c == SPARKLINE_GLYPHS[0]));
+    }
+
+    #[test]
+    fn all_zero_ring_renders_all_lowest_bars_not_a_flat_high_bar() {
+        let ring = vec![0u32; SPARKLINE_WIDTH];
+        let out = sparkline_glyphs(&ring);
+        assert!(
+            out.chars().all(|c| c == SPARKLINE_GLYPHS[0]),
+            "an all-zero window must render as the lowest bar throughout, got {out:?}"
+        );
+    }
+
+    #[test]
+    fn fewer_than_width_samples_are_left_padded_with_the_lowest_bar() {
+        // Three real samples, all with the same nonzero count -> the rightmost three
+        // chars are the max-level bar, everything to their left is left-pad.
+        let ring = vec![5u32, 5, 5];
+        let out: Vec<char> = sparkline_glyphs(&ring).chars().collect();
+        assert_eq!(out.len(), SPARKLINE_WIDTH);
+        let pad = SPARKLINE_WIDTH - 3;
+        assert!(
+            out[..pad].iter().all(|&c| c == SPARKLINE_GLYPHS[0]),
+            "left pad must be the lowest bar: {out:?}"
+        );
+        assert!(
+            out[pad..].iter().all(|&c| c == SPARKLINE_GLYPHS[SPARKLINE_GLYPHS.len() - 1]),
+            "the three equal, nonzero, max-of-window samples must render at the top bar: {out:?}"
+        );
+    }
+
+    #[test]
+    fn only_the_trailing_width_samples_are_shown() {
+        // A ring longer than SPARKLINE_WIDTH: the sparkline must reflect only the last
+        // SPARKLINE_WIDTH samples, not the whole ring (older samples fall off the left).
+        let mut ring = vec![0u32; SPARKLINE_WIDTH * 2];
+        // Put a lone spike just before the visible window -- must NOT show up.
+        ring[SPARKLINE_WIDTH - 1] = 999;
+        // And a spike inside the visible window -- must show up as the max bar.
+        let visible_spike_idx = ring.len() - 1;
+        ring[visible_spike_idx] = 5;
+
+        let out: Vec<char> = sparkline_glyphs(&ring).chars().collect();
+        assert_eq!(out.len(), SPARKLINE_WIDTH);
+        assert_eq!(
+            *out.last().unwrap(), SPARKLINE_GLYPHS[SPARKLINE_GLYPHS.len() - 1],
+            "the in-window spike must render as the top bar (it's the window's own max): {out:?}"
+        );
+        // Nothing else in the visible window is nonzero, so everything but the last char
+        // must be the lowest bar -- the off-window spike must have no visible effect.
+        assert!(
+            out[..out.len() - 1].iter().all(|&c| c == SPARKLINE_GLYPHS[0]),
+            "an off-window spike must not influence the visible normalization: {out:?}"
+        );
+    }
+
+    #[test]
+    fn normalizes_relative_to_the_windows_own_max_not_a_fixed_scale() {
+        // Two samples: half of max should land roughly mid-scale, not pinned to a fixed
+        // absolute-count threshold.
+        let mut ring = vec![0u32; SPARKLINE_WIDTH - 2];
+        ring.push(2); // half of the window's max
+        ring.push(4); // the window's max -> must render as the top bar
+        let out: Vec<char> = sparkline_glyphs(&ring).chars().collect();
+        assert_eq!(*out.last().unwrap(), SPARKLINE_GLYPHS[SPARKLINE_GLYPHS.len() - 1]);
+        let half_level = out[out.len() - 2];
+        assert_ne!(
+            half_level, SPARKLINE_GLYPHS[0],
+            "a nonzero count must never render as the zero-count bar: {out:?}"
+        );
+        assert_ne!(
+            half_level, SPARKLINE_GLYPHS[SPARKLINE_GLYPHS.len() - 1],
+            "half of the window's max should not render identically to the max itself: {out:?}"
+        );
+    }
 }
