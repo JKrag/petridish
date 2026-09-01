@@ -194,6 +194,7 @@ fn poll_loop(
                         if let Err(e) = prefs::save(&prefs::default_prefs_path(), &Prefs {
                             last_screen: LastScreen::Browser,
                             collapsed: dashboard_state.as_ref().map(|d| d.collapsed).unwrap_or([false, false, true, true]),
+                            tools: std::collections::BTreeMap::new(),
                         }) {
                             eprintln!("petri S7: persist Tab switch failed: {e}");
                         }
@@ -233,6 +234,7 @@ fn poll_loop(
                                             if let Err(e) = prefs::save(&prefs::default_prefs_path(), &Prefs {
                                                 last_screen: LastScreen::Browser,
                                                 collapsed: dstate.collapsed,
+                                                tools: std::collections::BTreeMap::new(),
                                             }) {
                                                 eprintln!("petri S7: persist Enter→Browser failed: {e}");
                                             }
@@ -362,6 +364,7 @@ fn poll_loop(
                         if let Err(e) = prefs::save(&prefs::default_prefs_path(), &Prefs {
                             last_screen: LastScreen::Dashboard,
                             collapsed: dashboard_state.as_ref().map(|d| d.collapsed).unwrap_or([false, false, true, true]),
+                            tools: std::collections::BTreeMap::new(),
                         }) {
                             eprintln!("petri S7: persist Tab switch (Browser→Dashboard) failed: {e}");
                         }

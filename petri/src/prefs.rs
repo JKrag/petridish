@@ -1,8 +1,10 @@
 //! The preferences file (petri/SPEC.md §6): `~/.petridish/petri.toml`, owned
 //! and written by `petri` alone — `swab` never reads it, and it is
 //! deliberately not a `[petri]` section in `config.toml` (that would put two
-//! writers on one file). Holds which Dashboard sections are collapsed and the
-//! last active screen, so both survive a restart.
+//! writers on one file). Holds which Dashboard sections are collapsed, the
+//! last active screen, and the tool choices for the first-run picker (which
+//! external program each action id falls back to), so all three survive a
+//! restart.
 //!
 //! Contract, per spec:
 //! - A **missing** file means defaults (first run, or the file was deleted).
@@ -34,12 +36,25 @@ impl Default for LastScreen {
 
 /// The persisted preferences shape. `#[serde(default)]` on every field so a
 /// prefs file written by an older `petri` (schema drift) still parses.
+///
+/// `tools` is declared last as a readability convention, not a correctness
+/// requirement: it keeps the scalars together above the `[tools]` table in the
+/// written file, matching how a human would hand-edit it. (An earlier version
+/// of this comment claimed `toml::to_string` would fail with `ValueAfterTable`
+/// if a map preceded a scalar. That was true of the toml 0.5-era serializer;
+/// it is measurably NOT true of the toml 0.8 / toml_edit backend this crate
+/// pins, which emits a correct document from either order. Verified directly
+/// rather than assumed.)
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct Prefs {
     #[serde(default)]
     pub last_screen: LastScreen,
     #[serde(default = "default_collapsed")]
     pub collapsed: CollapsedState,
+    /// The external program chosen for each action id (e.g. `"gitlog"` ->
+    /// `"serie"`). Absent from an older prefs file, so `#[serde(default)]`.
+    #[serde(default)]
+    pub tools: std::collections::BTreeMap<String, String>,
 }
 
 fn default_collapsed() -> CollapsedState {
@@ -51,6 +66,7 @@ impl Default for Prefs {
         Prefs {
             last_screen: LastScreen::default(),
             collapsed: default_collapsed(),
+            tools: std::collections::BTreeMap::new(),
         }
     }
 }
