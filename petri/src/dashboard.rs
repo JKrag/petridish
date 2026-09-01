@@ -53,9 +53,22 @@ const COMPACT_TIER_MAX_CONTENT_ROWS: usize = 16;
 /// terminal blank at real working widths because every section rendered as a single column
 /// regardless of how much width was available — this and `MIN_COMPACT_COL_WIDTH` are the fix.
 const MIN_ROOMY_CARD_WIDTH: usize = 60;
-/// Same idea for the single-line compact rows (IN FLIGHT/STALE/COLD, and RUNNING once it drops
-/// into the compact tier) — narrower because a compact row carries no sparkline to protect.
+/// Same idea for the single-line compact rows (STALE/COLD, and RUNNING once it drops into the
+/// compact tier) — narrower because these rows carry no sparkline to protect.
 const MIN_COMPACT_COL_WIDTH: usize = 45;
+/// IN FLIGHT rows carry their own git-activity sparkline (see `shows_git_sparkline`'s doc
+/// comment in `plan_layout`), so they need more width than `MIN_COMPACT_COL_WIDTH` before a
+/// second grid column is worth it — that constant was sized for the plain fields alone and
+/// isn't a safe base to build on here (an early version of this constant just added the
+/// sparkline's own width on top of it, which under-counted the plain fields themselves and
+/// silently clipped the sparkline off at the computed minimum — the exact bug this comment
+/// exists to prevent recurring). Computed from `compact_row_line`'s real field widths: leading
+/// space + name(26) + gap + branch(22) + gap + dirty(4) + gap + a worst-case commit-age string
+/// ("999d ago", 8) + gap + the `[gh]` marker (4), then the sparkline (`GIT_ACTIVITY_WINDOW_DAYS`
+/// samples) + its 2-space gap + `"14d"` tag, plus one more gap column so the two halves never
+/// touch.
+const MIN_INFLIGHT_COL_WIDTH: usize =
+    (1 + 26 + 1 + 22 + 1 + 4 + 1 + 8 + 1 + 4) + 1 + (petridish_core::schema::GIT_ACTIVITY_WINDOW_DAYS + 2 + 3);
 /// Column cap for either grid. Past this, cards get so narrow that branch names and paths
 /// truncate more than they inform — screen-fill should come from wider cards claiming the
 /// extra width, not an unbounded column count.
@@ -471,15 +484,44 @@ pub fn plan_layout(area: Rect, radar: &Radar, collapsed: CollapsedState) -> Dash
         // separates one card from the next (and, via its color, signals selection) — see
         // `render_section`'s roomy branch.
         let item_span = if roomy { ROOMY_CARD_BOX_ROWS + 1 } else { 1 };
-        let min_col_width = if roomy { MIN_ROOMY_CARD_WIDTH } else { MIN_COMPACT_COL_WIDTH };
-        let columns = grid_columns(min_col_width, width);
+        // IN FLIGHT rows carry their own git-activity sparkline (`compact_row_line`'s
+        // `show_git_sparkline`) — a deliberate alignment: IN FLIGHT's default upper bound is 14
+        // days (`swab`'s `in_flight` threshold), the same span `GIT_ACTIVITY_WINDOW_DAYS`
+        // covers, so "how alive is this branch over the window IN FLIGHT itself represents" is
+        // exactly what the section is already about. STALE/COLD spans (60 days, unbounded) are
+        // not aligned the same way, so they keep the plain compact row.
+        let shows_git_sparkline = *bucket == StatusBucket::InFlight;
+        let min_col_width = if roomy {
+            MIN_ROOMY_CARD_WIDTH
+        } else if shows_git_sparkline {
+            MIN_INFLIGHT_COL_WIDTH
+        } else {
+            MIN_COMPACT_COL_WIDTH
+        };
+        let max_columns_by_width = grid_columns(min_col_width, width);
+        let rows_budget = fleet_rows.saturating_sub(used);
+        // Column count: a roomy card's individual content genuinely improves with more width
+        // (the agent sparkline scales up to real additional history — see
+        // `agent_sparkline_width_for`), so RUNNING always claims what the width-driven ladder
+        // allows. A compact row's content does NOT scale with width (fixed fields; even the new
+        // IN FLIGHT git sparkline is capped at `GIT_ACTIVITY_WINDOW_DAYS` regardless of column
+        // width), so gridding one wider than necessary buys nothing but fragments a section that
+        // would otherwise read as one clean list — use the fewest columns (starting at 1) that
+        // still avoid truncating this section within its own row budget, and only reach for
+        // more when a single column genuinely would not fit.
+        let columns = if roomy {
+            max_columns_by_width
+        } else {
+            (1..=max_columns_by_width)
+                .find(|&c| members.len().div_ceil(c) * item_span <= rows_budget)
+                .unwrap_or(max_columns_by_width)
+        };
         let card_width = column_width(width, columns);
 
         let (items_shown, grid_rows, truncated_remaining) = if collapsed[si] {
             (0, 0, None)
         } else {
             let grid_rows_needed = members.len().div_ceil(columns);
-            let rows_budget = fleet_rows.saturating_sub(used);
             if grid_rows_needed * item_span > rows_budget {
                 let rows_that_fit = rows_budget / item_span;
                 let shown = (rows_that_fit * columns).min(members.len());
@@ -706,7 +748,7 @@ fn render_section(
                         if section.bucket == StatusBucket::Active {
                             compact_running_row_line(radar, proj_idx, is_selected, section.card_width)
                         } else {
-                            compact_row_line(radar, proj_idx, is_selected, section.card_width)
+                            compact_row_line(radar, proj_idx, is_selected, section.card_width, section.bucket == StatusBucket::InFlight)
                         }
                     })
                     .collect();
@@ -1103,7 +1145,10 @@ fn sparkline_glyphs(samples: &[u32], width: usize) -> String {
 }
 
 /// Compact row for a project in IN FLIGHT / STALE / COLD.
-fn compact_row_line(radar: &Radar, proj_idx: usize, is_selected: bool, card_width: usize) -> Line<'static> {
+/// `show_git_sparkline` is true only for IN FLIGHT (see `plan_layout`'s `shows_git_sparkline`
+/// doc comment for the 14-day alignment reasoning) — STALE/COLD rows omit it and keep the
+/// original plain fields.
+fn compact_row_line(radar: &Radar, proj_idx: usize, is_selected: bool, card_width: usize, show_git_sparkline: bool) -> Line<'static> {
     let p = &radar.projects[proj_idx];
     let branch = p.git.branch.as_deref().unwrap_or("(none)");
     let uncommitted = if p.git.uncommitted_files > 0 { format!("✎{}", p.git.uncommitted_files) } else { String::new() };
@@ -1116,18 +1161,50 @@ fn compact_row_line(radar: &Radar, proj_idx: usize, is_selected: bool, card_widt
     let name_field = format!(" {} ", fixed_width(&p.name, 26));
     let branch_field = format!("{} ", fixed_width(branch, 22));
     let uncommitted_field = format!("{} ", fixed_width(&uncommitted, 4));
+    let commit_field = format!("{commit_age} ");
+
+    let (sparkline, tag) = if show_git_sparkline {
+        (
+            sparkline_glyphs(&p.git.daily_commits, petridish_core::schema::GIT_ACTIVITY_WINDOW_DAYS),
+            format!("{}d", petridish_core::schema::GIT_ACTIVITY_WINDOW_DAYS),
+        )
+    } else {
+        (String::new(), String::new())
+    };
+
+    let left = format!("{name_field}{branch_field}{uncommitted_field}{commit_field}{gh}");
 
     if is_selected {
-        return solid_selected_line(&format!("{name_field}{branch_field}{uncommitted_field}{commit_age} {gh}"), card_width);
+        let content = if show_git_sparkline {
+            let pad = card_width
+                .saturating_sub(left.chars().count() + sparkline.chars().count() + 2 + tag.chars().count())
+                .max(1);
+            format!("{left}{}{sparkline}  {tag}", " ".repeat(pad))
+        } else {
+            left
+        };
+        return solid_selected_line(&content, card_width);
     }
 
-    Line::from(vec![
+    let mut spans = vec![
         Span::styled(name_field, Style::default().fg(COLOR_FG)),
         Span::styled(branch_field, Style::default().fg(COLOR_BRANCH)),
         Span::styled(uncommitted_field, Style::default().fg(COLOR_DIM)),
-        Span::styled(format!("{commit_age} "), Style::default().fg(COLOR_DIM)),
+        Span::styled(commit_field, Style::default().fg(COLOR_DIM)),
         Span::styled(gh, Style::default().fg(COLOR_ACCENT)),
-    ])
+    ];
+
+    if show_git_sparkline {
+        let pad = card_width
+            .saturating_sub(left.chars().count() + sparkline.chars().count() + 2 + tag.chars().count())
+            .max(1);
+        spans.push(Span::raw(" ".repeat(pad)));
+        spans.push(Span::styled(sparkline, Style::default().fg(COLOR_BRANCH)));
+        spans.push(Span::raw("  "));
+        spans.push(Span::styled(tag, Style::default().fg(COLOR_DIM)));
+    }
+
+    Line::from(spans)
 }
 
 /// A selected compact row's highlight: one solid, continuously-colored bar across the row's
@@ -1211,7 +1288,11 @@ mod layout_tests {
     }
 
     fn radar_with(n_active: usize) -> Radar {
-        let projects = (0..n_active).map(|i| project(&format!("p{i}"), StatusBucket::Active)).collect();
+        radar_with_bucket(n_active, StatusBucket::Active)
+    }
+
+    fn radar_with_bucket(n: usize, bucket: StatusBucket) -> Radar {
+        let projects = (0..n).map(|i| project(&format!("p{i}"), bucket)).collect();
         Radar {
             schema_version: 1,
             updated_at: chrono::Utc::now(),
@@ -1249,6 +1330,44 @@ mod layout_tests {
         assert_eq!(section.columns, 3);
         assert_eq!(section.items_shown, 6);
         assert_eq!(section.grid_rows, 2, "6 items across 3 columns must take 2 grid rows");
+    }
+
+    #[test]
+    fn compact_section_stays_single_column_when_it_already_fits_a_wide_terminal() {
+        // Feedback (dashboard redesign follow-up): compact rows (IN FLIGHT/STALE/COLD) don't
+        // get richer with a wider column the way a roomy card does, so gridding one wider than
+        // necessary just fragments a section that would otherwise read as one clean list —
+        // especially wasteful when there's a full page of blank space below it regardless. 5
+        // IN FLIGHT rows in a very tall, very wide terminal must stay 1 column even though the
+        // width alone would allow several.
+        let radar = radar_with_bucket(5, StatusBucket::InFlight);
+        let plan = plan_layout(Rect::new(0, 0, 300, 200), &radar, EXPANDED);
+        let section = &plan.sections[0];
+        assert_eq!(section.bucket, StatusBucket::InFlight);
+        assert_eq!(section.columns, 1, "5 rows already fit in 1 column with room to spare, so no grid is needed");
+        assert_eq!(section.items_shown, 5);
+        assert!(section.truncated_remaining.is_none());
+    }
+
+    #[test]
+    fn compact_section_still_grids_when_a_single_column_would_truncate() {
+        // The needs-driven column count must still reach for more columns when 1 genuinely
+        // isn't enough to show everything in the available height.
+        let radar = radar_with_bucket(60, StatusBucket::InFlight);
+        let plan = plan_layout(Rect::new(0, 0, 300, 20), &radar, EXPANDED);
+        let section = &plan.sections[0];
+        assert!(section.columns > 1, "60 rows cannot fit in 1 column within a 20-row terminal, so it must grid");
+    }
+
+    #[test]
+    fn roomy_section_grids_even_when_a_single_column_would_already_fit() {
+        // Contrast with the compact-row case above: RUNNING's roomy cards get real extra
+        // information from a wider column (the agent sparkline scales up), so they always claim
+        // the width-driven column count — unlike compact rows, going wider isn't wasted here.
+        let radar = radar_with(3);
+        let plan = plan_layout(Rect::new(0, 0, 200, 200), &radar, EXPANDED);
+        let section = &plan.sections[0];
+        assert!(section.columns > 1, "3 roomy cards easily fit in 1 column at this height, but width should still be used");
     }
 
     #[test]
