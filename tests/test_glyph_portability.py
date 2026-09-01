@@ -1,22 +1,21 @@
-"""Every character petri can put on a terminal must actually render there.
+"""Every character petripy can put on a terminal must actually render there.
 
-Learned the expensive way. ``⚠`` (U+26A0, added in Unicode 4.0) came out as a
-**blank cell** on the macOS 14 CI runner, while ``●`` (U+25CF) and ``✎``
-(U+270E) — both Unicode 1.1 — rendered fine. ncurses asks ``wcwidth()`` before
-placing a character, macOS's tables lag the standard, and for a codepoint they
-don't know the answer is -1, so ncurses substitutes a space.
-
-What made it expensive is what it broke: the stalled-run glyph is, by the
-dashboard's own design, *the row you opened it to find*. It silently vanished,
-and nothing in a 300-test suite noticed, because every project's name also
-appears on its path row — so every substring assertion still passed and the
-screen read as a calm dashboard.
+Full incident writeup and rationale: ``src/petridish/CLAUDE.md``'s "The
+``wcwidth`` incident" section — this is the canonical account; don't re-tell
+it in a third place. Short version: ``⚠`` (U+26A0, Unicode 4.0) rendered as a
+**blank cell** on the macOS 14 CI runner because ncurses asks libc's
+``wcwidth()`` before placing a character and macOS's tables lag the standard;
+an unrecognized codepoint becomes a space, silently, in the one row a
+monitoring dashboard exists to make visible.
 
 Hence a mechanical gate rather than a convention. Any non-ASCII character
 introduced into a curses-side module fails this test until it is added below
-with a reason. **The bar for adding one: it must exist in Unicode 1.1 (1993)** —
-old enough that every ``wcwidth`` table still in service knows it. A prettier
-glyph is not worth a warning that only works on the author's laptop.
+with a reason. **The bar for adding one: it must exist in Unicode 1.1 (1993)**
+— old enough that every ``wcwidth`` table still in service knows it. This bar
+is specific to this file's ``wcwidth``/ncurses codepath; it does not
+automatically transfer to `petri`'s ratatui-based Rust rendering, which has
+its own gate (``petri/tests/glyph_portability.rs``, `petri/SPEC.md` §4.2) on
+its own terms.
 
 Scope note: this deliberately scans whole files, comments and docstrings
 included, rather than trying to guess statically which literals reach the

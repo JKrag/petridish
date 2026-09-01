@@ -2,6 +2,7 @@
 //! type-ahead filter. petri/SPEC.md §3.1 is the authoritative behavior
 //! contract — read it in full before touching this file.
 
+use crate::theme;
 use petridish_core::present as present;
 use petridish_core::schema::{AgentActivity, Project, Radar, StatusBucket};
 use ratatui::{
@@ -211,21 +212,21 @@ pub fn render(frame: &mut Frame, radar: &Radar, state: &BrowserState) {
     // treatment as the Dashboard's title, not just colored text.
     let header = Paragraph::new(Line::from(Span::styled(
         " petri · browser ",
-        Style::default().fg(Color::Black).bg(Color::Cyan).add_modifier(Modifier::BOLD),
+        Style::default().fg(Color::Black).bg(theme::ACCENT).add_modifier(Modifier::BOLD),
     )))
     .wrap(Wrap { trim: false });
     frame.render_widget(header, chunks[0]);
 
     let rule = Paragraph::new(Line::from(Span::styled(
         "═".repeat(area.width as usize),
-        Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD),
+        Style::default().fg(theme::ACCENT).add_modifier(Modifier::BOLD),
     )));
     frame.render_widget(rule, chunks[1]);
 
     // Footer: bound keymap (spec §5 — advertise only keys actually bound).
     let footer = Paragraph::new(Line::from(Span::styled(
         " Tab Dashboard  j/k up-down  Shift+j/k ×10  PgUp/PgDn page  Home/End  / filter  q quit ",
-        Style::default().fg(Color::DarkGray),
+        Style::default().fg(theme::DIM),
     )))
     .wrap(Wrap { trim: false });
     frame.render_widget(footer, chunks[3]);
@@ -375,7 +376,7 @@ fn render_list_lines(radar: &Radar, state: &BrowserState) -> (Vec<Line<'static>>
         // placeholder rather than an empty frame. Must not panic.
         lines.push(Line::from(Span::styled(
             "  (no projects)",
-            Style::default().fg(Color::DarkGray),
+            Style::default().fg(theme::DIM),
         )));
         return (lines, None);
     }
@@ -409,11 +410,15 @@ fn render_list_lines(radar: &Radar, state: &BrowserState) -> (Vec<Line<'static>>
             continue;
         }
 
-        // Header line: "RUNNING [5]" in yellow+bold.
+        // Header line: "RUNNING [5]", colored by `theme::bucket_color` — same
+        // silence-gradient-as-label-color convention as the Dashboard's
+        // section headers (dashboard.rs's `section_header_line`), so the two
+        // screens' headers read as one vocabulary rather than the Dashboard's
+        // gradient and a flat Browser yellow that happened to coexist.
         lines.push(Line::from(Span::styled(
             format!(" {} [{}] ", label, section_indices.len()),
             Style::default()
-                .fg(Color::Yellow)
+                .fg(theme::bucket_color(*section))
                 .add_modifier(Modifier::BOLD),
         )));
 
@@ -456,17 +461,29 @@ fn render_project_row(radar: &Radar, proj_idx: usize, is_selected: bool) -> Line
 
     let silence = silence_display(project.last_activity_at);
 
+    // Selection = reverse video (black on accent), bold — the same
+    // convention `dashboard.rs`'s `solid_selected_line` uses for its compact
+    // rows: "reverse video is the canonical current-selection signal"
+    // (`references/visual-patterns.md`), applied as a background fill rather
+    // than a text-color shift so it reads as a bar, not just a tint — the
+    // same reason `not-selected` uses `FG` (near-white) rather than a color
+    // close enough to `ACCENT` to blur the two states together.
     let style = if is_selected {
-        Style::default().fg(Color::Yellow)
+        Style::default().fg(Color::Black).bg(theme::ACCENT).add_modifier(Modifier::BOLD)
     } else {
-        Style::default().fg(Color::White)
+        Style::default().fg(theme::FG)
+    };
+    let meta_style = if is_selected {
+        style
+    } else {
+        Style::default().fg(theme::DIM)
     };
 
     Line::from(vec![
         Span::styled(format!(" {} ", glyph), style),
         Span::styled(format!("{}{}", name, dirty_marker), style),
-        Span::styled(format!("  {}", uncommitted), Style::default().fg(Color::DarkGray)),
-        Span::styled(format!(" {}", silence), Style::default().fg(Color::DarkGray)),
+        Span::styled(format!("  {}", uncommitted), meta_style),
+        Span::styled(format!(" {}", silence), meta_style),
     ])
 }
 
@@ -515,7 +532,7 @@ fn render_detail_pane(
             "",
             vec![Line::from(Span::styled(
                 "  No project selected",
-                Style::default().fg(Color::DarkGray),
+                Style::default().fg(theme::DIM),
             ))],
         ),
     };
@@ -534,14 +551,14 @@ fn render_detail_lines(project: &Project) -> Vec<Line<'static>> {
     let display_path = abbreviate_home(&project.path);
     lines.push(Line::from(Span::styled(
         format!("  Path: {}", display_path),
-        Style::default().fg(Color::White),
+        Style::default().fg(theme::FG),
     )));
 
     // Branch.
     let branch = project.git.branch.as_deref().unwrap_or("(none)");
     lines.push(Line::from(Span::styled(
         format!("  Branch: {}", branch),
-        Style::default().fg(Color::Cyan),
+        Style::default().fg(theme::BRANCH),
     )));
 
     // Dirty / uncommitted count.
@@ -551,12 +568,12 @@ fn render_detail_lines(project: &Project) -> Vec<Line<'static>> {
                 "  Dirty: {} uncommitted",
                 project.git.uncommitted_files
             ),
-            Style::default().fg(Color::Red),
+            Style::default().fg(theme::DANGER),
         ))
     } else {
         Line::from(Span::styled(
             "  Dirty: clean",
-            Style::default().fg(Color::Green),
+            Style::default().fg(theme::FRESH),
         ))
     };
     lines.push(dirty_line);
@@ -566,32 +583,34 @@ fn render_detail_lines(project: &Project) -> Vec<Line<'static>> {
         (Some(last), Some(mines)) if last != mines => {
             lines.push(Line::from(Span::styled(
                 format!("  Last commit: {}", format_commit(*last)),
-                Style::default().fg(Color::White),
+                Style::default().fg(theme::FG),
             )));
             lines.push(Line::from(Span::styled(
                 format!("  Mine      : {}", format_commit(*mines)),
-                Style::default().fg(Color::Green),
+                Style::default().fg(theme::FRESH),
             )));
         }
         (Some(last), _) => {
             lines.push(Line::from(Span::styled(
                 format!("  Last commit: {}", format_commit(*last)),
-                Style::default().fg(Color::White),
+                Style::default().fg(theme::FG),
             )));
         }
         (None, _) => {
             lines.push(Line::from(Span::styled(
                 "  Last commit: (none)",
-                Style::default().fg(Color::DarkGray),
+                Style::default().fg(theme::DIM),
             )));
         }
     }
 
-    // GitHub URL.
+    // GitHub URL — same accent as the Dashboard's `[gh]` marker
+    // (dashboard.rs's `compact_row_line`), so the same fact reads as the
+    // same color on both screens.
     if let Some(url) = &project.git.github_url {
         lines.push(Line::from(Span::styled(
             format!("  GitHub: {}", url),
-            Style::default().fg(Color::Green),
+            Style::default().fg(theme::ACCENT),
         )));
     }
 
@@ -600,9 +619,9 @@ fn render_detail_lines(project: &Project) -> Vec<Line<'static>> {
     lines.push(Line::from(Span::styled(
         format!("  Agent: {}", agent_label),
         Style::default().fg(if project.agent.state == AgentActivity::Working {
-            Color::Yellow
+            theme::FRESH
         } else {
-            Color::White
+            theme::FG
         }),
     )));
 
@@ -610,7 +629,7 @@ fn render_detail_lines(project: &Project) -> Vec<Line<'static>> {
     if let Some(session_id) = &project.agent.session_id {
         lines.push(Line::from(Span::styled(
             format!("  Session: {}", session_id),
-            Style::default().fg(Color::DarkGray),
+            Style::default().fg(theme::DIM),
         )));
     }
 
@@ -621,7 +640,7 @@ fn render_detail_lines(project: &Project) -> Vec<Line<'static>> {
     };
     lines.push(Line::from(Span::styled(
         format!("  Last activity: {}", last_activity),
-        Style::default().fg(Color::DarkGray),
+        Style::default().fg(theme::DIM),
     )));
 
     lines

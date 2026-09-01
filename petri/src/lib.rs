@@ -7,6 +7,7 @@ pub mod app;
 pub mod browser;
 pub mod dashboard;
 pub mod prefs;
+pub mod theme;
 use crate::prefs::{LastScreen, Prefs};
 
 /// Row count for the Browser's `Shift`-style fast-jump keys (`J`/`K`). 10 is

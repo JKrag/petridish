@@ -91,25 +91,10 @@ const ROOMY_CARD_BOX_ROWS: usize = 6;
 /// pre-border design's 5 spaces since the border itself now provides the card's left edge.
 const ZONE_INDENT: &str = "  ";
 
-/// The dashboard's truecolor identity (superseding SPEC.md §4's ANSI-16
-/// mandate, per the redesign discussion — that constraint was written for
-/// the unstarted curses-era plan and isn't binding now that ratatui is in
-/// real use). One palette shared by chrome and data, not two that happen to
-/// coexist: `COLOR_ACCENT` is the app's own color (badge, selection,
-/// dividers); `COLOR_FRESH`/`COLOR_AGING`/`COLOR_COLD` are the same
-/// green→amber→grey silence gradient `silence_tier_color` uses, reused here
-/// so a section's *label* color previews the state of what's inside it
-/// (RUNNING reads green-ish, STALE/COLD read grey) instead of every section
-/// header being a flat, undifferentiated yellow.
-const COLOR_ACCENT: Color = Color::Rgb(0x33, 0xe2, 0xac);
-const COLOR_FRESH: Color = Color::Rgb(0x4f, 0xe6, 0xa0);
-const COLOR_AGING: Color = Color::Rgb(0xf0, 0xb8, 0x4f);
-const COLOR_COLD: Color = Color::Rgb(0x6b, 0x7a, 0x74);
-const COLOR_DIMMER: Color = Color::Rgb(0x48, 0x54, 0x4f);
-const COLOR_FG: Color = Color::Rgb(0xd9, 0xe6, 0xe0);
-const COLOR_DIM: Color = Color::Rgb(0x64, 0x76, 0x6f);
-const COLOR_BRANCH: Color = Color::Rgb(0x8f, 0xa3, 0x9b);
-const COLOR_DANGER: Color = Color::Rgb(0xef, 0x6a, 0x5b);
+// The dashboard's truecolor palette lives in `crate::theme` — shared with
+// `browser.rs` so the two screens read as one app. See that module's doc
+// comment for the ANSI-16 → truecolor history.
+use crate::theme;
 
 /// Fixed section order, same as `browser::SECTION_ORDER`.
 pub const SECTION_ORDER: [StatusBucket; 4] = [
@@ -604,9 +589,15 @@ pub fn render(frame: &mut ratatui::Frame, radar: &Radar, state: &DashboardState)
     frame.render_widget(Paragraph::new(header_lines(radar, &now, scan_secs, width)), header_area);
 
     if is_stale {
+        // `▲`, not `⚠` — the latter (U+26A0, Unicode 4.0) is the exact
+        // codepoint that rendered as a blank cell on the macOS 14 CI runner
+        // under ncurses/wcwidth (petri/SPEC.md §4.2's founding incident). This
+        // banner exists specifically so a stale scan can't fail silently;
+        // reusing the one glyph proven to do exactly that here would be
+        // ironic at best.
         let banner = Line::from(Span::styled(
-            format!(" ⚠ Data stale (updated {} ago)", humanize_secs(elapsed_secs as u64)),
-            Style::default().fg(Color::Black).bg(COLOR_DANGER).add_modifier(Modifier::BOLD),
+            format!(" ▲ Data stale (updated {} ago)", humanize_secs(elapsed_secs as u64)),
+            Style::default().fg(Color::Black).bg(theme::DANGER).add_modifier(Modifier::BOLD),
         ));
         frame.render_widget(Paragraph::new(vec![banner]), banner_area);
     }
@@ -648,7 +639,7 @@ pub fn render(frame: &mut ratatui::Frame, radar: &Radar, state: &DashboardState)
         frame.render_widget(
             Paragraph::new(vec![Line::from(Span::styled(
                 format!(" … not shown: {summary} — resize taller"),
-                Style::default().fg(COLOR_AGING).add_modifier(Modifier::BOLD),
+                Style::default().fg(theme::AGING).add_modifier(Modifier::BOLD),
             ))]),
             summary_rect,
         );
@@ -729,9 +720,9 @@ fn render_section(
                         Some(DashRow::Project(idx)) if *idx == proj_idx
                     );
                     let border_style = if is_selected {
-                        Style::default().fg(COLOR_ACCENT).add_modifier(Modifier::BOLD)
+                        Style::default().fg(theme::ACCENT).add_modifier(Modifier::BOLD)
                     } else {
-                        Style::default().fg(COLOR_DIMMER)
+                        Style::default().fg(theme::DIMMER)
                     };
                     let block = Block::bordered().border_type(BorderType::Rounded).border_style(border_style);
                     let lines = roomy_card_lines(radar, proj_idx, inner_width);
@@ -764,7 +755,7 @@ fn render_section(
             for c in 0..columns - 1 {
                 let gutter_rect = column_rects[c * 2 + 1];
                 let bar: Vec<Line<'static>> = (0..gutter_rect.height)
-                    .map(|_| Line::from(Span::styled(" │", Style::default().fg(COLOR_DIMMER))))
+                    .map(|_| Line::from(Span::styled(" │", Style::default().fg(theme::DIMMER))))
                     .collect();
                 frame.render_widget(Paragraph::new(bar), gutter_rect);
             }
@@ -775,7 +766,7 @@ fn render_section(
         frame.render_widget(
             Paragraph::new(vec![Line::from(Span::styled(
                 format!(" … +{remaining} more"),
-                Style::default().fg(COLOR_AGING).add_modifier(Modifier::BOLD),
+                Style::default().fg(theme::AGING).add_modifier(Modifier::BOLD),
             ))]),
             marker_rect,
         );
@@ -861,7 +852,7 @@ fn zone_row(spec: ZoneRowSpec, width: usize) -> Line<'static> {
         Span::raw(" ".repeat(pad)),
         Span::styled(spec.sparkline, spec.spark_style),
         Span::raw("  "),
-        Span::styled(spec.tag, Style::default().fg(COLOR_DIM)),
+        Span::styled(spec.tag, Style::default().fg(theme::DIM)),
     ])
 }
 
@@ -876,10 +867,10 @@ fn header_lines(radar: &Radar, now: &chrono::DateTime<chrono::Utc>, scan_secs: f
         " petri · dashboard ".to_string(),
         format!("{right} "),
         width,
-        Style::default().fg(Color::Black).bg(COLOR_ACCENT).add_modifier(Modifier::BOLD),
-        Style::default().fg(COLOR_FG),
+        Style::default().fg(Color::Black).bg(theme::ACCENT).add_modifier(Modifier::BOLD),
+        Style::default().fg(theme::FG),
     );
-    vec![title, Line::from(Span::styled("═".repeat(width), Style::default().fg(COLOR_ACCENT).add_modifier(Modifier::BOLD)))]
+    vec![title, Line::from(Span::styled("═".repeat(width), Style::default().fg(theme::ACCENT).add_modifier(Modifier::BOLD)))]
 }
 
 /// Section header line: " RUNNING" left, "25" right, between the two light
@@ -902,16 +893,12 @@ fn section_header_line(radar: &Radar, bucket: StatusBucket, count: usize, is_sel
     };
     // Section label previews the state of what's inside it, reusing the same
     // gradient `silence_tier_color` applies per-project: RUNNING reads
-    // fresh-green, IN FLIGHT amber, STALE/COLD grey — one palette, not a
-    // flat yellow for every section regardless of what it actually holds.
-    let label_color = match bucket {
-        StatusBucket::Active => COLOR_FRESH,
-        StatusBucket::InFlight => COLOR_AGING,
-        StatusBucket::Stale => COLOR_COLD,
-        StatusBucket::Cold => COLOR_DIMMER,
-    };
+    // fresh-green, IN FLIGHT amber, STALE grey, COLD dimmer-grey — one
+    // palette (`crate::theme::bucket_color`), not a flat yellow for every
+    // section regardless of what it actually holds.
+    let label_color = crate::theme::bucket_color(bucket);
     let style = if is_selected {
-        Style::default().fg(Color::Black).bg(COLOR_ACCENT).add_modifier(Modifier::BOLD)
+        Style::default().fg(Color::Black).bg(theme::ACCENT).add_modifier(Modifier::BOLD)
     } else {
         Style::default().fg(label_color).add_modifier(Modifier::BOLD)
     };
@@ -920,23 +907,16 @@ fn section_header_line(radar: &Radar, bucket: StatusBucket, count: usize, is_sel
 
 /// Truecolor gradient on silence age: fresh (<1m, still likely mid-turn) →
 /// aging (<1h, worth a glance) → cold (≥1h, silent long enough to actually
-/// worry about). SPEC.md §4 mandated the ANSI-16 palette "to inherit the
-/// user's terminal theme" — a deliberate call made back when this doc was the
-/// unstarted plan for a curses port; superseded by an explicit product
-/// decision to go truecolor for a distinct, screenshot-worthy identity now
-/// that ratatui is actually in use. The glyph *allowlist* (Unicode 1.1 only,
-/// `petri/SPEC.md` §4) is a different, still-binding constraint — it exists
-/// because of a real macOS `wcwidth` bug, not planning-doc caution.
+/// worry about). See `crate::theme` for the ANSI-16 → truecolor history. The
+/// glyph *allowlist* (petri/SPEC.md §4.2) is a separate concern — provenance
+/// is a real macOS `wcwidth` bug, not the planning-doc caution this color
+/// rule used to be — and this palette choice doesn't relax or affect it.
 fn silence_tier_color(secs: i64) -> Color {
     // Reuses the canonical Working/Recent/Idle thresholds
     // (`AGENT_WORKING_MAX_S` = 90s, `AGENT_RECENT_MAX_S` = 30m) rather than a
     // separate set of cutoffs invented for color alone — one silence
     // vocabulary for the whole app, not two that quietly disagree.
-    match petridish_core::schema::agent_state_for_silence(secs) {
-        AgentActivity::Working => COLOR_FRESH,
-        AgentActivity::Recent => COLOR_AGING,
-        AgentActivity::Idle => COLOR_COLD,
-    }
+    crate::theme::tier_color(petridish_core::schema::agent_state_for_silence(secs))
 }
 
 /// Compact single-line row for a RUNNING project once the Dashboard has
@@ -974,10 +954,10 @@ fn compact_running_row_line(radar: &Radar, proj_idx: usize, is_selected: bool, c
 
     Line::from(vec![
         Span::styled(format!(" {glyph} "), Style::default().fg(tier_color)),
-        Span::styled(name_field, Style::default().fg(COLOR_FG).add_modifier(Modifier::BOLD)),
-        Span::styled(branch_field, Style::default().fg(COLOR_BRANCH)),
+        Span::styled(name_field, Style::default().fg(theme::FG).add_modifier(Modifier::BOLD)),
+        Span::styled(branch_field, Style::default().fg(theme::BRANCH)),
         Span::styled(silence_field, Style::default().fg(tier_color)),
-        Span::styled(agent.to_string(), Style::default().fg(COLOR_DIM)),
+        Span::styled(agent.to_string(), Style::default().fg(theme::DIM)),
     ])
 }
 
@@ -1011,9 +991,9 @@ fn roomy_card_lines(radar: &Radar, proj_idx: usize, card_width: usize) -> Vec<Li
     };
 
     let tier_color = silence_tier_color(silence_secs);
-    let name_style = Style::default().fg(COLOR_FG).add_modifier(Modifier::BOLD);
+    let name_style = Style::default().fg(theme::FG).add_modifier(Modifier::BOLD);
     let silence_style = Style::default().fg(tier_color).add_modifier(Modifier::BOLD);
-    let dim = Style::default().fg(COLOR_DIM);
+    let dim = Style::default().fg(theme::DIM);
     let zone_label_style = |color: Color| Style::default().fg(color).add_modifier(Modifier::BOLD);
 
     let header = split_line(
@@ -1039,11 +1019,11 @@ fn roomy_card_lines(radar: &Radar, proj_idx: usize, card_width: usize) -> Vec<Li
         ZoneRowSpec {
             indent: ZONE_INDENT,
             label: "git",
-            label_style: zone_label_style(COLOR_BRANCH),
+            label_style: zone_label_style(theme::BRANCH),
             facts: git_facts,
             facts_style: dim,
             sparkline: git_sparkline,
-            spark_style: Style::default().fg(COLOR_BRANCH),
+            spark_style: Style::default().fg(theme::BRANCH),
             tag: format!("{}d", petridish_core::schema::GIT_ACTIVITY_WINDOW_DAYS),
         },
         card_width,
@@ -1087,9 +1067,9 @@ fn roomy_card_lines(radar: &Radar, proj_idx: usize, card_width: usize) -> Vec<Li
     vec![header, git_row, agent_row, path_row]
 }
 
-/// Unicode block elements U+2581-2588 ("Block Elements", standardized in Unicode 1.0/1.1) --
-/// within petri's Unicode-1.1-only glyph rule (petri/SPEC.md §4, the real macOS `wcwidth`
-/// gap that rule exists for), same rigor as every other glyph this module already renders.
+/// Unicode block elements U+2581-2588 ("Block Elements") -- each a single narrow cell per
+/// `unicode-width`, on petri's glyph allowlist (petri/SPEC.md §4.2, `petri/tests/glyph_portability.rs`)
+/// with that reasoning checked, same rigor as every other glyph this module already renders.
 const SPARKLINE_GLYPHS: [char; 8] = ['▁', '▂', '▃', '▄', '▅', '▆', '▇', '█'];
 
 /// Floor for the roomy-card agent sparkline's on-screen width (in samples) — what a
@@ -1187,11 +1167,11 @@ fn compact_row_line(radar: &Radar, proj_idx: usize, is_selected: bool, card_widt
     }
 
     let mut spans = vec![
-        Span::styled(name_field, Style::default().fg(COLOR_FG)),
-        Span::styled(branch_field, Style::default().fg(COLOR_BRANCH)),
-        Span::styled(uncommitted_field, Style::default().fg(COLOR_DIM)),
-        Span::styled(commit_field, Style::default().fg(COLOR_DIM)),
-        Span::styled(gh, Style::default().fg(COLOR_ACCENT)),
+        Span::styled(name_field, Style::default().fg(theme::FG)),
+        Span::styled(branch_field, Style::default().fg(theme::BRANCH)),
+        Span::styled(uncommitted_field, Style::default().fg(theme::DIM)),
+        Span::styled(commit_field, Style::default().fg(theme::DIM)),
+        Span::styled(gh, Style::default().fg(theme::ACCENT)),
     ];
 
     if show_git_sparkline {
@@ -1199,9 +1179,9 @@ fn compact_row_line(radar: &Radar, proj_idx: usize, is_selected: bool, card_widt
             .saturating_sub(left.chars().count() + sparkline.chars().count() + 2 + tag.chars().count())
             .max(1);
         spans.push(Span::raw(" ".repeat(pad)));
-        spans.push(Span::styled(sparkline, Style::default().fg(COLOR_BRANCH)));
+        spans.push(Span::styled(sparkline, Style::default().fg(theme::BRANCH)));
         spans.push(Span::raw("  "));
-        spans.push(Span::styled(tag, Style::default().fg(COLOR_DIM)));
+        spans.push(Span::styled(tag, Style::default().fg(theme::DIM)));
     }
 
     Line::from(spans)
@@ -1217,7 +1197,7 @@ fn compact_row_line(radar: &Radar, proj_idx: usize, is_selected: bool, card_widt
 fn solid_selected_line(content: &str, card_width: usize) -> Line<'static> {
     Line::from(Span::styled(
         fixed_width(content, card_width),
-        Style::default().fg(Color::Black).bg(COLOR_ACCENT).add_modifier(Modifier::BOLD),
+        Style::default().fg(Color::Black).bg(theme::ACCENT).add_modifier(Modifier::BOLD),
     ))
 }
 
@@ -1225,7 +1205,7 @@ fn solid_selected_line(content: &str, card_width: usize) -> Line<'static> {
 fn footer_line() -> Line<'static> {
     Line::from(Span::styled(
         " j/k move  Space toggle  Enter open/browser  Tab Browser  q quit ",
-        Style::default().fg(COLOR_DIM),
+        Style::default().fg(theme::DIM),
     ))
 }
 
