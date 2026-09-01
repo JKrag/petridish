@@ -211,7 +211,8 @@ pub fn render(frame: &mut ratatui::Frame, state: &PickerState) {
     // One row per option, plus the prompt, the input line when typing, the
     // footnote, and the border. Height follows the content rather than being
     // fixed, so a two-option picker is not mostly empty space.
-    let rows = state.options().len() as u16 + if state.custom_input().is_some() { 6 } else { 5 };
+    // prompt + options + (blank + input) + blank + keys + footnote + 2 borders.
+    let rows = state.options().len() as u16 + if state.custom_input().is_some() { 8 } else { 6 };
     let width = 56.min(area.width.saturating_sub(4)).max(20);
     let height = rows.min(area.height.saturating_sub(2));
 
@@ -282,7 +283,15 @@ pub fn render(frame: &mut ratatui::Frame, state: &PickerState) {
         "j/k move  Enter choose  Esc cancel"
     };
     lines.push(Line::from(Span::styled(
-        format!("{keys}  ·  saved to ~/.petridish/petri.toml"),
+        keys.to_string(),
+        Style::default().fg(crate::theme::DIM),
+    )));
+    // ACT-8's footnote, on its own line rather than appended to the key hints:
+    // together they overflowed the popup's width and `Paragraph` truncates
+    // rather than wraps, so the half that told the user where their answer
+    // lives was the half that silently disappeared.
+    lines.push(Line::from(Span::styled(
+        "saved to ~/.petridish/petri.toml",
         Style::default().fg(crate::theme::DIM),
     )));
 

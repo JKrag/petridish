@@ -23,11 +23,13 @@
 //! 1. **`.status()`, never `.output()`.** `output()` captures the child's
 //!    stdio into pipes, so a full-screen program renders into a buffer nobody
 //!    reads and looks, from the outside, exactly like a hang.
-//! 2. **`Terminal::clear()` on the way back is mandatory.** ratatui diffs each
-//!    frame against a cached copy of the previous one. The child overwrote the
-//!    screen without ratatui knowing, so without an explicit clear ratatui
-//!    believes cells that are now garbage are still correct and only repaints
-//!    the difference — producing a half-painted frame.
+//! 2. **Invalidating ratatui's cached frame on the way back is mandatory.**
+//!    ratatui diffs each frame against a cached copy of the previous one. The
+//!    child overwrote the screen without ratatui knowing, so without an
+//!    explicit clear ratatui believes cells that are now garbage are still
+//!    correct and only repaints the difference — producing a half-painted
+//!    frame. Note it must NOT be done with `Terminal::clear()`, for a reason
+//!    `resume` below documents in full.
 //! 3. **Restore on the failure path too.** If the program is missing or the
 //!    spawn fails, the terminal has already been torn down. Returning early
 //!    there would leave the user in a shell with no echo and no cursor.
@@ -150,14 +152,36 @@ fn resume<B: Backend>(terminal: &mut Terminal<B>) -> io::Result<()>
 where
     io::Error: From<B::Error>,
 {
-    crossterm::terminal::enable_raw_mode()?;
+    crossterm::terminal::enable_raw_mode()
+        .map_err(|e| io::Error::other(format!("enable_raw_mode: {e}")))?;
     let mut out = io::stdout();
-    crossterm::execute!(out, crossterm::terminal::EnterAlternateScreen)?;
-    // Mandatory, not defensive. See this module's doc comment, point 2: the
-    // child painted over the screen without ratatui's knowledge, so ratatui's
-    // cached previous frame is a lie and a diffed repaint would leave the
-    // child's leftovers on screen.
-    terminal.clear()?;
+    crossterm::execute!(out, crossterm::terminal::EnterAlternateScreen)
+        .map_err(|e| io::Error::other(format!("EnterAlternateScreen: {e}")))?;
+    // Invalidate ratatui's cached previous frame. Mandatory, not defensive:
+    // the child painted over the screen without ratatui's knowledge, so that
+    // cache is a lie and a diffed repaint would leave the child's leftovers
+    // on screen.
+    //
+    // `Terminal::resize` rather than the more obvious `Terminal::clear`, and
+    // the difference is not cosmetic. In ratatui 0.30 `clear()` snapshots the
+    // cursor first — `backend.get_cursor_position()` writes a DSR query and
+    // blocks waiting for the terminal to answer. That is a synchronous
+    // round-trip to the emulator at the single worst moment, immediately after
+    // taking the screen back, and it fails outright wherever something else is
+    // draining the tty: under our own PTY harness it times out with "the
+    // cursor position could not be read", which is how this was found.
+    //
+    // `resize` on a fullscreen viewport reaches the same `clear_viewport` —
+    // a full `ClearType::All` plus a back-buffer reset — with no query at all.
+    // Re-reading the size on the way through is a bonus rather than a cost:
+    // the window may genuinely have been resized while the child owned it, and
+    // `size()` is an ioctl, not a terminal round-trip.
+    let area = terminal
+        .size()
+        .map_err(|e| io::Error::other(format!("Terminal::size: {}", io::Error::from(e))))?;
+    terminal
+        .resize(area.into())
+        .map_err(|e| io::Error::other(format!("Terminal::resize: {}", io::Error::from(e))))?;
     Ok(())
 }
 
