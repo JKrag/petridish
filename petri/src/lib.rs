@@ -153,6 +153,14 @@ fn poll_loop(
         .ok()
         .and_then(|m| m.modified().ok());
 
+    // The loaded preferences are kept for the lifetime of the loop and mutated
+    // in place, rather than rebuilt from scratch at each save site. Rebuilding
+    // was a real bug, not a style question: every `Prefs { .. }` literal had to
+    // name the new `tools` field, and each one named it as an empty map — so
+    // every Tab switch silently wiped the user's stored tool choices (ACT-8's
+    // whole point being that it asks once). Mutate-and-save cannot drift that
+    // way when the next field is added.
+    let mut prefs = prefs;
     let (mut screen, mut browser_state) = match prefs.last_screen {
         LastScreen::Dashboard => {
             (Screen::Dashboard, None)
@@ -194,11 +202,12 @@ fn poll_loop(
                             .map(crate::browser::BrowserState::new);
                         screen = Screen::Browser;
                         browser_state = bstate;
-                        if let Err(e) = prefs::save(&prefs::default_prefs_path(), &Prefs {
-                            last_screen: LastScreen::Browser,
-                            collapsed: dashboard_state.as_ref().map(|d| d.collapsed).unwrap_or([false, false, true, true]),
-                            tools: std::collections::BTreeMap::new(),
-                        }) {
+                        prefs.last_screen = LastScreen::Browser;
+                        prefs.collapsed = dashboard_state
+                            .as_ref()
+                            .map(|d| d.collapsed)
+                            .unwrap_or([false, false, true, true]);
+                        if let Err(e) = prefs::save(&prefs::default_prefs_path(), &prefs) {
                             eprintln!("petri S7: persist Tab switch failed: {e}");
                         }
                         true
@@ -234,11 +243,11 @@ fn poll_loop(
                                         }
                                         Some(crate::dashboard::DashRow::Project(proj_idx)) => {
                                             // Persist Dashboard → Browser transition (same as Tab).
-                                            if let Err(e) = prefs::save(&prefs::default_prefs_path(), &Prefs {
-                                                last_screen: LastScreen::Browser,
-                                                collapsed: dstate.collapsed,
-                                                tools: std::collections::BTreeMap::new(),
-                                            }) {
+                                            prefs.last_screen = LastScreen::Browser;
+                                            prefs.collapsed = dstate.collapsed;
+                                            if let Err(e) =
+                                                prefs::save(&prefs::default_prefs_path(), &prefs)
+                                            {
                                                 eprintln!("petri S7: persist Enter→Browser failed: {e}");
                                             }
                                             let mut bstate = crate::browser::BrowserState::new(radar);
@@ -364,11 +373,12 @@ fn poll_loop(
                     // it must also trigger a save (the Dashboard branch
                     // doesn't fire when screen is Browser).
                     if key.code == crossterm::event::KeyCode::Tab {
-                        if let Err(e) = prefs::save(&prefs::default_prefs_path(), &Prefs {
-                            last_screen: LastScreen::Dashboard,
-                            collapsed: dashboard_state.as_ref().map(|d| d.collapsed).unwrap_or([false, false, true, true]),
-                            tools: std::collections::BTreeMap::new(),
-                        }) {
+                        prefs.last_screen = LastScreen::Dashboard;
+                        prefs.collapsed = dashboard_state
+                            .as_ref()
+                            .map(|d| d.collapsed)
+                            .unwrap_or([false, false, true, true]);
+                        if let Err(e) = prefs::save(&prefs::default_prefs_path(), &prefs) {
                             eprintln!("petri S7: persist Tab switch (Browser→Dashboard) failed: {e}");
                         }
                         screen = Screen::Dashboard;
