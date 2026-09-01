@@ -279,6 +279,12 @@ Also already deferred in `SPEC.md` §7: render one frame to an off-screen buffer
 exit — pipeable into a tmux status line. Cheap once the off-screen render exists, and a
 good "look how it composes" line in a public announcement.
 
+### SURF-6 — A "project detail" popup on the Dashboard
+Expand a card in place to show bigger and better details, plus the action keys that are live for that project. Show bigger sparklines or other metrics, and make the Dashboard feel like a *dashboard* rather than a static list. Should allow the user to "focus" on a project without leaving the Dashboard, and to act on it without going to the Browser.
+
+### SURF-7 — A minimal "run" screen for a single project
+Basically a `petri --mini` mode: one project, one screen, no list. Split your terminal, so you have a small pane in the corner, run petri --mini, and have a live view of the run currently on your screen, i.e. in this terminal window/tab. This is a natural extension of `SURF-5` and `SURF-6`, and it is a good candidate for a demo GIF.
+
 ---
 
 ## 5. Constraints any of these must respect
