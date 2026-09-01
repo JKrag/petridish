@@ -225,7 +225,14 @@ pub fn render(frame: &mut Frame, radar: &Radar, state: &BrowserState) {
 
     // Footer: bound keymap (spec §5 — advertise only keys actually bound).
     let footer = Paragraph::new(Line::from(Span::styled(
-        " Tab Dashboard  j/k up-down  Shift+j/k ×10  PgUp/PgDn page  Home/End  / filter  q quit ",
+        // SPEC.md §3.1: advertise only keys actually bound. The three action
+        // keys are bound unconditionally, and deliberately so — `g` always
+        // resolves thanks to ACT-3's git fallback, and `o`/`e` always respond,
+        // with a notice when this machine or this project can't satisfy them.
+        // Making the footer itself machine-dependent was considered and
+        // rejected: it would make every snapshot test depend on what happens to
+        // be installed on the machine running it.
+        " Tab Dashboard  j/k up-down  Shift+j/k ×10  PgUp/PgDn  / filter  o remote  g git log  e edit  q quit ",
         Style::default().fg(theme::DIM),
     )))
     .wrap(Wrap { trim: false });
@@ -866,4 +873,37 @@ mod tests {
             );
         }
     }
+}
+
+/// A one-line transient message over the Browser — "nothing installed that can
+/// open in editor", "thing has no remote" (`ACT-9`).
+///
+/// Deliberately a thin bar rather than a dialog: it is informational, needs no
+/// answer, and is dismissed by the next keystroke. A modal would demand an
+/// acknowledgement the user has no decision to make about.
+pub fn render_notice(frame: &mut Frame, text: &str) {
+    use ratatui::widgets::Clear;
+
+    let area = frame.area();
+    if area.height < 3 {
+        return;
+    }
+    let width = (text.chars().count() as u16 + 4).min(area.width);
+    let bar = Rect {
+        x: area.width.saturating_sub(width) / 2,
+        y: area.height.saturating_sub(2),
+        width,
+        height: 1,
+    };
+    frame.render_widget(Clear, bar);
+    frame.render_widget(
+        Paragraph::new(Line::from(Span::styled(
+            format!("  {text}  "),
+            Style::default()
+                .fg(Color::Black)
+                .bg(crate::theme::AGING)
+                .add_modifier(Modifier::BOLD),
+        ))),
+        bar,
+    );
 }

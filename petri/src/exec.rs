@@ -160,3 +160,40 @@ where
     terminal.clear()?;
     Ok(())
 }
+
+/// Is `program` runnable on this machine?
+///
+/// This is the impure counterpart to `tools::resolve`'s injected `installed`
+/// closure, and it lives here rather than in `tools` on purpose: keeping every
+/// `PATH` read on this side of the boundary is what lets the whole resolution
+/// layer be tested hermetically.
+///
+/// A name containing a path separator is checked as a path — that is how the
+/// picker's "Other — specify path…" answer works when the user types
+/// `/usr/local/bin/jjui` rather than a bare name. Anything else is looked up
+/// across `PATH`.
+pub fn is_installed(program: &str) -> bool {
+    if program.is_empty() {
+        return false;
+    }
+    if program.contains('/') {
+        return is_executable(Path::new(program));
+    }
+    let Some(path) = std::env::var_os("PATH") else {
+        return false;
+    };
+    std::env::split_paths(&path).any(|dir| is_executable(&dir.join(program)))
+}
+
+#[cfg(unix)]
+fn is_executable(path: &Path) -> bool {
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::metadata(path)
+        .map(|m| m.is_file() && m.permissions().mode() & 0o111 != 0)
+        .unwrap_or(false)
+}
+
+#[cfg(not(unix))]
+fn is_executable(path: &Path) -> bool {
+    path.is_file()
+}

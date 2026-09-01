@@ -103,3 +103,42 @@ fn spawn_detached_passes_its_arguments_through() {
         "alpha beta"
     );
 }
+
+// ------------------------------------------------------------ is_installed --
+
+#[test]
+fn is_installed_finds_a_program_on_path() {
+    // `sh` is on PATH on every machine that can run this test suite.
+    assert!(exec::is_installed("sh"));
+}
+
+#[test]
+fn is_installed_rejects_a_program_that_does_not_exist() {
+    assert!(!exec::is_installed("petri-definitely-not-a-real-program-9f3a"));
+}
+
+#[test]
+fn is_installed_rejects_an_empty_name() {
+    // Guards the specific way an empty `[tools]` value would fail: `resolve`
+    // treats any configured name as an answer, so an empty one must at least
+    // fail the installed check rather than resolving to a program named "".
+    assert!(!exec::is_installed(""));
+}
+
+#[test]
+fn is_installed_treats_a_name_with_a_separator_as_a_path() {
+    // The picker's "Other — specify path…" answer may be an absolute path
+    // rather than a bare name, and a PATH scan would never find it.
+    assert!(exec::is_installed("/bin/sh") || exec::is_installed("/usr/bin/sh"));
+    assert!(!exec::is_installed("/definitely/not/here/petri-9f3a"));
+}
+
+#[test]
+fn is_installed_rejects_a_directory_that_shadows_a_program_name() {
+    // A directory on PATH named like the program is not the program. Without
+    // the is_file() check this returns true and the launch then fails with a
+    // permission error the user cannot interpret.
+    let dir = scratch_dir("is_installed_rejects_a_directory");
+    std::fs::create_dir_all(dir.join("notaprogram")).expect("dir must be creatable");
+    assert!(!exec::is_installed(dir.join("notaprogram").to_str().unwrap()));
+}

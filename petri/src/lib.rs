@@ -176,9 +176,20 @@ fn poll_loop(
     };
 
     let mut in_filter_input = false;
+    // The ACT-8 tool picker, `Some` while it is open. It takes every keystroke
+    // while it is up — a modal that let keys leak through to the list behind
+    // it would be worse than no modal.
+    let mut picker: Option<crate::picker::PickerState> = None;
+    // A one-line message shown over the Browser: "no tool for that", "this
+    // project has no remote". Cleared by the next keystroke, so it never
+    // becomes stale chrome.
+    let mut notice: Option<String> = None;
+    // Which action the open picker is configuring, kept alongside it so the
+    // chosen program can be launched immediately rather than only stored.
+    let mut picker_action: Option<crate::tools::Action> = None;
 
     // Initial draw — unconditional so we always paint something on startup.
-    render_current(terminal, &last_good, screen, &dashboard_state, &browser_state);
+    render_current(terminal, &last_good, screen, &dashboard_state, &browser_state, &picker, &notice);
 
     loop {
         // crossterm's `poll` returns true when *any* event is queued (Key,
@@ -188,7 +199,45 @@ fn poll_loop(
         let event_ready = crossterm::event::poll(std::time::Duration::from_secs(1)).unwrap_or(false);
         if event_ready {
             if let Ok(crossterm::event::Event::Key(key)) = crossterm::event::read() {
-                let handled = if key.code == crossterm::event::KeyCode::Char('q') {
+                // Any keystroke dismisses a transient notice, so it can never
+                // linger as stale chrome over a screen it no longer describes.
+                notice = None;
+
+                let handled = if let Some(ref mut p) = picker {
+                    // The picker is modal: it consumes EVERY key while open,
+                    // including `q`. Letting `q` quit out from under an open
+                    // dialog would be a surprising way to lose the answer the
+                    // user was in the middle of giving — and `Esc` is right
+                    // there, advertised in the popup's own footer.
+                    match p.on_key(key.code) {
+                        crate::picker::Outcome::Pending => {}
+                        crate::picker::Outcome::Cancelled => {
+                            picker = None;
+                            picker_action = None;
+                        }
+                        crate::picker::Outcome::Chosen(program) => {
+                            let action = picker_action.take();
+                            picker = None;
+                            if let Some(action) = action {
+                                // Store the answer first, then act on it. If the
+                                // launch fails the user has still been asked
+                                // once and only once (ACT-8).
+                                prefs.tools.insert(action.id.to_string(), program);
+                                if let Err(e) = prefs::save(&prefs::default_prefs_path(), &prefs) {
+                                    eprintln!("petri: persisting the tool choice failed: {e}");
+                                }
+                                notice = run_action(
+                                    terminal,
+                                    &action,
+                                    &last_good,
+                                    &browser_state,
+                                    &prefs,
+                                );
+                            }
+                        }
+                    }
+                    true
+                } else if key.code == crossterm::event::KeyCode::Char('q') {
                     // `q` always quits, even in filter input mode.
                     return Ok(0);
                 } else if screen == Screen::Dashboard {
@@ -452,12 +501,40 @@ fn poll_loop(
                             // `Esc` in normal mode: no-op (only meaningful to
                             // close the filter; if filter isn't open, do nothing).
                             crossterm::event::KeyCode::Esc => true,
+                            // Action keys (IDEAS.md `ACT-2`). Last arm, so every
+                            // navigation binding above keeps priority over the
+                            // registry — a future action must never be able to
+                            // silently steal `j`/`k`/`J`/`K`.
+                            //
+                            // Note where this sits: inside the NORMAL-mode match,
+                            // never the `in_filter_input` one above. If it were in
+                            // both, typing `g` into the `/` filter would launch a
+                            // git browser instead of filtering. The two branches
+                            // being structurally separate is what makes that safe;
+                            // `s8_pty_actions.rs` gates it regardless.
+                            crossterm::event::KeyCode::Char(c) => {
+                                match crate::tools::registry().into_iter().find(|a| a.key == c) {
+                                    Some(action) => {
+                                        notice = begin_action(
+                                            terminal,
+                                            &action,
+                                            &last_good,
+                                            &browser_state,
+                                            &prefs,
+                                            &mut picker,
+                                            &mut picker_action,
+                                        );
+                                        true
+                                    }
+                                    None => false,
+                                }
+                            }
                             _ => false,
                         }
                     }
                 };
                 if handled {
-                    render_current(terminal, &last_good, screen, &dashboard_state, &browser_state);
+                    render_current(terminal, &last_good, screen, &dashboard_state, &browser_state, &picker, &notice);
                 }
             }
         }
@@ -512,7 +589,7 @@ fn poll_loop(
         // ticks we skip draw so the output stream goes still — this keeps PTY
         // harnesses happy and the user's terminal clean when petri is idle.
         if event_ready || mtime_changed {
-            render_current(terminal, &last_good, screen, &dashboard_state, &browser_state);
+            render_current(terminal, &last_good, screen, &dashboard_state, &browser_state, &picker, &notice);
         }
 
         last_mtime = new_mtime;
@@ -528,6 +605,8 @@ fn render_current(
     screen: Screen,
     dashboard_state: &Option<crate::dashboard::DashboardState>,
     browser_state: &Option<crate::browser::BrowserState>,
+    picker: &Option<crate::picker::PickerState>,
+    notice: &Option<String>,
 ) {
     let Some(r) = radar else { return };
     match screen {
@@ -538,9 +617,144 @@ fn render_current(
         }
         Screen::Browser => {
             if let Some(s) = browser_state {
-                let _ = terminal.draw(|frame| crate::browser::render(frame, r, s));
+                let _ = terminal.draw(|frame| {
+                    crate::browser::render(frame, r, s);
+                    // The overlay is drawn last, after the screen beneath it —
+                    // `Clear` only blanks what is already in the buffer, so
+                    // ordering is the whole mechanism (MECH-1).
+                    if let Some(p) = picker {
+                        crate::picker::render(frame, p);
+                    } else if let Some(text) = notice {
+                        crate::browser::render_notice(frame, text);
+                    }
+                });
             }
         }
     }
 }
 
+
+/// The currently-selected project's path and remote URL, or `None` when
+/// nothing is selected (an empty filtered list is a representable state —
+/// `browser::BrowserState::selected` is deliberately an `Option`).
+fn selected_project<'a>(
+    radar: &'a Option<petridish_core::schema::Radar>,
+    browser_state: &Option<crate::browser::BrowserState>,
+) -> Option<&'a petridish_core::schema::Project> {
+    let radar = radar.as_ref()?;
+    let state = browser_state.as_ref()?;
+    let pos = state.selected?;
+    let idx = *state.visible.get(pos)?;
+    radar.projects.get(idx)
+}
+
+/// Press an action key: resolve it against this machine and this project, then
+/// either run it, open the picker, or explain why neither happened.
+///
+/// Returns the notice to display, if any. `Ok`-shaped outcomes return `None` —
+/// a successful launch needs no commentary.
+#[allow(clippy::too_many_arguments)]
+fn begin_action(
+    terminal: &mut ratatui::Terminal<ratatui::backend::CrosstermBackend<std::io::Stdout>>,
+    action: &crate::tools::Action,
+    radar: &Option<petridish_core::schema::Radar>,
+    browser_state: &Option<crate::browser::BrowserState>,
+    prefs: &Prefs,
+    picker: &mut Option<crate::picker::PickerState>,
+    picker_action: &mut Option<crate::tools::Action>,
+) -> Option<String> {
+    let Some(project) = selected_project(radar, browser_state) else {
+        return Some("nothing selected".to_string());
+    };
+    let facts = crate::tools::Facts {
+        path: &project.path,
+        url: project.git.github_url.as_deref(),
+    };
+    // `ACT-4`'s resolution order for the editor: the stored answer first, then
+    // `$VISUAL`, then `$EDITOR`. Reading the environment here rather than in
+    // `tools::resolve` is what keeps that function pure and hermetically
+    // testable. Measured on a real machine: both variables are frequently
+    // unset while `code` sits on PATH, so this chain often yields nothing at
+    // all and the probe does the real work.
+    let stored = prefs.tools.get(action.id).cloned().or_else(|| {
+        (action.id == "edit")
+            .then(|| std::env::var("VISUAL").or_else(|_| std::env::var("EDITOR")).ok())
+            .flatten()
+    });
+
+    match crate::tools::resolve(action, &facts, stored.as_deref(), &|p| {
+        crate::exec::is_installed(p)
+    }) {
+        crate::tools::Resolution::Ready(launch) => {
+            launch_now(terminal, &launch, std::path::Path::new(&project.path))
+        }
+        crate::tools::Resolution::Ambiguous(installed) => {
+            *picker = Some(crate::picker::PickerState::new(action, installed));
+            *picker_action = Some(action.clone());
+            None
+        }
+        crate::tools::Resolution::NoTool => Some(format!(
+            "nothing installed that can {} — tried: {}",
+            action.label,
+            action
+                .candidates
+                .iter()
+                .map(|c| c.program.as_str())
+                .collect::<Vec<_>>()
+                .join(", ")
+        )),
+        // `ACT-9`'s per-project axis, phrased in terms of the project rather
+        // than the tooling: this is the half the user can see on the row in
+        // front of them.
+        crate::tools::Resolution::NoTarget => {
+            Some(format!("{} has no remote", project.name))
+        }
+    }
+}
+
+/// Re-resolve and run an action whose tool the user has just chosen in the
+/// picker. Storing the answer without acting on it would make the picker feel
+/// like a settings dialog rather than the one keystroke it interrupted.
+fn run_action(
+    terminal: &mut ratatui::Terminal<ratatui::backend::CrosstermBackend<std::io::Stdout>>,
+    action: &crate::tools::Action,
+    radar: &Option<petridish_core::schema::Radar>,
+    browser_state: &Option<crate::browser::BrowserState>,
+    prefs: &Prefs,
+) -> Option<String> {
+    let Some(project) = selected_project(radar, browser_state) else {
+        return Some("nothing selected".to_string());
+    };
+    let facts = crate::tools::Facts {
+        path: &project.path,
+        url: project.git.github_url.as_deref(),
+    };
+    match crate::tools::resolve(
+        action,
+        &facts,
+        prefs.tools.get(action.id).map(String::as_str),
+        &|p| crate::exec::is_installed(p),
+    ) {
+        crate::tools::Resolution::Ready(launch) => {
+            launch_now(terminal, &launch, std::path::Path::new(&project.path))
+        }
+        _ => Some(format!("could not run {}", action.label)),
+    }
+}
+
+/// Run one resolved launch, turning every failure into a notice rather than an
+/// error that would take the TUI down. A tool that is missing at launch time
+/// (uninstalled since it was chosen) is a message, not a crash.
+fn launch_now(
+    terminal: &mut ratatui::Terminal<ratatui::backend::CrosstermBackend<std::io::Stdout>>,
+    launch: &crate::tools::Launch,
+    cwd: &std::path::Path,
+) -> Option<String> {
+    match crate::exec::run(terminal, launch, cwd) {
+        Ok(crate::exec::Outcome::Finished(_)) | Ok(crate::exec::Outcome::Detached) => None,
+        Ok(crate::exec::Outcome::Failed(e)) => {
+            Some(format!("could not run {}: {e}", launch.program))
+        }
+        Err(e) => Some(format!("terminal hand-off failed: {e}")),
+    }
+}

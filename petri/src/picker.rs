@@ -192,3 +192,99 @@ impl PickerState {
         }
     }
 }
+
+/// Draw the picker as a centred popup over whatever screen is beneath it
+/// (`MECH-1`).
+///
+/// Overlays need no terminal capability negotiation at all: [`Clear`] blanks
+/// the region so the screen underneath does not show through, and everything
+/// after it is ordinary ratatui rendering. The only requirement is that this
+/// is called *last* in the frame.
+pub fn render(frame: &mut ratatui::Frame, state: &PickerState) {
+    use ratatui::layout::{Constraint, Flex, Layout};
+    use ratatui::style::{Modifier, Style};
+    use ratatui::text::{Line, Span};
+    use ratatui::widgets::{Block, Borders, Clear, Paragraph};
+
+    let area = frame.area();
+
+    // One row per option, plus the prompt, the input line when typing, the
+    // footnote, and the border. Height follows the content rather than being
+    // fixed, so a two-option picker is not mostly empty space.
+    let rows = state.options().len() as u16 + if state.custom_input().is_some() { 6 } else { 5 };
+    let width = 56.min(area.width.saturating_sub(4)).max(20);
+    let height = rows.min(area.height.saturating_sub(2));
+
+    let [popup] = Layout::horizontal([Constraint::Length(width)])
+        .flex(Flex::Center)
+        .areas(area);
+    let [popup] = Layout::vertical([Constraint::Length(height)])
+        .flex(Flex::Center)
+        .areas(popup);
+
+    frame.render_widget(Clear, popup);
+
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(crate::theme::ACCENT))
+        .title(Span::styled(
+            format!(" {} ", state.title),
+            Style::default()
+                .fg(crate::theme::ACCENT)
+                .add_modifier(Modifier::BOLD),
+        ));
+    let inner = block.inner(popup);
+    frame.render_widget(block, popup);
+
+    let mut lines: Vec<Line> = Vec::with_capacity(state.options().len() + 3);
+    lines.push(Line::from(Span::styled(
+        "Several tools can do this. Which one?",
+        Style::default().fg(crate::theme::DIM),
+    )));
+
+    for (i, option) in state.options().iter().enumerate() {
+        let label = match option {
+            Choice::Candidate(c) => c.program.clone(),
+            Choice::Other => "Other — specify path…".to_string(),
+        };
+        // Selection is a solid reverse-video bar, the same convention both
+        // screens already use (SPEC.md §3.1) — a hue shift against similarly
+        // light text reads as a much weaker focus signal.
+        let style = if i == state.selected() && state.custom_input().is_none() {
+            Style::default()
+                .fg(ratatui::style::Color::Black)
+                .bg(crate::theme::ACCENT)
+                .add_modifier(Modifier::BOLD)
+        } else {
+            Style::default().fg(crate::theme::FG)
+        };
+        lines.push(Line::from(Span::styled(format!(" {label} "), style)));
+    }
+
+    if let Some(typed) = state.custom_input() {
+        lines.push(Line::from(""));
+        lines.push(Line::from(vec![
+            Span::styled("  path: ", Style::default().fg(crate::theme::DIM)),
+            Span::styled(
+                format!("{typed}▌"),
+                Style::default().fg(crate::theme::ACCENT),
+            ),
+        ]));
+    }
+
+    lines.push(Line::from(""));
+    // Advertise only what is actually bound, and say where the answer lives —
+    // ACT-8's footnote, so the user is never stuck with a stored choice they
+    // cannot find.
+    let keys = if state.custom_input().is_some() {
+        "Enter accept  Esc back"
+    } else {
+        "j/k move  Enter choose  Esc cancel"
+    };
+    lines.push(Line::from(Span::styled(
+        format!("{keys}  ·  saved to ~/.petridish/petri.toml"),
+        Style::default().fg(crate::theme::DIM),
+    )));
+
+    frame.render_widget(Paragraph::new(lines), inner);
+}
