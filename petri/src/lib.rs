@@ -7,6 +7,7 @@ pub mod app;
 pub mod browser;
 pub mod dashboard;
 pub mod prefs;
+pub mod tools;
 pub mod theme;
 use crate::prefs::{LastScreen, Prefs};
 
