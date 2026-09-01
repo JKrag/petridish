@@ -1,3 +1,17 @@
+> **ARCHIVED — 2026-09-01.** This was the original pre-implementation pitch/design doc,
+> written under the working title `project-radar` before a line of code existed. It
+> describes a plan that didn't survive contact with the real build: Python `Textual` for the
+> TUI (built in `curses` instead, then reimplemented again in Rust/ratatui as `petri` —
+> `petri/SPEC.md`), a FastAPI/Tailwind web UI (never built, still tracked as deferred in
+> `ARCHITECTURE.md` §5), and `ps`/`lsof` process scanning as a primary sensing mechanism
+> (Claude Code's own JSONL transcripts turned out to need no such thing — `ARCHITECTURE.md`
+> F1/F8). §§1–6 below are kept only as a historical record of the original pitch.
+>
+> **§7 (Distribution & Deployment Plan) was still live** — `src/petridish/installer.py`
+> cites its `D1`–`D6` requirements and `§7.1` by number in real docstrings/comments — so
+> that content was extracted verbatim to **`ARCHITECTURE.md` §8** before this file was
+> archived. Go there for the current, cross-referenced copy; what's below is frozen.
+
 # System Design Document: Local Project & Agent Radar (`petridish`)
 
 ## 1. System Overview & Objectives

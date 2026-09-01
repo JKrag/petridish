@@ -144,10 +144,12 @@ pj() {
 
 ## Docs
 
-- `ARCHITECTURE.md` — language-agnostic architecture, empirical findings, and the
-  `projects.json` schema; the current authoritative reference
-- `DESIGN.md` — original system design document (superseded by `ARCHITECTURE.md` where the
-  two disagree, kept as historical context)
+- `ARCHITECTURE.md` — language-agnostic architecture, empirical findings, the
+  `projects.json` schema, and the distribution/installer requirements (§8); the current
+  authoritative reference
+- `petri/SPEC.md` — the Rust TUI's spec, authoritative for its screens/behavior
+- `docs/archive/DESIGN.md` — original pre-implementation pitch doc (Python `Textual`, a
+  FastAPI web UI, neither built); kept as historical context, superseded by `ARCHITECTURE.md`
 - `docs/archive/IMPLEMENTATION_PLAN.md` — the original all-Python build spec, archived once
   the scanner was ported to Rust
 - `CLAUDE.md` — non-negotiable invariants for anyone changing this code

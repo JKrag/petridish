@@ -6,13 +6,13 @@ consumers — pixtuoid, statusbar, notchbar) and ``~/Library/LaunchAgents``.
 Every edit to ``settings.json`` is *structural*: it only ever adds or removes
 dict entries that carry :data:`petridish.schema.HOOK_MARKER` somewhere in
 their subtree. Nothing here ever reserialises or touches an entry it did not
-add itself — see DESIGN.md D4.
+add itself — see ARCHITECTURE.md §8.3 D4.
 
 A backup of the pre-install ``settings.json`` is written once, but it is a
 safety artifact for the human, never read back automatically. Restoring from
 it on uninstall would silently discard any unrelated edits made to the file
 between install and uninstall (other hook consumers reinstalling, `/model`
-writes, manual edits) — see DESIGN.md D4's "removes only marked entries".
+writes, manual edits) — see ARCHITECTURE.md §8.3 D4's "removes only marked entries".
 """
 
 from __future__ import annotations
@@ -83,7 +83,7 @@ def resolve_binary(name: str) -> str:
     if not path:
         raise InstallError(
             f"{name!r} not found on PATH. Install it first: "
-            "uv tool install --editable . (see DESIGN.md §7.1)."
+            "uv tool install --editable . (see ARCHITECTURE.md §8.1)."
         )
     return os.path.abspath(path)
 

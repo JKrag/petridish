@@ -1,8 +1,8 @@
 # petridish — Glossary
 
 Terms resolved during design discussions, kept here so they don't drift.
-Implementation details belong in `ARCHITECTURE.md` / `DESIGN.md` / `petri/SPEC.md`,
-not here.
+Implementation details belong in `ARCHITECTURE.md` / `petri/SPEC.md`, not here
+(`docs/archive/DESIGN.md` is the original pre-implementation pitch doc, archived).
 
 ## `swab` vs `petri`
 
