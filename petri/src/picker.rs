@@ -70,8 +70,20 @@ impl PickerState {
     /// best guess first, so the cursor starts on it and `Enter` is the whole
     /// interaction).
     pub fn new(action: &Action, installed: Vec<Candidate>) -> Self {
-        let _ = (action, installed);
-        todo!("delegated: petri/tests/s8_picker.rs is the specification")
+        // One row per installed candidate, in registry order, then the
+        // always-present `Other` escape hatch last.
+        let options: Vec<Choice> = installed
+            .into_iter()
+            .map(Choice::Candidate)
+            .chain(std::iter::once(Choice::Other))
+            .collect();
+        Self {
+            action_id: action.id,
+            title: action.label,
+            options,
+            selected: 0,
+            custom: None,
+        }
     }
 
     /// Every row, in display order, `Other` last.
@@ -92,7 +104,91 @@ impl PickerState {
 
     /// Feed one keystroke in.
     pub fn on_key(&mut self, key: KeyCode) -> Outcome {
-        let _ = key;
-        todo!("delegated: petri/tests/s8_picker.rs is the specification")
+        // The mode flag decides everything: `j`/`k` and the arrow keys are
+        // cursor movement while the user browses the list, but literal text
+        // (or nothing at all) while they are typing a custom program name.
+        // Confusing the two is the bug this flag exists to prevent, so the mode
+        // is checked inside every key that could act in either mode.
+        match key {
+            // --- Cursor movement: list mode only. ---
+            KeyCode::Up => {
+                if self.custom.is_none() {
+                    // Clamp at the top — never wrap onto `Other`.
+                    self.selected = self.selected.saturating_sub(1);
+                }
+                Outcome::Pending
+            }
+            KeyCode::Down => {
+                if self.custom.is_none() {
+                    // Clamp at the last row — never wrap back to the top.
+                    self.selected = self.selected.saturating_add(1).min(self.options.len() - 1);
+                }
+                Outcome::Pending
+            }
+            // --- Choosing: the meaning of Enter depends on the mode. ---
+            KeyCode::Enter => {
+                if self.custom.is_some() {
+                    // Custom mode: accept the trimmed name, or stay put when it
+                    // is empty (an empty program name is never an answer).
+                    let trimmed = self.custom.as_deref().unwrap_or("").trim();
+                    if trimmed.is_empty() {
+                        Outcome::Pending
+                    } else {
+                        Outcome::Chosen(trimmed.to_string())
+                    }
+                } else {
+                    // List mode: pick the highlighted row, or open the text
+                    // field when the highlight is `Other`.
+                    match &self.options[self.selected] {
+                        Choice::Candidate(c) => Outcome::Chosen(c.program.clone()),
+                        Choice::Other => {
+                            self.custom = Some(String::new());
+                            Outcome::Pending
+                        }
+                    }
+                }
+            }
+            // --- Editing the program name: custom mode. ---
+            KeyCode::Backspace => {
+                // Drop the last character, but never underflow or exit the mode
+                // on an already-empty input.
+                if let Some(text) = self.custom.as_mut() {
+                    if !text.is_empty() {
+                        text.pop();
+                    }
+                }
+                Outcome::Pending
+            }
+            // --- A literal character: text in custom mode, movement in list mode. ---
+            KeyCode::Char(c) => {
+                if let Some(text) = self.custom.as_mut() {
+                    // Custom mode: every character is literal text, including the
+                    // `k`/`j` cursor keys — real program names contain them.
+                    text.push(c);
+                } else if c == 'k' {
+                    // List mode: `k` moves up (clamped, never wrapping).
+                    self.selected = self.selected.saturating_sub(1);
+                } else if c == 'j' {
+                    // List mode: `j` moves down (clamped, never wrapping).
+                    self.selected = self.selected.saturating_add(1).min(self.options.len() - 1);
+                }
+                // Any other character in list mode is inert.
+                Outcome::Pending
+            }
+            // --- Escaping: the meaning depends on the mode too. ---
+            KeyCode::Esc => {
+                if self.custom.is_none() {
+                    // Already in list mode: back all the way out.
+                    Outcome::Cancelled
+                } else {
+                    // Just entered the field: undo that instead of cancelling.
+                    // Whatever was typed is discarded, so re-entering starts empty.
+                    self.custom = None;
+                    Outcome::Pending
+                }
+            }
+            // Any other key (including stray `z`/`Tab`) is inert.
+            _ => Outcome::Pending,
+        }
     }
 }
