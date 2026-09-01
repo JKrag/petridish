@@ -6,6 +6,7 @@
 pub mod app;
 pub mod browser;
 pub mod dashboard;
+pub mod exec;
 pub mod picker;
 pub mod prefs;
 pub mod tools;
