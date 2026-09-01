@@ -219,6 +219,15 @@ The first decides whether a key is *bound at all*; the second decides whether it
 for the currently selected row, and should read as a disabled/dimmed affordance rather
 than a key that silently does nothing.
 
+### ACT-10 — The `/` filter query is never shown on screen
+Found while gating the action keys: `BrowserState.filter_query` is stored and
+applied, but `browser::render` never displays it. The only visible evidence that a
+filter is active is that the list got shorter — so a user who filters, looks away,
+and looks back has no way to tell a filtered list from a fleet that went quiet.
+Small fix, real confusion, and it also costs the PTY layer a natural assertion
+target. Not fixed with the action keys, because it is a separate change and the
+commit was already large.
+
 ---
 
 ## 3. Reclaiming vertical space (`SPACE-*`)
@@ -319,3 +328,39 @@ Not a roadmap — just where the leverage is.
    becomes a table row once this works.
 2. **`SPACE-1`, the event feed.** Independent of slice 1, and it fixes "wastes real
    estate" and "doesn't do anything" in a single change.
+
+---
+
+## 7. Built so far
+
+Slice 1 landed on 2026-09-01/02 (`e99cc8d`..`bd87b9b`). What is now real:
+
+- **`MECH-1`** — `picker::render`, a centred popup over the Browser.
+- **`MECH-2`/`MECH-3`** — `petri/src/exec.rs`. Suspend-and-exec and
+  spawn-and-detach, plus `is_installed` as the single impure `PATH` probe.
+- **`ACT-1`/`ACT-3`/`ACT-9`** — `petri/src/tools.rs`. The registry, the resolver,
+  `Candidate::fallback`, and both availability axes.
+- **`ACT-2`** — `o` (open remote), `g` (git history) and `e` (open in editor) bound
+  in the Browser, with a transient notice for the cases nothing can satisfy.
+- **`ACT-8`** — `petri/src/picker.rs` plus the `[tools]` table in `prefs.rs`.
+
+Three findings from building it, kept because they will outlive the code:
+
+1. **`Candidate::fallback` was not in the original design and the design was
+   broken without it.** `git` is on every machine, so a fallback that counted
+   toward ambiguity would have made the picker fire for every user, forever —
+   invisible on a machine with four git TUIs installed, which is where it was
+   designed.
+2. **`Terminal::clear()` is the wrong way to come back from `MECH-2` on ratatui
+   0.30.** It snapshots the cursor via a blocking DSR query, at the worst possible
+   moment. `Terminal::resize` does the same invalidation with no round-trip. The
+   universally-given advice is right about the *what* and wrong about the *how*.
+3. **Adding a field to `Prefs` silently wiped the `[tools]` table on every screen
+   switch**, because three `Prefs { .. }` literals in `lib.rs` each named the new
+   field as empty. No unit test could have caught it; `prefs::save` was called
+   correctly with exactly the struct it was handed. Fixed at the root by keeping
+   the loaded prefs alive and mutating in place.
+
+Still open from slice 1's own list: `ACT-10` above, and the `e` action has never
+been exercised against a GUI editor on a real desktop — only its `Background`
+mode is unit-tested.
