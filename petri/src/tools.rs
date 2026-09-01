@@ -273,6 +273,75 @@ pub fn resolve(
     configured: Option<&str>,
     installed: &dyn Fn(&str) -> bool,
 ) -> Resolution {
-    let _ = (action, facts, configured, installed, substitute as fn(&str, &Facts) -> String);
-    todo!("delegated: petri/tests/s8_tools.rs is the specification")
+    // Rule 1: a URL action with no remote has nothing to act on. This is a
+    // per-project fact and beats every per-machine question, so it is checked
+    // before tools and before the stored answer.
+    if action.target == Target::Url && facts.url.is_none() {
+        return Resolution::NoTarget;
+    }
+
+    // Rule 2: a stored answer that is still installed wins outright. A known
+    // candidate keeps its own args and mode; the picker's "Other — specify
+    // path…" answer runs with a single target argument and Terminal mode.
+    if let Some(name) = configured {
+        if installed(name) {
+            if let Some(candidate) = action.candidates.iter().find(|c| c.program == name) {
+                return Resolution::Ready(build_launch(candidate, facts));
+            }
+            return Resolution::Ready(Launch {
+                program: name.to_string(),
+                // Already a concrete path/URL, not a template — deliberately
+                // not run through `substitute`, which would be a no-op here and
+                // would wrongly suggest a user-typed program name can carry
+                // placeholders of its own.
+                args: vec![action_target(action.target, facts).to_string()],
+                mode: ExecMode::Terminal,
+            });
+        }
+    }
+
+    // Rule 3: a stored answer that is no longer installed is ignored entirely —
+    // fall through as though nothing were configured (`ACT-8`).
+    //
+    // Rule 4: otherwise decide from what is actually installed on this machine.
+    let installed_candidates: Vec<&Candidate> = action
+        .candidates
+        .iter()
+        .filter(|c| installed(c.program.as_str()))
+        .collect();
+
+    match installed_candidates.iter().filter(|c| !c.fallback).count() {
+        0 => {
+            // No non-fallback installed. A lone fallback still runs silently
+            // (the load-bearing rule); nothing installed at all is `NoTool`.
+            installed_candidates
+                .iter()
+                .find(|c| c.fallback)
+                .map(|fallback| Resolution::Ready(build_launch(fallback, facts)))
+                .unwrap_or(Resolution::NoTool)
+        }
+        1 => Resolution::Ready(build_launch(installed_candidates[0], facts)),
+        _ => Resolution::Ambiguous(installed_candidates.into_iter().cloned().collect()),
+    }
+}
+
+/// Build a [`Launch`] from one candidate: the program copied as-is, each arg
+/// run through `substitute`, and the candidate's own mode.
+fn build_launch(candidate: &Candidate, facts: &Facts) -> Launch {
+    Launch {
+        program: candidate.program.clone(),
+        args: candidate.args.iter().map(|a| substitute(a, facts)).collect(),
+        mode: candidate.mode,
+    }
+}
+
+/// The single argument handed to an unknown program in rule 2: the project's
+/// path for a [`Target::Path`] action, its remote URL for a [`Target::Url`]
+/// one. Rule 1 has already ruled out a URL action with no remote, so the URL
+/// branch is always reachable here.
+fn action_target<'a>(target: Target, facts: &'a Facts<'a>) -> &'a str {
+    match target {
+        Target::Url => facts.url.unwrap_or(""),
+        Target::Path => facts.path,
+    }
 }
