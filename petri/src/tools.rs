@@ -280,24 +280,15 @@ pub fn resolve(
         return Resolution::NoTarget;
     }
 
-    // Rule 2: a stored answer that is still installed wins outright. A known
-    // candidate keeps its own args and mode; the picker's "Other — specify
-    // path…" answer runs with a single target argument and Terminal mode.
-    if let Some(name) = configured {
-        if installed(name) {
-            if let Some(candidate) = action.candidates.iter().find(|c| c.program == name) {
-                return Resolution::Ready(build_launch(candidate, facts));
-            }
-            return Resolution::Ready(Launch {
-                program: name.to_string(),
-                // Already a concrete path/URL, not a template — deliberately
-                // not run through `substitute`, which would be a no-op here and
-                // would wrongly suggest a user-typed program name can carry
-                // placeholders of its own.
-                args: vec![action_target(action.target, facts).to_string()],
-                mode: ExecMode::Terminal,
-            });
-        }
+    // Rule 2: a stored answer that is still installed wins outright. The
+    // program-name → [`Launch`] mapping lives in [`launch_for`] (rule 2's body,
+    // extracted so a one-off launch — which has a name but nothing stored —
+    // can be built in one place, without re-deriving the Terminal-is-the-safe-
+    // guess reasoning here).
+    if let Some(name) = configured
+        && installed(name)
+    {
+        return Resolution::Ready(launch_for(action, facts, name));
     }
 
     // Rule 3: a stored answer that is no longer installed is ignored entirely —
@@ -344,4 +335,72 @@ fn action_target<'a>(target: Target, facts: &'a Facts<'a>) -> &'a str {
         Target::Url => facts.url.unwrap_or(""),
         Target::Path => facts.path,
     }
+}
+
+/// Build the [`Launch`] a stored program name means for this action and
+/// project — rule 2's body, extracted from [`resolve`] for exactly this reason.
+///
+/// A one-off launch has a program name but nothing stored, so `lib.rs` needs
+/// to turn a name into a `Launch` directly. That rule used to be re-derived at
+/// `resolve`'s call site; carrying it here in one place keeps the
+/// "an unknown program is assumed to want the terminal" reasoning from drifting
+/// between the resolver and the launcher (`MECH-2`/`MECH-3`).
+///
+/// `program` is the caller's stored answer, already known to be installed. If
+/// it names a registry candidate, that candidate's args and mode are used;
+/// otherwise — the picker's "Other — specify path…" answer — it runs with a
+/// single target argument and [`ExecMode::Terminal`]. `Terminal` is the safe
+/// guess for an unknown program: assuming `Background` for a terminal program
+/// corrupts the display, assuming `Terminal` for a GUI program merely blocks
+/// `petri` until that window is closed. One is a bug, the other an
+/// inconvenience.
+pub fn launch_for(action: &Action, facts: &Facts, program: &str) -> Launch {
+    if let Some(candidate) = action.candidates.iter().find(|c| c.program == program) {
+        build_launch(candidate, facts)
+    } else {
+        Launch {
+            program: program.to_string(),
+            // Already a concrete path/URL, not a template — deliberately not
+            // run through `substitute`, which would be a no-op here and would
+            // wrongly suggest a user-typed program name can carry placeholders
+            // of its own.
+            args: vec![action_target(action.target, facts).to_string()],
+            mode: ExecMode::Terminal,
+        }
+    }
+}
+
+/// Every installed candidate for this action — registry order, fallbacks
+/// included — or `None` when the project has nothing to act on.
+///
+/// This deliberately skips both `resolve`'s ambiguity gate and its stored-choice
+/// lookup. [`Resolution::Ambiguous`] only appears when the choice is *unresolved*;
+/// re-pick's whole premise is that the choice is resolved and the user wants to
+/// override it anyway, so routing `G` through `resolve` would make it a no-op on
+/// exactly the machines it is for. The function takes no `configured` argument,
+/// so a stored choice can never steer it: it returns the whole installed set
+/// (even an empty one) whenever the project has a target.
+///
+/// An empty `Vec` is a valid answer, not an error — a machine with nothing but
+/// the picker's "Other — specify path…" row still gets a popup.
+pub fn repick_candidates(
+    action: &Action,
+    facts: &Facts,
+    installed: &dyn Fn(&str) -> bool,
+) -> Option<Vec<Candidate>> {
+    // Same per-project guard as `resolve`'s rule 1: a URL action with no remote
+    // has nothing to open, so there is no re-pick to offer. The caller turns
+    // that `None` into the existing "has no remote" notice.
+    if action.target == Target::Url && facts.url.is_none() {
+        return None;
+    }
+
+    // Registry order, fallbacks included, and no ambiguity test.
+    let installed: Vec<Candidate> = action
+        .candidates
+        .iter()
+        .filter(|c| installed(c.program.as_str()))
+        .cloned()
+        .collect();
+    Some(installed)
 }

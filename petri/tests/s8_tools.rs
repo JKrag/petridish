@@ -418,3 +418,161 @@ fn browse_is_the_only_url_targeted_action() {
         assert_eq!(action.target, expected, "unexpected target on {:?}", action.id);
     }
 }
+
+// ------------------------------------------------------- launch_for ----------
+
+#[test]
+fn launch_for_uses_a_known_candidate_args_and_mode() {
+    // A stored answer that names a registry candidate keeps that candidate's
+    // own args and mode.
+    let got = tools::launch_for(&gitlog_fixture(), &PROJECT, "serie");
+    assert_eq!(
+        got,
+        Launch {
+            program: "serie".to_string(),
+            args: vec![],
+            mode: ExecMode::Terminal,
+        },
+        "a known candidate keeps its own args and mode"
+    );
+
+    // `serie` takes no arguments, so the assertion above cannot show that a
+    // known candidate's `{path}` placeholder is still substituted. `lazygit`
+    // is the case that can: same code path, but with a template to expand.
+    let got = tools::launch_for(&gitlog_fixture(), &PROJECT, "lazygit");
+    assert_eq!(
+        got,
+        Launch {
+            program: "lazygit".to_string(),
+            args: vec!["-p".to_string(), "/Users/x/repos/thing".to_string()],
+            mode: ExecMode::Terminal,
+        },
+        "a known candidate's placeholders are substituted, not passed through"
+    );
+}
+
+#[test]
+fn launch_for_runs_an_unknown_program_with_a_single_target_argument() {
+    // The picker's "Other — specify path…" answer: an unknown program gets a
+    // single target argument and Terminal mode.
+    let got = tools::launch_for(&gitlog_fixture(), &PROJECT, "my-weird-git-tui");
+    assert_eq!(
+        got,
+        Launch {
+            program: "my-weird-git-tui".to_string(),
+            args: vec!["/Users/x/repos/thing".to_string()],
+            mode: ExecMode::Terminal,
+        }
+    );
+}
+
+#[test]
+fn launch_for_passes_the_url_to_an_unknown_program_on_a_url_action() {
+    // The single argument is the action's target, so a Target::Url action
+    // passes the URL.
+    let got = tools::launch_for(&browse_fixture(), &PROJECT, "firefox");
+    assert_eq!(
+        got,
+        Launch {
+            program: "firefox".to_string(),
+            args: vec!["https://github.com/x/thing".to_string()],
+            mode: ExecMode::Terminal,
+        }
+    );
+}
+
+// --------------------------------------------------- repick_candidates -------
+
+#[test]
+fn repick_returns_a_lone_fallback_when_no_git_tui_is_installed() {
+    // ACT-3's `git` fallback is on every machine that can run this repo, so a
+    // machine with nothing but `git` still gets a re-pick popup listing it.
+    let got = tools::repick_candidates(&gitlog_fixture(), &PROJECT, &only(&["git"]));
+    assert_eq!(
+        got,
+        Some(vec![Candidate::new(
+            "git",
+            &["log", "--graph"],
+            ExecMode::Terminal,
+        )
+        .as_fallback()]),
+        "the lone fallback is a valid re-pick entry"
+    );
+}
+
+#[test]
+fn repick_lists_all_four_git_tuis_plus_their_fallback() {
+    // The real registry's git chain: serie, lazygit, gitui, tig, then the
+    // always-available `git` fallback. All five installed → all five listed, in
+    // registry order, no ambiguity gate, fallbacks included.
+    let reg = tools::registry();
+    let gitlog = reg
+        .iter()
+        .find(|a| a.id == "gitlog")
+        .expect("registry must carry a gitlog action");
+    let got = tools::repick_candidates(
+        gitlog,
+        &PROJECT,
+        &only(&["serie", "lazygit", "gitui", "tig", "git"]),
+    );
+    assert_eq!(
+        got,
+        Some(vec![
+            Candidate::new("serie", &[], ExecMode::Terminal),
+            Candidate::new("lazygit", &["-p", "{path}"], ExecMode::Terminal),
+            Candidate::new("gitui", &["-d", "{path}"], ExecMode::Terminal),
+            Candidate::new("tig", &[], ExecMode::Terminal),
+            Candidate::new(
+                "git",
+                &[
+                    "-c",
+                    "core.pager=less -R",
+                    "log",
+                    "--graph",
+                    "--oneline",
+                    "--decorate",
+                    "--all",
+                ],
+                ExecMode::Terminal,
+            )
+            .as_fallback(),
+        ])
+    );
+}
+
+#[test]
+fn repick_returns_an_empty_vec_when_nothing_is_installed() {
+    // `Some(vec![])`, not `None`: the picker's "Other — specify path…" row is
+    // always there, so edit on a machine with no editor still gets a popup.
+    let reg = tools::registry();
+    let edit = reg
+        .iter()
+        .find(|a| a.id == "edit")
+        .expect("registry must carry an edit action");
+    let got = tools::repick_candidates(edit, &PROJECT, &only(&[]));
+    assert_eq!(got, Some(vec![]));
+}
+
+#[test]
+fn repick_returns_none_for_a_url_action_with_no_remote() {
+    // The same per-project guard as `resolve`'s rule 1: a URL action with no
+    // remote has nothing to re-pick, so it returns None.
+    let got = tools::repick_candidates(&browse_fixture(), &NO_REMOTE, &only(&["open"]));
+    assert_eq!(got, None);
+}
+
+#[test]
+fn repick_ignores_any_stored_choice_and_lists_every_installed_candidate() {
+    // repick_candidates takes no `configured` argument by design, so a stored
+    // answer can never steer it: with two real candidates installed — the exact
+    // situation where `resolve` would be `Ambiguous` — it returns all of them.
+    let got = tools::repick_candidates(&gitlog_fixture(), &PROJECT, &only(&["serie", "lazygit"]));
+    assert_eq!(
+        got,
+        Some(vec![
+            Candidate::new("serie", &[], ExecMode::Terminal),
+            Candidate::new("lazygit", &["-p", "{path}"], ExecMode::Terminal),
+        ]),
+        "the whole installed set, no ambiguity gate, no stored choice"
+    );
+}
