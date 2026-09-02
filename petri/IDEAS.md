@@ -445,7 +445,14 @@ Two findings worth keeping:
    later refactor can quietly undo.
 
 The build ran as an AFK delegation to the local model and is worth recording
-honestly: the model produced `tools.rs` and its eight tests (good work — the
-assertions check registry order and the fallback flag, not just counts), but
-froze twice with an undiagnosed hang, and slice 2's picker/wiring half was
-written directly after the job escalated.
+honestly. The model produced `tools.rs` and its eight tests, and most of the
+assertions were real ones — registry order and the `fallback` flag, not just
+counts. But the round failed its gate, and the audit that followed found the
+thing the gate could not: `launch_for`'s known-candidate test used `serie`,
+which takes no arguments, so it proved args *survive* without ever proving
+`{path}` is still *substituted*. The test name promised the coverage; the body
+didn't have it. That is the transferable lesson for the next delegation — check
+assertion bodies against the spec, because a test that passes and is named
+correctly can still be under-asserting. The model also froze twice with an
+undiagnosed hang, and the picker/wiring half was written directly after the job
+escalated.

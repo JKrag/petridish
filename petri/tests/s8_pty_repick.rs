@@ -147,3 +147,48 @@ fn shift_g_does_not_fire_while_the_filter_has_focus() {
     send(&mut session, b"q");
     session.wait_with_timeout(Duration::from_secs(10));
 }
+
+#[test]
+fn a_shifted_key_on_an_action_with_no_target_reports_it_instead_of_popping() {
+    // The footer now promises `o/O`, so `O` must behave. It exercises the OTHER
+    // arm of `begin_repick`: `browse` is `Target::Url`, so on a project with no
+    // `github_url` there is nothing to re-pick and the answer is `ACT-9`'s
+    // per-project notice, not an empty popup. `G` on the same row still opens,
+    // because `gitlog` is `Target::Path` and every project has one — asserting
+    // both here is what shows the difference is the action's target rather than
+    // the row.
+    let (home, _prefs_path) = seeded_home("no_target");
+    let mut session = to_browser(&home);
+
+    // alpha-02 is the fixture's first project with `github_url: null`.
+    send(&mut session, b"/alpha-02");
+    settle(&mut session);
+    send(&mut session, b"\r");
+    settle(&mut session);
+
+    send(&mut session, b"O");
+    let screen = settle(&mut session);
+    let body = screen.join("\n");
+    assert!(
+        body.contains("no remote"),
+        "O on a project with no remote must explain itself, got:\n{body}"
+    );
+    assert!(
+        !body.contains("D set default"),
+        "there is nothing to re-pick, so no popup:\n{body}"
+    );
+
+    // Same row, Target::Path action: the popup does open.
+    send(&mut session, b"G");
+    let screen = settle(&mut session);
+    let body = screen.join("\n");
+    assert!(
+        body.contains("D set default"),
+        "G must still open on the same project — every project has a path:\n{body}"
+    );
+
+    send(&mut session, b"\x1b");
+    settle(&mut session);
+    send(&mut session, b"q");
+    session.wait_with_timeout(Duration::from_secs(10));
+}
