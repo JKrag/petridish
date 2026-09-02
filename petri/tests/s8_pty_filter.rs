@@ -82,3 +82,52 @@ fn the_typed_query_appears_on_screen_and_survives_enter() {
     let status = session.wait_with_timeout(Duration::from_secs(5));
     assert_eq!(status.exit_code(), 0, "`q` must still exit 0 after filtering");
 }
+
+#[test]
+fn backspace_deletes_the_last_character_and_refilters() {
+    // A typo used to be unrecoverable: `Esc` and retype, or live with it.
+    // This is the layer that can actually prove the fix, because Backspace
+    // arrives as a real terminal byte (0x7f, DEL — what every terminal on
+    // this machine sends for the Backspace key, NOT 0x08) and only the real
+    // binary decodes it.
+    let home = scratch_home("backspace");
+    let mut session = to_browser(&home);
+
+    send(&mut session, b"/");
+    settle(&mut session);
+    send(&mut session, b"bravoX");
+    let typo = settle(&mut session).join("\n");
+    assert!(
+        typo.contains("/bravoX"),
+        "setup: the typo must be on screen before we delete it, got:\n{typo}"
+    );
+    assert!(
+        typo.contains("0 of "),
+        "setup: \"bravoX\" must match nothing, or the delete proves nothing, got:\n{typo}"
+    );
+
+    send(&mut session, &[0x7f]);
+    let fixed = settle(&mut session).join("\n");
+    assert!(
+        fixed.contains("/bravo") && !fixed.contains("/bravoX"),
+        "Backspace must drop exactly the last character, got:\n{fixed}"
+    );
+    assert!(
+        !fixed.contains("0 of "),
+        "the list must re-filter on Backspace, not just redraw the query:\n{fixed}"
+    );
+
+    // Backspacing past the start is a no-op, not a panic or an underflow.
+    for _ in 0..8 {
+        send(&mut session, &[0x7f]);
+    }
+    let emptied = settle(&mut session).join("\n");
+    assert!(
+        emptied.contains("browser"),
+        "petri must survive Backspace on an empty query, got:\n{emptied}"
+    );
+
+    send(&mut session, b"q");
+    let status = session.wait_with_timeout(Duration::from_secs(5));
+    assert_eq!(status.exit_code(), 0, "`q` must still exit 0 after backspacing");
+}

@@ -365,7 +365,7 @@ pub fn render(frame: &mut ratatui::Frame, state: &PickerState) {
     }
 
     lines.push(Line::from(""));
-    // Advertise only what is actually bound, and say where the answer lives —
+    // Advertise the verbs this mode actually honours, and say where the answer lives —
     // ACT-8's footnote, so the user is never stuck with a stored choice they
     // cannot find.
     // SPEC.md §3.1, applied per mode: never advertise a verb the current mode

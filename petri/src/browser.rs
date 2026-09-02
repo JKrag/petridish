@@ -235,15 +235,15 @@ pub fn render(frame: &mut Frame, radar: &Radar, state: &BrowserState) {
     )));
     frame.render_widget(rule, chunks[1]);
 
-    // Footer: bound keymap (spec §5 — advertise only keys actually bound).
+    // Footer: the keymap (SPEC.md §5). The bar is "would a new user be misled?"
+    // — don't advertise a key that does nothing — not a fixed list.
     let footer = Paragraph::new(Line::from(Span::styled(
-        // SPEC.md §3.1: advertise only keys actually bound. The three action
-        // keys are bound unconditionally, and deliberately so — `g` always
-        // resolves thanks to ACT-3's git fallback, and `o`/`e` always respond,
-        // with a notice when this machine or this project can't satisfy them.
-        // Making the footer itself machine-dependent was considered and
-        // rejected: it would make every snapshot test depend on what happens to
-        // be installed on the machine running it.
+        // The three action keys are advertised unconditionally, and deliberately
+        // so — `g` always resolves thanks to ACT-3's git fallback, and `o`/`e`
+        // always respond, with a notice when this machine or this project can't
+        // satisfy them. Making the footer itself machine-dependent was
+        // considered and rejected: it would make every snapshot test depend on
+        // what happens to be installed on the machine running it.
         //
         // `o/O` is ACT-11's shifted re-pick variant, bound for every registry
         // action rather than just `g`: `O`'s list is thin today (one candidate,
@@ -404,9 +404,9 @@ fn compute_scroll_offset(
 /// which is the case that otherwise looks exactly like an empty radar.
 ///
 /// This is deliberately in the header rather than replacing the footer keymap:
-/// the footer may only advertise keys that are bound (SPEC.md §3.1/§5), and
-/// swapping it out per-mode would either drop bindings from the advertisement
-/// or claim ones the filter mode does not honour.
+/// the footer stays useful *while* you filter, so swapping it for a filter
+/// prompt would trade a permanently-useful surface for a transient one. The
+/// header had the room.
 fn filter_chip_spans(radar: &Radar, state: &BrowserState, avail: u16) -> Vec<Span<'static>> {
     if !state.filter_input && state.filter_query.is_empty() {
         return Vec::new();

@@ -403,6 +403,29 @@ fn poll_loop(
                             }
                             true
                         }
+                        // `Backspace` drops the last character of the query and
+                        // re-filters. Not a "printable characters only" input:
+                        // without this the only way out of a typo is `Esc` and
+                        // retyping the whole query, which the ACT-10 chip made
+                        // impossible to ignore once the query was on screen.
+                        //
+                        // `pop()` is char-wise, not byte-wise, so a multi-byte
+                        // character deletes as one keypress rather than leaving
+                        // a broken UTF-8 tail.
+                        crossterm::event::KeyCode::Backspace => {
+                            if let Some(ref mut state) = browser_state {
+                                let mut q = std::mem::take(&mut state.filter_query);
+                                q.pop();
+                                if let Some(ref radar) = last_good {
+                                    state.apply_filter(radar, &q);
+                                } else {
+                                    state.filter_query = q;
+                                }
+                                true
+                            } else {
+                                false
+                            }
+                        }
                         // `Enter` closes the filter input mode but keeps the
                         // query, so the filtered selection persists.
                         crossterm::event::KeyCode::Enter => {

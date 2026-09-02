@@ -148,10 +148,10 @@ fn a_query_that_matches_nothing_still_says_so() {
 
 #[test]
 fn the_chip_does_not_displace_the_footer_keymap() {
-    // SPEC.md §3.1/§5: the footer advertises only bound keys — and it must go
-    // on doing so while a filter is up. This is why the chip lives in the
-    // header: replacing the footer per-mode would either drop bindings from
-    // the advertisement or claim ones the filter mode does not honour.
+    // The footer keymap stays useful *while* you filter, which is why the chip
+    // lives in the header instead of replacing it: swapping the footer for a
+    // filter prompt would trade a permanently-useful surface for a transient
+    // one. This gates that the keymap survives an active filter.
     let radar = load("normal.json");
     let mut state = BrowserState::new(&radar);
     state.filter_input = true;

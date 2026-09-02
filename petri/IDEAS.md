@@ -132,7 +132,7 @@ override. Kept because `ACT-5`/`ACT-6`/`SURF-4` all extend it.
 
 Each action is data: name, key, probe (how to tell it is available), argv template, exec
 mode (`MECH-3`), and an ordered fallback chain. Three payoffs: the footer can honestly
-advertise only what is bound (required by `SPEC.md` §3.1), the fallback chain becomes
+advertise what a key will actually do, the fallback chain becomes
 declarative, and the whole table is overridable in `petri.toml` — which is the concrete
 form `FRAME-2` takes in the code.
 
@@ -397,9 +397,13 @@ Basically a `petri --mini` mode: one project, one screen, no list. Split your te
 
 Collected here because they are easy to trip over while building the above.
 
-- **The footer may only advertise keys that are actually bound** (`SPEC.md` §3.1). A key
-  whose tool isn't installed must be resolved at the registry level (`ACT-1`/`ACT-3`), not
-  by letting the footer lie.
+- **The footer must not mislead** (`SPEC.md` §5). It is a design problem, not a
+  contract — it need not list every bound key, may change with mode, and may be
+  machine-dependent if that is honestly better. What it may not do is advertise a key
+  that does nothing: a key whose tool isn't installed should be resolved at the
+  registry level (`ACT-1`/`ACT-3`) rather than by letting the footer lie. (`SPEC.md`
+  §5 used to make "only keys actually bound" a hard requirement; that was retired on
+  2026-09-02 as a machine-generated rule nobody had decided.)
 - **The PTY test layer is the flakiest layer in the repo** by `SPEC.md` §8's own account.
   A `MECH-2` test must shell out to something trivial (`true`, or a three-line script) —
   never to `serie` or any third-party TUI.
@@ -524,14 +528,15 @@ you are typing, dim without one once `Enter` has closed the input.
   `BrowserState` instead.
 - **`s8_filter_chip.rs`** (render) and **`s8_pty_filter.rs`** (keystrokes).
 
-Four things worth keeping:
+Five things worth keeping:
 
 1. **The chip belongs in the header, not the footer.** Replacing the footer
-   with a filter prompt is the obvious design and it is barred by a rule
-   already on this list: the footer may only advertise bound keys (§5). A
-   filter-mode footer would either drop the keymap or advertise `Esc clear`
-   in normal mode, where `Esc` is deliberately a no-op. The header had room;
-   the footer had a contract.
+   with a filter prompt is the obvious design, and it trades a
+   permanently-useful surface for a transient one: the keymap is worth *more*
+   while you are in an unfamiliar mode, not less. The header had the room.
+   (The original argument here was that a hard `SPEC.md` rule forbade a
+   mode-specific footer. That rule has since been retired — see §5 — and the
+   decision stands anyway, which is the better reason to keep it.)
 2. **The interesting state is the *closed* one.** While you type, the query is
    at least implied by the keys you just pressed. The state ACT-10 was
    actually about is after `Enter` — and it is the one a naive fix (draw the
@@ -549,7 +554,16 @@ Four things worth keeping:
    of truth for one mode, and the render would eventually have disagreed with
    the keymap — the same shape as slice 1's finding 3.
 
-One gap this made visible rather than caused: **`Backspace` is unbound in the
-filter input.** A mistyped query can only be abandoned (`Esc`) and retyped, and
-now that the query is on screen the dead key is obvious. Not fixed here — it is
-a keymap change, not a display one, and `SPEC.md` §5 does not currently list it.
+5. **The display fix exposed a keymap gap: `Backspace` was unbound.** A
+   mistyped query could only be abandoned (`Esc`) and retyped. It was
+   invisible while the query was — the list just stayed wrong and you had no
+   idea why. Bound in the same slice, with a PTY test, because the real
+   terminal byte is `0x7f` (DEL) rather than `0x08` and nothing below layer 3
+   proves that decodes.
+
+The other thing this slice retired: **`SPEC.md`'s "the footer may only
+advertise keys that are actually bound"** is gone as a hard requirement (§5
+above carries what replaced it). It was machine-generated, never a decision
+anyone made, and it had started to shape work — the header-vs-footer choice
+above was originally argued from the rule rather than from the design. The
+current footer is good; future ones should be good too, not compliant.

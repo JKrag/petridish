@@ -1201,7 +1201,7 @@ fn solid_selected_line(content: &str, card_width: usize) -> Line<'static> {
     ))
 }
 
-/// Footer: the keymap advertising only keys actually bound (petri/SPEC.md §5).
+/// Footer: the keymap (petri/SPEC.md §5 — honest and useful, not a fixed list).
 fn footer_line() -> Line<'static> {
     Line::from(Span::styled(
         " j/k move  Space toggle  Enter open/browser  Tab Browser  q quit ",

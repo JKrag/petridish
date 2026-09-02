@@ -128,7 +128,9 @@ reuses all of it, and the Dashboard's `Enter` handoff needs somewhere to land.
   resets to the first available row.
 - **`/` opens a type-ahead filter** that live-filters as you type: case-insensitive
   substring match against `Project.name`; an empty query returns the input
-  unchanged. `Enter`/`Esc` closes it, `Esc` clears.
+  unchanged. `Enter`/`Esc` closes it, `Esc` clears, `Backspace` deletes the last
+  character and re-filters (char-wise, so a multi-byte character goes as one
+  keypress).
 - **An active filter is always visible in the header** (`IDEAS.md` `ACT-10`), as a
   chip after the title badge: the query, and `<matched> of <total>` against the
   *unfiltered* row count. It is drawn bright with a block cursor while the input
@@ -136,15 +138,16 @@ reuses all of it, and the Dashboard's `Enter` handoff needs somewhere to land.
   one that matters, since a short list with no query on screen is indistinguishable
   from a fleet that has gone quiet, and `0 of 12` is what separates "your query
   excluded everything" from "there is nothing here". It is a header chip rather
-  than a mode-specific footer because the footer may only advertise bound keys
-  (§5), and swapping it per-mode would either drop bindings or claim ones the
-  filter mode does not honour. The header row cannot wrap, so on a narrow
-  terminal the **count keeps its width and the query is elided** (`…`) into what
-  is left — while the input is open the tail is kept so further keystrokes stay
-  visible, once it is closed the head is kept so the query stays identifiable.
+  than in the footer because the footer's keymap stays useful *while* you filter
+  — swapping it out for a filter prompt would trade a permanently-useful surface
+  for a transient one, and the header had the room. The header row cannot wrap,
+  so on a narrow terminal the **count keeps its width and the query is elided**
+  (`…`) into what is left — while the input is open the tail is kept so further
+  keystrokes stay visible, once it is closed the head is kept so the query stays
+  identifiable.
 - **Scrolls**, with a scrollbar. "Every project must be reachable" is this screen's
   rule; truncating it would break that. Contrast the Dashboard (§3.2).
-- Footer keymap advertising **only keys actually bound**.
+- Footer keymap. Keep it honest and useful (see §5) — it is not a fixed contract.
 - **Selection highlight and section-label colors follow the shared palette (§4.1)**:
   selection renders as a solid reverse-video bar (black text on `theme::ACCENT`,
   bold) — the same convention `dashboard.rs`'s `solid_selected_line` uses for its
@@ -365,6 +368,7 @@ user's terminal in raw mode is a v1 blocker, not a polish item.
 | `Home` / `End` | Browser: jump to the first/last row |
 | `Enter` | Dashboard: on a row, jump to Browser on this project; on a section header, toggle it. Browser: **unbound** (see below) |
 | `/` | Browser: open type-ahead filter |
+| `Backspace` | Browser: delete the last character of the filter query |
 | `Esc` | close/clear the filter |
 | `Space` | Dashboard: collapse/expand the current section |
 | `o` / `g` / `e` | Browser: open remote / git history / open in editor (§5.1) |
@@ -378,9 +382,26 @@ truncated out of the render entirely with no visual feedback. The Browser is the
 one screen with a real scrolling viewport, so that's where fast navigation earns
 its keep.
 
-The footer must advertise only keys that are actually bound. Note it need not
-advertise *every* bound key: `PageUp`/`PageDown`/`Home`/`End` are bound and work, but
-were dropped from the Browser's footer string to keep the action keys on one line.
+**The footer is a design problem, not a contract.** An earlier version of this
+document made "advertise only keys that are actually bound" a hard requirement,
+and it has been retired: it was never a considered decision, and treating it as a
+gate pushed later work into shapes chosen to satisfy the rule rather than the
+user. What survives is the sensible half — *don't advertise a key that does
+nothing*, because a footer you can't trust is worse than no footer. Everything
+else is judgement:
+
+- It need not list *every* bound key. `PageUp`/`PageDown`/`Home`/`End` are bound
+  and work but are absent from the Browser's footer, so the action keys fit on one
+  line. That is a good trade, not an exception to a rule.
+- It may change with mode, if a mode's keys are genuinely different and the swap
+  reads as clearer rather than as the keymap vanishing.
+- It may be machine-dependent, if that is honestly better. Today it isn't: the
+  action keys are advertised unconditionally because `g` always resolves (§5.1's
+  fallback chain) and `o`/`e` always respond, and because a machine-dependent
+  footer would make every snapshot test depend on what happens to be installed on
+  the machine running it.
+
+The bar is "would a new user be misled?", not "does it match a list".
 
 **`Enter` is deliberately unbound in the Browser's normal mode, and must not appear in
 its footer.** The Dashboard's `Enter` exists to cure a real itch ("my fingers wanted to
