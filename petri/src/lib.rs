@@ -175,7 +175,6 @@ fn poll_loop(
         None => None,
     };
 
-    let mut in_filter_input = false;
     // The ACT-8 tool picker, `Some` while it is open. It takes every keystroke
     // while it is up — a modal that let keys leak through to the list behind
     // it would be worse than no modal.
@@ -328,16 +327,18 @@ fn poll_loop(
                     }
                 } else if key.code == crossterm::event::KeyCode::Char('/') {
                     // Enter filter input mode. The query starts empty and
-                    // subsequent character keys append to it.
-                    in_filter_input = true;
+                    // subsequent character keys append to it. The flag lives on
+                    // `BrowserState` because `browser::render` needs it too — the
+                    // ACT-10 header chip draws differently while you are typing.
                     if let Some(ref mut state) = browser_state {
+                        state.filter_input = true;
                         state.filter_query = String::new();
                         if let Some(ref radar) = last_good {
                             state.apply_filter(radar, "");
                         }
                     }
                     true
-                } else if in_filter_input {
+                } else if browser_state.as_ref().is_some_and(|s| s.filter_input) {
                     match key.code {
                         // Navigation arrows and j/k still move selection while
                         // in filter mode (the user may want to test moves without
@@ -393,8 +394,8 @@ fn poll_loop(
                         // `Esc` closes the filter input mode *and* clears the
                         // query (petri/SPEC.md §5).
                         crossterm::event::KeyCode::Esc => {
-                            in_filter_input = false;
                             if let Some(ref mut state) = browser_state {
+                                state.filter_input = false;
                                 state.filter_query = String::new();
                                 if let Some(ref radar) = last_good {
                                     state.apply_filter(radar, "");
@@ -405,7 +406,9 @@ fn poll_loop(
                         // `Enter` closes the filter input mode but keeps the
                         // query, so the filtered selection persists.
                         crossterm::event::KeyCode::Enter => {
-                            in_filter_input = false;
+                            if let Some(ref mut state) = browser_state {
+                                state.filter_input = false;
+                            }
                             true
                         }
                         // Character keys: append to the query (filter input

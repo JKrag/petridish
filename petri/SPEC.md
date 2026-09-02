@@ -129,6 +129,19 @@ reuses all of it, and the Dashboard's `Enter` handoff needs somewhere to land.
 - **`/` opens a type-ahead filter** that live-filters as you type: case-insensitive
   substring match against `Project.name`; an empty query returns the input
   unchanged. `Enter`/`Esc` closes it, `Esc` clears.
+- **An active filter is always visible in the header** (`IDEAS.md` `ACT-10`), as a
+  chip after the title badge: the query, and `<matched> of <total>` against the
+  *unfiltered* row count. It is drawn bright with a block cursor while the input
+  is open and dim without one once `Enter` has closed it — the second state is the
+  one that matters, since a short list with no query on screen is indistinguishable
+  from a fleet that has gone quiet, and `0 of 12` is what separates "your query
+  excluded everything" from "there is nothing here". It is a header chip rather
+  than a mode-specific footer because the footer may only advertise bound keys
+  (§5), and swapping it per-mode would either drop bindings or claim ones the
+  filter mode does not honour. The header row cannot wrap, so on a narrow
+  terminal the **count keeps its width and the query is elided** (`…`) into what
+  is left — while the input is open the tail is kept so further keystrokes stay
+  visible, once it is closed the head is kept so the query stays identifiable.
 - **Scrolls**, with a scrollbar. "Every project must be reachable" is this screen's
   rule; truncating it would break that. Contrast the Dashboard (§3.2).
 - Footer keymap advertising **only keys actually bound**.

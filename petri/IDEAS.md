@@ -264,6 +264,11 @@ for the currently selected row, and should read as a disabled/dimmed affordance 
 than a key that silently does nothing.
 
 ### ACT-10 — The `/` filter query is never shown on screen
+**DONE** (slice 3) — `browser::filter_chip_spans`, plus `BrowserState.filter_input`
+(the mode flag moved out of `lib.rs`'s event loop so `render` can see it). Kept
+because the reason it went in the *header* rather than the footer is a constraint
+that outlives the fix — see `§9`.
+
 Found while gating the action keys: `BrowserState.filter_query` is stored and
 applied, but `browser::render` never displays it. The only visible evidence that a
 filter is active is that the list got shorter — so a user who filters, looks away,
@@ -424,8 +429,8 @@ than deleted, because what they *predicted* turned out to be worth keeping.
 
 Two cheaper things worth doing before or alongside it:
 
-- **`ACT-10`** — the `/` filter query is stored and applied but never drawn. Small fix,
-  real confusion, and the only known *bug* on this list rather than a missing feature.
+- ~~**`ACT-10`**~~ **Done — slice 3 (§9).** It was the only known *bug* on this
+  list; everything remaining is a missing feature.
 - **The rest of `ACT-2`.** `?` (help popup) and `s` (rescan) are now content-only:
   `MECH-1` and the registry already exist, so neither needs new plumbing.
 
@@ -461,7 +466,7 @@ Three findings from building it, kept because they will outlive the code:
    correctly with exactly the struct it was handed. Fixed at the root by keeping
    the loaded prefs alive and mutating in place.
 
-Still open from slice 1's own list: `ACT-10` above, and the `e` action has never
+Still open from slice 1's own list: the `e` action has never
 been exercised against a GUI editor on a real desktop — only its `Background`
 mode is unit-tested.
 
@@ -507,3 +512,44 @@ assertion bodies against the spec, because a test that passes and is named
 correctly can still be under-asserting. The model also froze twice with an
 undiagnosed hang, and the picker/wiring half was written directly after the job
 escalated.
+
+## 9. Slice 3 — `ACT-10`, the invisible filter
+
+Landed 2026-09-02. The header now carries a filter chip whenever a query is
+live: `/query` plus `<matched> of <total>`, bright with a block cursor while
+you are typing, dim without one once `Enter` has closed the input.
+
+- **`browser.rs`** — `filter_chip_spans`, and `BrowserState.filter_input`.
+- **`lib.rs`** — the loop's local `in_filter_input` is gone; the flag lives on
+  `BrowserState` instead.
+- **`s8_filter_chip.rs`** (render) and **`s8_pty_filter.rs`** (keystrokes).
+
+Four things worth keeping:
+
+1. **The chip belongs in the header, not the footer.** Replacing the footer
+   with a filter prompt is the obvious design and it is barred by a rule
+   already on this list: the footer may only advertise bound keys (§5). A
+   filter-mode footer would either drop the keymap or advertise `Esc clear`
+   in normal mode, where `Esc` is deliberately a no-op. The header had room;
+   the footer had a contract.
+2. **The interesting state is the *closed* one.** While you type, the query is
+   at least implied by the keys you just pressed. The state ACT-10 was
+   actually about is after `Enter` — and it is the one a naive fix (draw the
+   input line while the input is open) leaves exactly as broken as before.
+   The two render states are asserted separately for that reason.
+3. **The header cannot wrap, so the chip needed a width budget.** At 40
+   columns an over-long query pushed `0 of 15` off the right edge — losing
+   exactly the disambiguator the whole idea is about, at a geometry `SPEC.md`
+   §9 names as a test target. The count is laid out first and the query is
+   elided into the remainder. A "does it panic at 40×10" test passed happily
+   while this was broken; asserting the count is present is what caught it.
+4. **The mode flag had to move to be renderable.** `in_filter_input` was a
+   local in `poll_loop`, which is why the chip could not exist: `render` takes
+   `&BrowserState` and nothing else. Mirroring it would have been two sources
+   of truth for one mode, and the render would eventually have disagreed with
+   the keymap — the same shape as slice 1's finding 3.
+
+One gap this made visible rather than caused: **`Backspace` is unbound in the
+filter input.** A mistyped query can only be abandoned (`Esc`) and retyped, and
+now that the query is on screen the dead key is obvious. Not fixed here — it is
+a keymap change, not a display one, and `SPEC.md` §5 does not currently list it.

@@ -53,6 +53,15 @@ pub struct BrowserState {
     /// The current type-ahead filter query (petri/SPEC.md §3.1 "`/` opens a
     /// type-ahead filter"). Empty string = unfiltered.
     pub filter_query: String,
+    /// True while the `/` type-ahead input is open and taking keystrokes.
+    ///
+    /// This lives here, not in the event loop, because `render` needs it:
+    /// the header chip has to distinguish "you are typing a query" (cursor,
+    /// bright) from "a query is still applied" (no cursor, dim) — `ACT-10`.
+    /// Keeping the loop's own copy of the flag alongside it would be two
+    /// sources of truth for one mode, and the render would eventually
+    /// disagree with the keymap.
+    pub filter_input: bool,
 }
 
 impl BrowserState {
@@ -63,7 +72,7 @@ impl BrowserState {
     pub fn new(radar: &Radar) -> Self {
         let visible = grouped_visible_indices(radar, "");
         let selected = if visible.is_empty() { None } else { Some(0) };
-        Self { visible, selected, filter_query: String::new() }
+        Self { visible, selected, filter_query: String::new(), filter_input: false }
     }
 
     /// Move the selection by `delta` (negative = up, positive = down) within
@@ -209,12 +218,15 @@ pub fn render(frame: &mut Frame, radar: &Radar, state: &BrowserState) {
     .split(area);
 
     // Header: a badged "petri · browser" title — same inverted-color badge
-    // treatment as the Dashboard's title, not just colored text.
-    let header = Paragraph::new(Line::from(Span::styled(
+    // treatment as the Dashboard's title, not just colored text — followed by
+    // the filter chip when a filter is live (`ACT-10`).
+    let mut header_spans = vec![Span::styled(
         " petri · browser ",
         Style::default().fg(Color::Black).bg(theme::ACCENT).add_modifier(Modifier::BOLD),
-    )))
-    .wrap(Wrap { trim: false });
+    )];
+    // The badge is 17 columns; the chip gets what is left of the header row.
+    header_spans.extend(filter_chip_spans(radar, state, area.width.saturating_sub(17)));
+    let header = Paragraph::new(Line::from(header_spans)).wrap(Wrap { trim: false });
     frame.render_widget(header, chunks[0]);
 
     let rule = Paragraph::new(Line::from(Span::styled(
@@ -373,6 +385,88 @@ fn compute_scroll_offset(
     };
     let max_scroll = list_len - visible_rows;
     selected_line.saturating_sub(visible_rows - 1).min(max_scroll)
+}
+
+/// The header's filter chip (`ACT-10`): the spans that follow the title badge
+/// when a `/` filter is live, and nothing at all when it is not.
+///
+/// Two visually distinct states, because they mean different things:
+///
+/// - **Typing** (`filter_input`) — bright, with a block cursor after the
+///   query. The mode is taking your keystrokes right now.
+/// - **Applied but closed** (`Enter` pressed, query kept) — dim, no cursor.
+///   This is the state `ACT-10` was actually about: a user who filters, looks
+///   away, and looks back could not previously tell a filtered list from a
+///   fleet that had gone quiet.
+///
+/// The match count is `matches of total`, where `total` is the *unfiltered*
+/// visible row count — so `0 of 12` reads as "your query excluded everything",
+/// which is the case that otherwise looks exactly like an empty radar.
+///
+/// This is deliberately in the header rather than replacing the footer keymap:
+/// the footer may only advertise keys that are bound (SPEC.md §3.1/§5), and
+/// swapping it out per-mode would either drop bindings from the advertisement
+/// or claim ones the filter mode does not honour.
+fn filter_chip_spans(radar: &Radar, state: &BrowserState, avail: u16) -> Vec<Span<'static>> {
+    if !state.filter_input && state.filter_query.is_empty() {
+        return Vec::new();
+    }
+
+    let total = grouped_visible_indices(radar, "").len();
+    let matched = state.visible.len();
+
+    let (query_style, count_style) = if state.filter_input {
+        (
+            Style::default().fg(theme::ACCENT).add_modifier(Modifier::BOLD),
+            Style::default().fg(theme::DIM),
+        )
+    } else {
+        (Style::default().fg(theme::DIM), Style::default().fg(theme::DIMMER))
+    };
+
+    let cursor = if state.filter_input { "\u{2588}" } else { "" };
+    let count = format!("  {matched} of {total}");
+
+    // The header row is `Constraint::Length(1)` — it cannot wrap, so anything
+    // past the right edge is simply lost. The COUNT is the part that must
+    // survive: `0 of 12` is the whole reason this chip exists (an empty
+    // filtered list vs. an empty radar), and the query is the part the user
+    // just typed and already knows. So the count gets its width first and the
+    // query is truncated into whatever is left.
+    let fixed = "  /".chars().count() + cursor.chars().count() + count.chars().count();
+    let budget = (avail as usize).saturating_sub(fixed);
+    let query = truncate_query(&state.filter_query, budget, state.filter_input);
+
+    vec![
+        Span::styled(format!("  /{query}{cursor}"), query_style),
+        Span::styled(count, count_style),
+    ]
+}
+
+/// Fit `query` into `budget` columns, marking the elision with `…`.
+///
+/// Which END is kept depends on the mode, and the difference is the point:
+/// while the input is open the cursor sits after the last character typed, so
+/// the TAIL is kept (`…rly-long-query`) and your keystrokes go on appearing.
+/// Once the input is closed there is no cursor and nothing is arriving, so the
+/// HEAD is kept (`a-fairly-lon…`), which is the half that identifies the query.
+fn truncate_query(query: &str, budget: usize, keep_tail: bool) -> String {
+    let len = query.chars().count();
+    if len <= budget {
+        return query.to_string();
+    }
+    if budget <= 1 {
+        // No room for even one character plus the ellipsis. The count still
+        // renders — losing the query entirely is the correct trade here.
+        return "\u{2026}".chars().take(budget).collect();
+    }
+    if keep_tail {
+        let tail: String = query.chars().skip(len - (budget - 1)).collect();
+        format!("\u{2026}{tail}")
+    } else {
+        let head: String = query.chars().take(budget - 1).collect();
+        format!("{head}\u{2026}")
+    }
 }
 
 /// Build the list's lines: section headers interleaved with project rows, in
