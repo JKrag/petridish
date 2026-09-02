@@ -413,3 +413,39 @@ Three findings from building it, kept because they will outlive the code:
 Still open from slice 1's own list: `ACT-10` above, and the `e` action has never
 been exercised against a GUI editor on a real desktop — only its `Background`
 mode is unit-tested.
+
+## 8. Slice 2 — `ACT-11`, the re-pick key
+
+Landed 2026-09-02 (`b65c6ec`, `1a3bdd1`). `G`/`O`/`E` open the picker in re-pick
+mode: `Enter` runs the highlighted tool once, `D` makes it the default and runs
+it, `Esc` does neither. Shifted keys are derived from `action.key`, so a new
+registry entry gets one for free.
+
+- **`tools.rs`** — `launch_for` (rule 2's body, extracted) and
+  `repick_candidates` (every installed candidate, fallbacks included, no
+  ambiguity test, no stored-choice lookup).
+- **`picker.rs`** — `Mode::{FirstRun, Repick}`, `Outcome::Chosen { program,
+  persist }`, and a footer that advertises only the verbs live in the current
+  mode.
+- **`s8_pty_repick.rs`** — inverts `ACT-8`'s "tests must never see the popup",
+  because here the popup is the feature.
+
+Two findings worth keeping:
+
+1. **`Resolution::Ambiguous` was the wrong door, and it fails silently.**
+   Re-pick's premise is that the choice IS resolved; `resolve` collapses that
+   case to `Ready` and throws the candidate list away. Routing `G` through it
+   would have produced an empty popup on precisely the machines the feature is
+   for — and looked fine on a machine with no default stored. The PTY test seeds
+   a resolving default so a regression back to `resolve` cannot pass.
+2. **A parameter removed is worth more than a test added.** `run_action` used to
+   re-read `prefs.tools`, which was correct only because every caller wrote
+   prefs first. Rather than test that a one-off doesn't, `prefs` was removed from
+   its signature entirely — now it *cannot* consult a stored answer, which no
+   later refactor can quietly undo.
+
+The build ran as an AFK delegation to the local model and is worth recording
+honestly: the model produced `tools.rs` and its eight tests (good work — the
+assertions check registry order and the fallback flag, not just counts), but
+froze twice with an undiagnosed hang, and slice 2's picker/wiring half was
+written directly after the job escalated.
