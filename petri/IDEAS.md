@@ -200,12 +200,53 @@ on. Details worth settling with it:
   the popup costs one keystroke.
 - **Offer a re-pick key** rather than relying on the footnote. "Go edit the TOML" is a fine
   escape hatch but a poor primary path; a shifted variant of the action key (`G` re-picks
-  what `g` runs) is better, and the popup's footnote can mention both.
+  what `g` runs) is better, and the popup's footnote can mention both. See `ACT-11`, which
+  refines what that key *is* — it turned out to be a one-off launcher first and a settings
+  dialog second.
 - **Re-ask when the stored choice disappears** from `PATH` — a removed tool should reopen
   the picker, not produce a failed exec.
 - **Tests must never see the popup.** The PTY layer (`SPEC.md` §8, already the flakiest)
   would hang on a modal it doesn't know to answer. Pre-seed the preferences file in the
-  fixture, so "unconfigured" is an explicit state the tests choose to enter.
+  fixture, so "unconfigured" is an explicit state the tests choose to enter. Note `ACT-11`
+  *inverts* this for the re-pick popup specifically: there the popup is the feature, so its
+  test has to open it deliberately and answer it.
+
+### ACT-11 — The re-pick key is a one-off launcher, not a settings dialog
+A refinement of `ACT-8`'s re-pick bullet, from the daily-use case that motivates it: *"I use
+`serie` as my everyday git viewer, but just this once I want `lazygit`."* That is not a
+request to change a default — it is a request to bypass one. If the shifted key were purely
+"reconfigure this action", using it would silently cost you your real default every time you
+wanted a one-off, and you would then have to re-pick back.
+
+So the popup opened by the shifted key carries **two verbs, not one**:
+
+| key | meaning |
+|-----|---------|
+| `Enter` | launch the highlighted tool **once**; stored default untouched |
+| `D` | make the highlighted tool the **new default**, and launch it |
+| `Esc` | cancel; launch nothing, change nothing |
+
+The first-run popup (`ACT-8` proper) keeps its single verb — there is no default yet to
+preserve, so `Enter` there stores *and* launches as before. Same widget, two modes; the mode
+is what `Enter` means.
+
+Three consequences worth pinning:
+
+- **`Shift`+`Enter` is not available**, however natural it reads. Terminals do not report it
+  distinguishably from plain `Enter` without the kitty keyboard protocol, and `petri` pushes
+  no `KeyboardEnhancementFlags` (it does not even enable mouse capture — see `MECH-2`'s
+  note). Turning them on to win one binding would change key decoding globally and put the
+  flakiest layer in the repo at risk. `D` is a plain, portable key that the footer can
+  honestly advertise, which is what `SPEC.md` §3.1 asks for anyway.
+- **The shifted key must not route through `Resolution::Ambiguous`.** That variant only
+  appears when the choice is *unresolved*; the whole point here is that it is resolved and
+  the user wants to override it anyway. Re-pick needs its own entry point that lists every
+  installed candidate — fallbacks included — regardless of ambiguity, and falls through to
+  `Other — specify path…` when nothing at all is installed.
+- **Bind the shifted variant for every registry action, not just `g`.** `O` looks thin today
+  (one candidate, `open`, handing off to the system default browser) but the `Other` row is
+  exactly how someone pins a specific browser, and a rule that holds for every key stays
+  true as the registry grows. A per-action exception list is the thing to avoid.
 
 ### ACT-9 — Action availability has two independent axes
 Worth separating in the registry, because they fail differently:
