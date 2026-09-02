@@ -226,6 +226,14 @@ So the popup opened by the shifted key carries **two verbs, not one**:
 | `D` | make the highlighted tool the **new default**, and launch it |
 | `Esc` | cancel; launch nothing, change nothing |
 
+`Other — specify path…` needs care, because inside the text field `D` is a literal
+character and cannot also be a verb. Rather than reach for a modifier (`Ctrl-D`) or leave a
+dead end where a hand-typed path can only ever be one-off, **the field inherits the verb you
+opened it with**: `Enter` on the `Other` row opens it in run-once flavour, `D` on the `Other`
+row opens it in set-default flavour, and `Enter` in the field commits with whichever it is.
+The footer names the live one, so the user never sees a key advertised that the current mode
+does not honour.
+
 The first-run popup (`ACT-8` proper) keeps its single verb — there is no default yet to
 preserve, so `Enter` there stores *and* launches as before. Same widget, two modes; the mode
 is what `Enter` means.
