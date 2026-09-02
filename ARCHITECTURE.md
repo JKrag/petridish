@@ -210,9 +210,15 @@ aggregator merges across sensors by the same rule.
 Raycast extension is built (`raycast/`, TypeScript, unaffected by any of the Python→Rust
 work — see its own `README.md`). Still deferred: FastAPI/web UI · `ps`/`lsof` process
 sensing for non-Claude CLIs (F8) · standalone Copilot CLI support if `~/.copilot/` ever
-appears for real (F5) · multi-root VS Code workspaces · resume-session / open-in-editor /
-open-GitHub actions from `petri` specifically (Raycast already has these; `petri` v1 stays
-read-only intentionally, see `petri/SPEC.md`).
+appears for real (F5) · multi-root VS Code workspaces · resume-session from `petri`
+(Raycast has it; `petri` does not — see `SURF-3` in `petri/IDEAS.md`).
+
+**No longer deferred:** open-in-editor and open-GitHub actions from `petri` landed in
+slice 1 (`petri/SPEC.md` §5.1), along with a git-history action and a tool picker. An
+earlier version of this line said `petri` "v1 stays read-only intentionally" — that
+claim is retired as written, though the invariant underneath it is untouched: `petri`
+still never writes `projects.json`, and handing the terminal to another program is not
+the same thing as becoming a writer.
 
 **Superseded:** the archived plan's D6 ("`petri` uses stdlib `curses`, not Textual", chosen
 to keep the Python build's zero-runtime-deps constraint) is moot now that `petri` itself is

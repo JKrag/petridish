@@ -354,6 +354,8 @@ user's terminal in raw mode is a v1 blocker, not a polish item.
 | `/` | Browser: open type-ahead filter |
 | `Esc` | close/clear the filter |
 | `Space` | Dashboard: collapse/expand the current section |
+| `o` / `g` / `e` | Browser: open remote / git history / open in editor (§5.1) |
+| `O` / `G` / `E` | Browser: re-pick the tool for that action (§5.1) |
 | `q` | quit |
 
 **`J`/`K`/`PageUp`/`PageDown`/`Home`/`End` are Browser-only, not Dashboard.**
@@ -363,23 +365,57 @@ truncated out of the render entirely with no visual feedback. The Browser is the
 one screen with a real scrolling viewport, so that's where fast navigation earns
 its keep.
 
-The footer must advertise only keys that are actually bound. No launch, open-editor
-or resume-session actions in v1 — the Raycast extension already covers those, and
-`petri` staying read-only is intentional.
+The footer must advertise only keys that are actually bound. Note it need not
+advertise *every* bound key: `PageUp`/`PageDown`/`Home`/`End` are bound and work, but
+were dropped from the Browser's footer string to keep the action keys on one line.
 
-**`Enter` is deliberately unbound in the Browser, and must not appear in its
-footer.** The Dashboard's `Enter` exists to cure a real itch ("my fingers wanted to
-arrow down to *something*"); the Browser is where you land, and in a read-only v1
-there is nothing further to open. Advertising `Enter` there would recreate the same
-dead-key feeling one screen down. When actions do arrive (open in editor, resume
-session), the Browser's `Enter` is where they belong.
+**`Enter` is deliberately unbound in the Browser's normal mode, and must not appear in
+its footer.** The Dashboard's `Enter` exists to cure a real itch ("my fingers wanted to
+arrow down to *something*"); the Browser is where you land. It *is* bound inside the
+`/` filter (confirm) and inside the tool picker (choose), both of which are modes with
+an obvious target — the rule is about the bare row cursor.
+
+### 5.1 Action keys
+
+**This supersedes an earlier version of this section**, which said "no launch,
+open-editor or resume-session actions in v1 — `petri` staying read-only is
+intentional." Actions arrived in slice 1 (`IDEAS.md` `ACT-1`/`ACT-2`/`MECH-2`), and
+the read-only claim it was protecting is unchanged and still true in the only sense
+that matters: **`petri` still never writes `projects.json`** (invariant 1). Handing the
+terminal to `serie` is not the same thing as becoming a writer.
+
+Actions are data, not hardcoded keys — `petri/src/tools.rs`'s registry. Each carries an
+id, a key, candidate programs in preference order, an exec mode (`Terminal` suspends
+`petri` and waits; `Background` spawns detached), and what the action needs *from the
+project*. Availability therefore has two independent axes: whether any candidate is
+installed on this machine, and whether this project has the target at all (a project
+with no `github_url` leaves `o` nothing to open). Both degrade to a one-line notice,
+never a crash.
+
+Three actions are bound today: `o` (open remote), `g` (git history, which always
+resolves thanks to a pinned `git log --graph` fallback) and `e` (open in editor).
+
+**The shifted variant of any action key re-picks its tool** (`IDEAS.md` `ACT-11`),
+opening the picker for a *one-off* launch: `Enter` runs the highlighted tool once and
+leaves the stored default alone, `D` makes it the new default and runs it, `Esc` does
+neither. The shifted key is derived from the action's own key, so a new registry entry
+gets one automatically.
+
+`Shift`+`Enter` is **not** available for this or anything else. Terminals do not report
+it distinguishably from plain `Enter` without the kitty keyboard protocol, and `petri`
+pushes no `KeyboardEnhancementFlags` — a binding on it would compile, test green, and
+never fire. Do not add the flags to win one binding; it changes key decoding globally
+and destabilises the PTY test layer (§8).
 
 ---
 
 ## 6. Preferences file
 
 `~/.petridish/petri.toml`, owned and written by `petri` alone. Holds which Dashboard
-sections are collapsed, and the last screen. `swab` never reads it; it is
+sections are collapsed, the last screen, and a `[tools]` table mapping each action id
+to the program the user chose for it (§5.1). A one-off launch (`Enter` in the re-pick
+picker) deliberately does **not** write that table — writing it would cost the user the
+very default they pressed the shifted key to bypass. `swab` never reads it; it is
 deliberately *not* a `[petri]` section in `config.toml`, which would put two writers
 on one file.
 

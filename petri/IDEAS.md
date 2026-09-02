@@ -10,6 +10,14 @@ conversation, commits and issues without re-describing it. **IDs are never reuse
 renumbered** — a dropped idea keeps its ID and gets marked `[dropped]` with the reason,
 because "why didn't we do X" is worth as much as the ideas we kept.
 
+**A built idea is marked `**DONE**` with a pointer to the code, not deleted.** Deleting
+it would break the cross-references that open ideas make to it (`SURF-3` leans on
+`MECH-2`, `SURF-6` on `MECH-1`, `ACT-6` on `ACT-1`), and the entry usually carries the
+*reasoning* the code can only imply. Where an entry turned out to be only partly built,
+the marker says which part — `ACT-2` and `ACT-9` are both live in exactly that way, and
+those remainders are real work, not bookkeeping. `SPEC.md` is where the built behaviour
+is specified; this file is where its motivation lives.
+
 Origin: brainstorm session 2026-09-01, on the `petri-dashboard-redesign` branch, prompted
 by two complaints about the then-current build — it wastes vertical space on tall
 terminals, and the two screens are so close to each other that neither feels like it does
@@ -48,6 +56,9 @@ Dashboard** — not more metrics on both.
 ## 1. Mechanisms (the enabling primitives)
 
 ### MECH-1 — Popup / overlay frames
+**DONE** (slice 1) — `petri/src/picker.rs`'s `render`. Kept because `SURF-6` and the
+`?` help popup still draw on it.
+
 **Feasibility: trivial. Not a terminal-capability question at all.** Render `Clear` into a
 centered `Rect`, then the content block on top, last in the draw call. It is ratatui
 painting its own cells; nothing is negotiated with the terminal emulator. Anything
@@ -58,6 +69,10 @@ in place on the Dashboard (which is `SPEC.md` §7's deferred "inline card expans
 now with a mechanism).
 
 ### MECH-2 — Suspend-and-exec (hand the terminal to a child process)
+**DONE** (slice 1) — `petri/src/exec.rs`. Kept because `SURF-3` and the unbound rows of
+`ACT-2` still draw on it. One correction from building it: the `terminal.clear()` in the
+sketch below is *wrong* on ratatui 0.30 — see `§7` finding 2.
+
 **Feasibility: easy, ~30 lines, and it is the *right* answer rather than a compromise** —
 a git-graph browser wants the whole screen, not a 40-column pane. `lib.rs`'s existing
 setup/teardown pair is already the two halves of it.
@@ -88,6 +103,9 @@ Note `petri` does not currently enable mouse capture (`lib.rs`), so there is no 
 mode to tear down and restore. If mouse support is ever added, it joins both halves.
 
 ### MECH-3 — Spawn-and-detach (for GUI targets)
+**DONE** (slice 1) — `petri/src/exec.rs`, and `ExecMode::{Terminal,Background}` in
+`tools.rs` is the per-entry mode this asked for.
+
 Distinct from `MECH-2` and needed alongside it. `code $folder`, `open -a`, a browser URL:
 these must **not** take the terminal and must **not** be waited on. Different call shape
 (spawn, null stdio, don't wait, don't tear down the TUI), so the external-tool registry
@@ -108,6 +126,10 @@ live log tail in a corner — not for "press `g`, look at the graph, come back,"
 ## 2. Actions — making the Browser *do* something (`ACT-*`)
 
 ### ACT-1 — An external-tool registry, not hardcoded keys
+**DONE** (slice 1) — `petri/src/tools.rs`. The `petri.toml` override half is real but
+narrow: the `[tools]` table stores *which program* per action, not yet a full argv
+override. Kept because `ACT-5`/`ACT-6`/`SURF-4` all extend it.
+
 Each action is data: name, key, probe (how to tell it is available), argv template, exec
 mode (`MECH-3`), and an ordered fallback chain. Three payoffs: the footer can honestly
 advertise only what is bound (required by `SPEC.md` §3.1), the fallback chain becomes
@@ -115,20 +137,25 @@ declarative, and the whole table is overridable in `petri.toml` — which is the
 form `FRAME-2` takes in the code.
 
 ### ACT-2 — Candidate action keys for the Browser
+**PARTLY DONE** (slice 1 + 2) — three of nine bound. The remaining six are the live part
+of this entry; each is now a registry row (`ACT-1`) rather than new plumbing.
 
-| key | action | mechanism |
-|-----|--------|-----------|
-| `o` | open the project's remote in a web browser | `MECH-3` — spawn-and-detach, same as the GUI editors; `github_url` is already in the schema |
-| `g` | git history / graph | `MECH-2`, fallback chain — see `ACT-3` |
-| `e` | open in editor | `MECH-2` or `MECH-3` depending on target — see `ACT-4` |
-| `t` | attach to the agent's tmux session | `MECH-2` (`attach`), or `switch-client` when already inside tmux |
-| `f` | reveal in Finder | `MECH-3`, `open <path>` |
-| `y` | yank path to clipboard | for pasting into another terminal |
-| `c` | `cd` here on exit | print the path for a shell wrapper to consume; petri becomes a navigator |
-| `s` | rescan now | invoke `swab scan` and refresh — directly answers "it's just a viewer" |
-| `?` | help popup | `MECH-1`'s first customer |
+| key | action | mechanism | status |
+|-----|--------|-----------|--------|
+| `o` | open the project's remote in a web browser | `MECH-3` — spawn-and-detach, same as the GUI editors; `github_url` is already in the schema | **done** (`O` re-picks) |
+| `g` | git history / graph | `MECH-2`, fallback chain — see `ACT-3` | **done** (`G` re-picks) |
+| `e` | open in editor | `MECH-2` or `MECH-3` depending on target — see `ACT-4` | **done** (`E` re-picks) |
+| `t` | attach to the agent's tmux session | `MECH-2` (`attach`), or `switch-client` when already inside tmux | open — see `SURF-3` |
+| `f` | reveal in Finder | `MECH-3`, `open <path>` | open |
+| `y` | yank path to clipboard | for pasting into another terminal | open — the one row that is *not* a registry entry; no child process involved |
+| `c` | `cd` here on exit | print the path for a shell wrapper to consume; petri becomes a navigator | open — needs a shell-wrapper story first |
+| `s` | rescan now | invoke `swab scan` and refresh — directly answers "it's just a viewer" | open |
+| `?` | help popup | `MECH-1`'s first customer | open — and `MECH-1` is built, so this is now pure content |
 
 ### ACT-3 — Git history with a graceful fallback chain
+**DONE** (slice 1) — `registry()`'s `gitlog` action, pinned pager and all. The measured
+`less -F` caveat below is implemented, not just noted.
+
 `serie` → `lazygit` → `gitui` → `tig` → **plain `git log --graph --oneline --decorate
 --all`**. The last one is not a degraded consolation prize: git pages through `less` by
 itself when stdout is a tty (its default pager config already handles color and quits on
@@ -144,6 +171,12 @@ whatever the user's config happens to be, so the interaction is uniform across e
 entry in the chain.
 
 ### ACT-4 — "Open in editor" and the folder-vs-file problem
+**DONE** (slice 1) — the resolution order below is `begin_action`'s editor chain, and
+the folder-capable candidates are `registry()`'s `edit` action. **One caveat kept
+deliberately: the `Background` path has never been exercised against a real GUI editor
+on a desktop** — only unit-tested. Until someone presses `e` on a real machine with
+`code` installed, treat that half as unverified.
+
 The real question is not detection but **what we hand the editor: a directory.**
 
 - Multi-file / GUI editors take a folder natively: `code`, `cursor`, `zed`, `subl`,
@@ -182,6 +215,9 @@ changes the pane's whole design and should be decided before investing more in i
 current layout.
 
 ### ACT-8 — First-run tool picker popup
+**DONE** (slice 1) — `petri/src/picker.rs` + `[tools]` in `prefs.rs`. Kept because
+`ACT-11` refines it and the two must be read together.
+
 When an action has several plausible targets on this machine (four git TUIs installed; or
 `code`, `nvim` and `vim` all on `PATH`), don't guess and don't make the user find the
 config file first. On the **first** invocation of that action, open a `MECH-1` popup
@@ -211,7 +247,35 @@ on. Details worth settling with it:
   *inverts* this for the re-pick popup specifically: there the popup is the feature, so its
   test has to open it deliberately and answer it.
 
+### ACT-9 — Action availability has two independent axes
+**DONE** (slice 1) — `Resolution::{NoTool,NoTarget}` in `tools.rs`. The second axis
+currently reads as a transient notice rather than the dimmed affordance this asked for;
+that part is **still open**.
+
+Worth separating in the registry, because they fail differently:
+
+- **Tool availability (per machine)** — is `serie` installed? Resolved by probing, and by
+  fallback chains (`ACT-3`) or the picker (`ACT-8`).
+- **Target availability (per project)** — this project has no `github_url`, or no tmux
+  session, so `o`/`t` have nothing to act on even though the tooling is fine.
+
+The first decides whether a key is *bound at all*; the second decides whether it is live
+for the currently selected row, and should read as a disabled/dimmed affordance rather
+than a key that silently does nothing.
+
+### ACT-10 — The `/` filter query is never shown on screen
+Found while gating the action keys: `BrowserState.filter_query` is stored and
+applied, but `browser::render` never displays it. The only visible evidence that a
+filter is active is that the list got shorter — so a user who filters, looks away,
+and looks back has no way to tell a filtered list from a fleet that went quiet.
+Small fix, real confusion, and it also costs the PTY layer a natural assertion
+target. Not fixed with the action keys, because it is a separate change and the
+commit was already large.
+
 ### ACT-11 — The re-pick key is a one-off launcher, not a settings dialog
+**DONE** (slice 2) — `picker::Mode`, `Outcome::Chosen { persist }`, `begin_repick` in
+`lib.rs`.
+
 A refinement of `ACT-8`'s re-pick bullet, from the daily-use case that motivates it: *"I use
 `serie` as my everyday git viewer, but just this once I want `lazygit`."* That is not a
 request to change a default — it is a request to bypass one. If the shifted key were purely
@@ -255,27 +319,6 @@ Three consequences worth pinning:
   (one candidate, `open`, handing off to the system default browser) but the `Other` row is
   exactly how someone pins a specific browser, and a rule that holds for every key stays
   true as the registry grows. A per-action exception list is the thing to avoid.
-
-### ACT-9 — Action availability has two independent axes
-Worth separating in the registry, because they fail differently:
-
-- **Tool availability (per machine)** — is `serie` installed? Resolved by probing, and by
-  fallback chains (`ACT-3`) or the picker (`ACT-8`).
-- **Target availability (per project)** — this project has no `github_url`, or no tmux
-  session, so `o`/`t` have nothing to act on even though the tooling is fine.
-
-The first decides whether a key is *bound at all*; the second decides whether it is live
-for the currently selected row, and should read as a disabled/dimmed affordance rather
-than a key that silently does nothing.
-
-### ACT-10 — The `/` filter query is never shown on screen
-Found while gating the action keys: `BrowserState.filter_query` is stored and
-applied, but `browser::render` never displays it. The only visible evidence that a
-filter is active is that the list got shorter — so a user who filters, looks away,
-and looks back has no way to tell a filtered list from a fleet that went quiet.
-Small fix, real confusion, and it also costs the PTY layer a natural assertion
-target. Not fixed with the action keys, because it is a separate change and the
-commit was already large.
 
 ---
 
@@ -367,16 +410,24 @@ Collected here because they are easy to trip over while building the above.
 
 ---
 
-## 6. Suggested first slices
+## 6. Where the leverage is next
 
-Not a roadmap — just where the leverage is.
+Not a roadmap. The original two suggestions are recorded here as struck through rather
+than deleted, because what they *predicted* turned out to be worth keeping.
 
-1. **`MECH-2` plus one action key.** Bind something that needs no third-party install
-   (`o`, or `e`) so it is testable on any machine, and get teardown → exec → restore →
-   `clear()` right, with a PTY test against a trivial child. Every other `ACT-*` entry
-   becomes a table row once this works.
-2. **`SPACE-1`, the event feed.** Independent of slice 1, and it fixes "wastes real
-   estate" and "doesn't do anything" in a single change.
+1. ~~**`MECH-2` plus one action key.**~~ **Done — slice 1 (§7).** The prediction held
+   exactly: "every other `ACT-*` entry becomes a table row once this works" is now
+   literally true, and it is why `ACT-2`'s six open keys are cheap.
+2. **`SPACE-1`, the event feed.** Still the highest payoff-to-effort item on the list,
+   still independent of everything built so far, and still the best demo GIF. This is
+   the obvious next slice.
+
+Two cheaper things worth doing before or alongside it:
+
+- **`ACT-10`** — the `/` filter query is stored and applied but never drawn. Small fix,
+  real confusion, and the only known *bug* on this list rather than a missing feature.
+- **The rest of `ACT-2`.** `?` (help popup) and `s` (rescan) are now content-only:
+  `MECH-1` and the registry already exist, so neither needs new plumbing.
 
 ---
 
