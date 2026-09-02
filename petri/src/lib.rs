@@ -215,23 +215,34 @@ fn poll_loop(
                             picker = None;
                             picker_action = None;
                         }
-                        crate::picker::Outcome::Chosen(program) => {
+                        crate::picker::Outcome::Chosen { program, persist } => {
                             let action = picker_action.take();
                             picker = None;
                             if let Some(action) = action {
-                                // Store the answer first, then act on it. If the
-                                // launch fails the user has still been asked
-                                // once and only once (ACT-8).
-                                prefs.tools.insert(action.id.to_string(), program);
-                                if let Err(e) = prefs::save(&prefs::default_prefs_path(), &prefs) {
-                                    eprintln!("petri: persisting the tool choice failed: {e}");
+                                // `persist` is ACT-11's verb. A one-off launch
+                                // (`Enter` in re-pick mode) deliberately leaves
+                                // the stored default alone — writing it here
+                                // would cost the user the very default they
+                                // pressed the shifted key to bypass.
+                                if persist {
+                                    // Store first, then act. If the launch
+                                    // fails the user has still been asked once
+                                    // and only once (ACT-8).
+                                    prefs.tools.insert(action.id.to_string(), program.clone());
+                                    if let Err(e) =
+                                        prefs::save(&prefs::default_prefs_path(), &prefs)
+                                    {
+                                        eprintln!(
+                                            "petri: persisting the tool choice failed: {e}"
+                                        );
+                                    }
                                 }
                                 notice = run_action(
                                     terminal,
                                     &action,
+                                    &program,
                                     &last_good,
                                     &browser_state,
-                                    &prefs,
                                 );
                             }
                         }
@@ -513,8 +524,22 @@ fn poll_loop(
                             // being structurally separate is what makes that safe;
                             // `s8_pty_actions.rs` gates it regardless.
                             crossterm::event::KeyCode::Char(c) => {
-                                match crate::tools::registry().into_iter().find(|a| a.key == c) {
-                                    Some(action) => {
+                                let registry = crate::tools::registry();
+                                // The lowercase key runs the action; the SHIFTED
+                                // variant of the same key re-picks it (ACT-11).
+                                // Derived from `action.key` rather than
+                                // hard-coded, so a future registry entry gets
+                                // its shifted key for free. Note this sits
+                                // after the J/K ×10 navigation arms, which keep
+                                // priority — an action must never be able to
+                                // steal a movement key.
+                                let lower = registry.iter().find(|a| a.key == c).cloned();
+                                let shifted = registry
+                                    .iter()
+                                    .find(|a| a.key.to_ascii_uppercase() == c && a.key != c)
+                                    .cloned();
+                                match (lower, shifted) {
+                                    (Some(action), _) => {
                                         notice = begin_action(
                                             terminal,
                                             &action,
@@ -526,7 +551,17 @@ fn poll_loop(
                                         );
                                         true
                                     }
-                                    None => false,
+                                    (None, Some(action)) => {
+                                        notice = begin_repick(
+                                            &action,
+                                            &last_good,
+                                            &browser_state,
+                                            &mut picker,
+                                            &mut picker_action,
+                                        );
+                                        true
+                                    }
+                                    (None, None) => false,
                                 }
                             }
                             _ => false,
@@ -712,15 +747,19 @@ fn begin_action(
     }
 }
 
-/// Re-resolve and run an action whose tool the user has just chosen in the
-/// picker. Storing the answer without acting on it would make the picker feel
-/// like a settings dialog rather than the one keystroke it interrupted.
-fn run_action(
-    terminal: &mut ratatui::Terminal<ratatui::backend::CrosstermBackend<std::io::Stdout>>,
+/// Press a SHIFTED action key: open the re-pick popup (`ACT-11`).
+///
+/// Deliberately does not go through `tools::resolve`. That function collapses
+/// an unambiguous choice to `Resolution::Ready` and throws the candidate list
+/// away, so on the machines re-pick is *for* — one where a default already
+/// resolves cleanly — there would be nothing left to list. `repick_candidates`
+/// is the door that stays open.
+fn begin_repick(
     action: &crate::tools::Action,
     radar: &Option<petridish_core::schema::Radar>,
     browser_state: &Option<crate::browser::BrowserState>,
-    prefs: &Prefs,
+    picker: &mut Option<crate::picker::PickerState>,
+    picker_action: &mut Option<crate::tools::Action>,
 ) -> Option<String> {
     let Some(project) = selected_project(radar, browser_state) else {
         return Some("nothing selected".to_string());
@@ -729,17 +768,52 @@ fn run_action(
         path: &project.path,
         url: project.git.github_url.as_deref(),
     };
-    match crate::tools::resolve(
-        action,
-        &facts,
-        prefs.tools.get(action.id).map(String::as_str),
-        &|p| crate::exec::is_installed(p),
-    ) {
-        crate::tools::Resolution::Ready(launch) => {
-            launch_now(terminal, &launch, std::path::Path::new(&project.path))
+    match crate::tools::repick_candidates(action, &facts, &|p| crate::exec::is_installed(p)) {
+        // `ACT-9`'s per-project axis, phrased the same way `begin_action`
+        // phrases it, so the two paths never disagree on screen.
+        None => Some(format!("{} has no remote", project.name)),
+        // An empty list still opens the popup: `Other — specify path…` is
+        // always a row, so a machine with nothing installed is still usable.
+        Some(installed) => {
+            *picker = Some(crate::picker::PickerState::repick(action, installed));
+            *picker_action = Some(action.clone());
+            None
         }
-        _ => Some(format!("could not run {}", action.label)),
     }
+}
+
+/// Run the program the user just chose in the picker. Storing the answer
+/// without acting on it would make the picker feel like a settings dialog
+/// rather than the one keystroke it interrupted.
+///
+/// `program` is passed in explicitly rather than re-read from `prefs`, and
+/// that is load-bearing for `ACT-11`. This function used to re-resolve through
+/// `prefs.tools.get(action.id)`, which worked only because the caller always
+/// wrote the answer to `prefs` first. A one-off launch deliberately does not
+/// write it — so re-resolving would launch the user's OLD default, which is
+/// exactly the behaviour the shifted key exists to escape.
+///
+/// The fix is structural rather than test-guarded: with no `prefs` parameter
+/// in scope, this function *cannot* consult a stored answer even by accident,
+/// which is a stronger guarantee than a test that a later refactor could
+/// silently stop exercising. The event loop's half — persist only when the
+/// picker says so — is covered by `s8_pty_repick.rs`.
+fn run_action(
+    terminal: &mut ratatui::Terminal<ratatui::backend::CrosstermBackend<std::io::Stdout>>,
+    action: &crate::tools::Action,
+    program: &str,
+    radar: &Option<petridish_core::schema::Radar>,
+    browser_state: &Option<crate::browser::BrowserState>,
+) -> Option<String> {
+    let Some(project) = selected_project(radar, browser_state) else {
+        return Some("nothing selected".to_string());
+    };
+    let facts = crate::tools::Facts {
+        path: &project.path,
+        url: project.git.github_url.as_deref(),
+    };
+    let launch = crate::tools::launch_for(action, &facts, program);
+    launch_now(terminal, &launch, std::path::Path::new(&project.path))
 }
 
 /// Run one resolved launch, turning every failure into a notice rather than an

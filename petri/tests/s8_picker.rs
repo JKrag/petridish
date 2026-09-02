@@ -150,7 +150,7 @@ fn enter_on_a_candidate_chooses_its_program_name() {
     state.on_key(KeyCode::Down);
     assert_eq!(
         state.on_key(KeyCode::Enter),
-        Outcome::Chosen("lazygit".to_string()),
+        Outcome::Chosen { program: "lazygit".to_string(), persist: true },
         "the answer is the bare program name — what gets stored in [tools]"
     );
 }
@@ -158,7 +158,7 @@ fn enter_on_a_candidate_chooses_its_program_name() {
 #[test]
 fn enter_on_the_first_row_chooses_without_any_movement() {
     let mut state = open();
-    assert_eq!(state.on_key(KeyCode::Enter), Outcome::Chosen("serie".to_string()));
+    assert_eq!(state.on_key(KeyCode::Enter), Outcome::Chosen { program: "serie".to_string(), persist: true });
 }
 
 #[test]
@@ -169,7 +169,7 @@ fn a_fallback_is_choosable_like_any_other_row() {
     let mut state = open();
     state.on_key(KeyCode::Down);
     state.on_key(KeyCode::Down);
-    assert_eq!(state.on_key(KeyCode::Enter), Outcome::Chosen("git".to_string()));
+    assert_eq!(state.on_key(KeyCode::Enter), Outcome::Chosen { program: "git".to_string(), persist: true });
 }
 
 #[test]
@@ -266,7 +266,7 @@ fn enter_accepts_the_typed_program() {
     for c in "jjui".chars() {
         state.on_key(KeyCode::Char(c));
     }
-    assert_eq!(state.on_key(KeyCode::Enter), Outcome::Chosen("jjui".to_string()));
+    assert_eq!(state.on_key(KeyCode::Enter), Outcome::Chosen { program: "jjui".to_string(), persist: true });
 }
 
 #[test]
@@ -293,7 +293,7 @@ fn the_accepted_program_name_is_trimmed() {
     for c in "  tig ".chars() {
         state.on_key(KeyCode::Char(c));
     }
-    assert_eq!(state.on_key(KeyCode::Enter), Outcome::Chosen("tig".to_string()));
+    assert_eq!(state.on_key(KeyCode::Enter), Outcome::Chosen { program: "tig".to_string(), persist: true });
 }
 
 #[test]
@@ -345,4 +345,130 @@ fn unbound_keys_in_list_mode_do_nothing() {
     assert_eq!(state.custom_input(), None);
     assert_eq!(state.on_key(KeyCode::Tab), Outcome::Pending);
     assert_eq!(state.custom_input(), None);
+}
+
+// -------------------------------------------- ACT-11: re-pick's two verbs ----
+//
+// The re-pick popup (opened by the SHIFTED action key) is a one-off launcher
+// first and a settings dialog second. `Enter` runs the highlighted tool this
+// once and leaves the stored default alone; `D` adopts it as the new default
+// and runs it. Getting this backwards would silently cost the user the default
+// they pressed the shifted key precisely to bypass — so `persist` is asserted
+// explicitly in every case below, never left implicit.
+
+fn repick() -> PickerState {
+    PickerState::repick(&action(), candidates())
+}
+
+#[test]
+fn repick_enter_runs_once_without_touching_the_stored_default() {
+    let mut state = repick();
+    assert_eq!(
+        state.on_key(KeyCode::Enter),
+        Outcome::Chosen { program: "serie".to_string(), persist: false },
+        "Enter in re-pick mode is the ONE-OFF verb"
+    );
+}
+
+#[test]
+fn repick_shift_d_adopts_the_highlighted_tool_as_the_new_default() {
+    let mut state = repick();
+    state.on_key(KeyCode::Down);
+    assert_eq!(
+        state.on_key(KeyCode::Char('D')),
+        Outcome::Chosen { program: "lazygit".to_string(), persist: true },
+        "D re-defaults AND launches"
+    );
+}
+
+#[test]
+fn first_run_enter_still_stores_and_d_is_inert_there() {
+    // The first-run popup keeps its single verb: there is no default to
+    // preserve, so Enter stores. `D` must do nothing at all there — it is not
+    // advertised in that mode, and a hidden key that silently re-defaults
+    // would be worse than no key.
+    let mut state = open();
+    assert_eq!(state.on_key(KeyCode::Char('D')), Outcome::Pending, "D is inert in first-run");
+    assert_eq!(state.selected(), 0, "D must not move the cursor either");
+    assert_eq!(
+        state.on_key(KeyCode::Enter),
+        Outcome::Chosen { program: "serie".to_string(), persist: true },
+    );
+}
+
+#[test]
+fn the_custom_path_field_inherits_the_verb_that_opened_it() {
+    // Inside the text field `D` is a literal character and cannot also be a
+    // verb, so the field remembers which key opened it (ACT-11). Enter on
+    // `Other` means run-once; D on `Other` means set-default.
+    let other = candidates().len(); // `Other` is always last
+
+    let mut once = repick();
+    for _ in 0..other {
+        once.on_key(KeyCode::Down);
+    }
+    once.on_key(KeyCode::Enter);
+    assert_eq!(once.custom_input(), Some(""), "Enter on Other opens the field");
+    assert!(!once.custom_persists(), "opened with Enter -> run-once flavour");
+    for c in "mytui".chars() {
+        once.on_key(KeyCode::Char(c));
+    }
+    assert_eq!(
+        once.on_key(KeyCode::Enter),
+        Outcome::Chosen { program: "mytui".to_string(), persist: false },
+        "committing inherits run-once, not the key that committed it"
+    );
+
+    let mut default = repick();
+    for _ in 0..other {
+        default.on_key(KeyCode::Down);
+    }
+    default.on_key(KeyCode::Char('D'));
+    assert_eq!(default.custom_input(), Some(""), "D on Other also opens the field");
+    assert!(default.custom_persists(), "opened with D -> set-default flavour");
+    for c in "mytui".chars() {
+        default.on_key(KeyCode::Char(c));
+    }
+    assert_eq!(
+        default.on_key(KeyCode::Enter),
+        Outcome::Chosen { program: "mytui".to_string(), persist: true },
+    );
+}
+
+#[test]
+fn d_stays_literal_text_inside_the_custom_path_field() {
+    // The same mode flag that keeps `j`/`k` literal must keep `D` literal —
+    // real paths contain it, and a picker that ate it would be unusable for
+    // exactly the user who needs the escape hatch.
+    let other = candidates().len();
+    let mut state = repick();
+    for _ in 0..other {
+        state.on_key(KeyCode::Down);
+    }
+    state.on_key(KeyCode::Enter);
+    for c in "/opt/DTools/Dgit".chars() {
+        state.on_key(KeyCode::Char(c));
+    }
+    assert_eq!(
+        state.custom_input(),
+        Some("/opt/DTools/Dgit"),
+        "every D must land in the text, not fire the set-default verb"
+    );
+}
+
+#[test]
+fn repick_esc_changes_nothing_and_launches_nothing() {
+    let mut state = repick();
+    state.on_key(KeyCode::Down);
+    assert_eq!(state.on_key(KeyCode::Esc), Outcome::Cancelled);
+}
+
+#[test]
+fn a_repick_on_a_machine_with_nothing_installed_still_offers_other() {
+    // `repick_candidates` returns `Some(vec![])` rather than `None` there, and
+    // the popup must still be usable: `Other — specify path…` is always a row.
+    let mut state = PickerState::repick(&action(), vec![]);
+    assert_eq!(state.options().len(), 1, "just the escape hatch");
+    assert_eq!(state.on_key(KeyCode::Enter), Outcome::Pending, "opens the field");
+    assert_eq!(state.custom_input(), Some(""));
 }

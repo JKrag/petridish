@@ -37,13 +37,32 @@ pub enum Choice {
 pub enum Outcome {
     /// The picker is still open. Keep rendering it.
     Pending,
-    /// The user picked this program name. The caller stores it under the
-    /// action's id in the preferences file and then launches it.
-    Chosen(String),
+    /// The user picked this program name.
+    ///
+    /// `persist` is the *verb*, and it is the whole of `ACT-11`: `false` means
+    /// launch this once and leave the stored default alone, `true` means make
+    /// it the new default and launch it. The caller must honour it — writing
+    /// the preferences file on a one-off would silently cost the user the
+    /// default they were deliberately bypassing.
+    Chosen { program: String, persist: bool },
     /// The user backed out. Nothing is stored and nothing is launched — and
     /// crucially the picker must open again next time, rather than recording
     /// "no tool" as if it were an answer.
     Cancelled,
+}
+
+/// Which of the two jobs this popup is doing.
+///
+/// Same widget, two modes; the mode is what `Enter` means. See `ACT-11`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Mode {
+    /// `ACT-8`: nothing is stored yet and the lowercase action key could not
+    /// resolve. There is no default to preserve, so the single verb stores and
+    /// launches.
+    FirstRun,
+    /// `ACT-11`: a default already exists and the user pressed the shifted key
+    /// to go around it. Two verbs — `Enter` launches once, `D` re-defaults.
+    Repick,
 }
 
 /// The picker's whole state.
@@ -61,6 +80,15 @@ pub struct PickerState {
     /// text in custom mode, and confusing the two is the same class of bug as
     /// letting an action key fire while the Browser's `/` filter has focus.
     custom: Option<String>,
+    mode: Mode,
+    /// The verb the custom-path field inherited from the row that opened it.
+    ///
+    /// Inside the text field `D` is a literal character and cannot also be a
+    /// verb (`ACT-11`), so rather than a modifier key or a dead end where a
+    /// hand-typed path is forever one-off, the field remembers which key
+    /// opened it: `Enter` on `Other` sets this `false`, `D` on `Other` sets it
+    /// `true`. Meaningless while `custom` is `None`.
+    custom_persist: bool,
 }
 
 impl PickerState {
@@ -83,7 +111,37 @@ impl PickerState {
             options,
             selected: 0,
             custom: None,
+            mode: Mode::FirstRun,
+            custom_persist: true,
         }
+    }
+
+    /// Open the picker in re-pick mode (`ACT-11`): the user already has a
+    /// working default and pressed the shifted action key to go around it.
+    ///
+    /// `installed` comes from [`crate::tools::repick_candidates`], not from
+    /// [`crate::tools::Resolution::Ambiguous`] — that variant only exists when
+    /// the choice is unresolved, which is precisely not this case. An empty
+    /// list is legitimate: `Other — specify path…` is always a row, so a
+    /// machine with nothing installed still gets a usable popup.
+    pub fn repick(action: &Action, installed: Vec<Candidate>) -> Self {
+        let mut state = Self::new(action, installed);
+        state.mode = Mode::Repick;
+        // A re-pick that reaches the text field defaults to the safe verb: the
+        // one that does not touch the stored answer.
+        state.custom_persist = false;
+        state
+    }
+
+    /// Which job this popup is doing.
+    pub fn mode(&self) -> Mode {
+        self.mode
+    }
+
+    /// Whether committing the custom-path field would store the answer as the
+    /// new default. Only meaningful while [`Self::custom_input`] is `Some`.
+    pub fn custom_persists(&self) -> bool {
+        self.custom_persist
     }
 
     /// Every row, in display order, `Other` last.
@@ -100,6 +158,22 @@ impl PickerState {
     /// moving through the list rather than typing.
     pub fn custom_input(&self) -> Option<&str> {
         self.custom.as_deref()
+    }
+
+    /// Commit the highlighted row with `persist` as the verb, or open the
+    /// custom-path field (inheriting that verb) when the highlight is `Other`.
+    fn choose(&mut self, persist: bool) -> Outcome {
+        match &self.options[self.selected] {
+            Choice::Candidate(c) => Outcome::Chosen {
+                program: c.program.clone(),
+                persist,
+            },
+            Choice::Other => {
+                self.custom = Some(String::new());
+                self.custom_persist = persist;
+                Outcome::Pending
+            }
+        }
     }
 
     /// Feed one keystroke in.
@@ -134,18 +208,20 @@ impl PickerState {
                     if trimmed.is_empty() {
                         Outcome::Pending
                     } else {
-                        Outcome::Chosen(trimmed.to_string())
+                        // The verb is whichever key opened this field, not
+                        // whichever key is committing it.
+                        Outcome::Chosen {
+                            program: trimmed.to_string(),
+                            persist: self.custom_persist,
+                        }
                     }
                 } else {
                     // List mode: pick the highlighted row, or open the text
-                    // field when the highlight is `Other`.
-                    match &self.options[self.selected] {
-                        Choice::Candidate(c) => Outcome::Chosen(c.program.clone()),
-                        Choice::Other => {
-                            self.custom = Some(String::new());
-                            Outcome::Pending
-                        }
-                    }
+                    // field when the highlight is `Other`. In re-pick mode
+                    // `Enter` is the ONE-OFF verb — it must not write the
+                    // stored default, which is the whole point of `ACT-11`.
+                    let persist = self.mode == Mode::FirstRun;
+                    self.choose(persist)
                 }
             }
             // --- Editing the program name: custom mode. ---
@@ -171,6 +247,18 @@ impl PickerState {
                 } else if c == 'j' {
                     // List mode: `j` moves down (clamped, never wrapping).
                     self.selected = self.selected.saturating_add(1).min(self.options.len() - 1);
+                } else if c == 'D' && self.mode == Mode::Repick {
+                    // `ACT-11`'s second verb: adopt this tool as the new stored
+                    // default AND launch it. Deliberately NOT Shift+Enter,
+                    // however natural that reads — terminals do not report it
+                    // distinguishably from plain Enter without the kitty
+                    // keyboard protocol, and `petri` pushes no
+                    // `KeyboardEnhancementFlags`, so that binding would compile,
+                    // test green, and never once fire.
+                    //
+                    // Inert in `FirstRun`, where it is not advertised and there
+                    // is no default to preserve.
+                    return self.choose(true);
                 }
                 // Any other character in list mode is inert.
                 Outcome::Pending
@@ -239,7 +327,10 @@ pub fn render(frame: &mut ratatui::Frame, state: &PickerState) {
 
     let mut lines: Vec<Line> = Vec::with_capacity(state.options().len() + 3);
     lines.push(Line::from(Span::styled(
-        "Several tools can do this. Which one?",
+        match state.mode() {
+            Mode::FirstRun => "Several tools can do this. Which one?",
+            Mode::Repick => "Run which one this time?",
+        },
         Style::default().fg(crate::theme::DIM),
     )));
 
@@ -277,10 +368,15 @@ pub fn render(frame: &mut ratatui::Frame, state: &PickerState) {
     // Advertise only what is actually bound, and say where the answer lives —
     // ACT-8's footnote, so the user is never stuck with a stored choice they
     // cannot find.
-    let keys = if state.custom_input().is_some() {
-        "Enter accept  Esc back"
-    } else {
-        "j/k move  Enter choose  Esc cancel"
+    // SPEC.md §3.1, applied per mode: never advertise a verb the current mode
+    // will not honour. `D` exists only in re-pick, and inside the text field
+    // the only live verb is the one that field inherited.
+    let keys = match (state.custom_input().is_some(), state.mode()) {
+        (true, Mode::FirstRun) => "Enter accept  Esc back",
+        (true, Mode::Repick) if state.custom_persists() => "Enter set default  Esc back",
+        (true, Mode::Repick) => "Enter run once  Esc back",
+        (false, Mode::FirstRun) => "j/k move  Enter choose  Esc cancel",
+        (false, Mode::Repick) => "j/k move  Enter run once  D set default  Esc cancel",
     };
     lines.push(Line::from(Span::styled(
         keys.to_string(),
@@ -291,7 +387,12 @@ pub fn render(frame: &mut ratatui::Frame, state: &PickerState) {
     // rather than wraps, so the half that told the user where their answer
     // lives was the half that silently disappeared.
     lines.push(Line::from(Span::styled(
-        "saved to ~/.petridish/petri.toml",
+        match state.mode() {
+            // In re-pick the plain `Enter` path saves nothing, so the
+            // unqualified "saved to…" of first-run would be a lie.
+            Mode::Repick => "default saved to ~/.petridish/petri.toml",
+            Mode::FirstRun => "saved to ~/.petridish/petri.toml",
+        },
         Style::default().fg(crate::theme::DIM),
     )));
 

@@ -108,3 +108,90 @@ fn the_popup_does_not_panic_on_a_tiny_terminal() {
         let _ = draw(&state(), w, h);
     }
 }
+
+// -------------------------------- ACT-11: the footer must not lie per mode ----
+
+fn repick_state() -> PickerState {
+    let action = Action {
+        id: "gitlog",
+        key: 'g',
+        label: "git history",
+        target: Target::Path,
+        candidates: vec![],
+    };
+    PickerState::repick(
+        &action,
+        vec![
+            Candidate::new("serie", &[], ExecMode::Terminal),
+            Candidate::new("lazygit", &["-p", "{path}"], ExecMode::Terminal),
+        ],
+    )
+}
+
+#[test]
+fn the_repick_popup_advertises_both_verbs_and_first_run_advertises_neither_twice() {
+    // SPEC.md §3.1 again: `D` is bound only in re-pick, so only re-pick may
+    // advertise it — and re-pick's Enter is "run once", not the bare "choose"
+    // that would imply it stores.
+    let repick = draw(&repick_state(), 80, 24);
+    assert!(repick.contains("run once"), "re-pick must name the one-off verb:\n{repick}");
+    assert!(repick.contains("D set default"), "re-pick must name the D verb:\n{repick}");
+
+    let first_run = draw(&state(), 80, 24);
+    assert!(
+        !first_run.contains("set default"),
+        "first-run has no default to preserve, so D is unbound and must not be advertised:\n{first_run}"
+    );
+    assert!(
+        !first_run.contains("run once"),
+        "first-run's Enter stores; calling it 'run once' would be a lie:\n{first_run}"
+    );
+}
+
+#[test]
+fn the_repick_prompt_and_footnote_do_not_promise_a_save_that_enter_will_not_make() {
+    // The first-run footnote reads "saved to ~/.petridish/petri.toml"
+    // unqualified. In re-pick that would be false for the Enter path, which
+    // saves nothing — so it must be qualified.
+    let screen = draw(&repick_state(), 80, 24);
+    assert!(
+        screen.contains("default saved to"),
+        "re-pick must qualify what gets saved:\n{screen}"
+    );
+    assert!(
+        screen.contains("this time"),
+        "the prompt should frame re-pick as a one-off:\n{screen}"
+    );
+}
+
+#[test]
+fn the_custom_field_advertises_only_the_verb_it_inherited() {
+    // Opened with Enter -> run-once; opened with D -> set-default. Showing
+    // both would advertise a key the field will not honour.
+    let mut once = repick_state();
+    for _ in 0..2 {
+        once.on_key(KeyCode::Down);
+    }
+    once.on_key(KeyCode::Enter);
+    let once_screen = draw(&once, 80, 24);
+    assert!(once_screen.contains("Enter run once"), "expected run-once hint:\n{once_screen}");
+    assert!(
+        !once_screen.contains("set default"),
+        "a field opened with Enter cannot set the default:\n{once_screen}"
+    );
+
+    let mut default = repick_state();
+    for _ in 0..2 {
+        default.on_key(KeyCode::Down);
+    }
+    default.on_key(KeyCode::Char('D'));
+    let default_screen = draw(&default, 80, 24);
+    assert!(
+        default_screen.contains("Enter set default"),
+        "expected set-default hint:\n{default_screen}"
+    );
+    assert!(
+        !default_screen.contains("run once"),
+        "a field opened with D is not a one-off:\n{default_screen}"
+    );
+}

@@ -232,7 +232,14 @@ pub fn render(frame: &mut Frame, radar: &Radar, state: &BrowserState) {
         // Making the footer itself machine-dependent was considered and
         // rejected: it would make every snapshot test depend on what happens to
         // be installed on the machine running it.
-        " Tab Dashboard  j/k up-down  Shift+j/k ×10  PgUp/PgDn  / filter  o remote  g git log  e edit  q quit ",
+        //
+        // `o/O` is ACT-11's shifted re-pick variant, bound for every registry
+        // action rather than just `g`: `O`'s list is thin today (one candidate,
+        // `open`) but its `Other` row is exactly how a user pins a specific
+        // browser, and a rule that holds for every key stays true as the
+        // registry grows. PgUp/PgDn dropped from the advertisement to make
+        // room — still bound, but the least discoverable-by-need of the set.
+        " Tab Dashboard  j/k up-down  Shift+j/k ×10  / filter  o/O remote  g/G git log  e/E edit  q quit ",
         Style::default().fg(theme::DIM),
     )))
     .wrap(Wrap { trim: false });
