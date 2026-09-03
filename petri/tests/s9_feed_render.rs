@@ -85,6 +85,19 @@ fn render_rows(radar: &Radar, feed: &FeedState, width: u16, height: u16) -> Vec<
         .collect()
 }
 
+/// The foreground colour of span `i` of `line`, failing with a readable message rather than
+/// an index panic when the line is a padded blank (`Line::default()`, zero spans).
+fn span_fg(line: &ratatui::text::Line<'_>, i: usize) -> Option<ratatui::style::Color> {
+    let span = line.spans.get(i).unwrap_or_else(|| {
+        panic!(
+            "expected a span {i} on this row, but it has {} — a padded blank row means the \
+             fixture is shorter than the block",
+            line.spans.len()
+        )
+    });
+    span.style.fg
+}
+
 fn joined(rows: &[String]) -> String {
     rows.join("\n")
 }
@@ -412,8 +425,11 @@ fn rows_are_tinted_by_what_produced_them() {
     assert_eq!(kinds, vec![FeedKind::Bucket, FeedKind::Agent], "fixture precondition");
 
     let lines = feed_block_lines(&feed, ts("2026-09-03T20:00:00Z"), 80, 4);
-    // span 0 is the time field, span 1 the body — kind tints the body.
-    let body_styles: Vec<_> = lines[2..4].iter().map(|l| l.spans[1].style.fg).collect();
+    // span 0 is the time field, span 1 the body — kind tints the body. Indexed through a
+    // helper because a PADDED body row is `Line::default()` with zero spans: a fixture
+    // change that shortens the feed would otherwise turn this into an index panic instead
+    // of a legible failure. Flagged by the delegate's own review of these tests.
+    let body_styles: Vec<_> = lines[2..4].iter().map(|l| span_fg(l, 1)).collect();
     assert_ne!(
         body_styles[0], body_styles[1],
         "a bucket-change row and an agent row must not render identically"
@@ -446,7 +462,7 @@ fn a_clock_and_a_date_are_visually_distinct() {
 
     let now = ts("2026-09-03T09:00:00Z");
     let lines = feed_block_lines(&feed, now, 80, 4);
-    let stamps: Vec<_> = lines[2..4].iter().map(|l| l.spans[0].style.fg).collect();
+    let stamps: Vec<_> = lines[2..4].iter().map(|l| span_fg(l, 0)).collect();
     let texts: Vec<String> = lines[2..4]
         .iter()
         .map(|l| l.spans.iter().map(|s| s.content.as_ref()).collect())
