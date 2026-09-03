@@ -250,16 +250,16 @@ impl FeedState {
             // Commit: a strictly newer last_commit_at. `None` counts as older than any
             // `Some` here exactly as it does for the agent arm above — a repo landing its
             // first-ever commit while petri is open is a commit, not silence.
-            if let Some(new_commit) = p.git.last_commit_at {
-                if prev_p.git.last_commit_at.is_none_or(|old_commit| new_commit > old_commit) {
-                    let branch = p.git.branch.clone().unwrap_or("detached".to_string());
-                    rows.push(FeedEvent {
-                        at: new_commit,
-                        project: project_name.clone(),
-                        kind: FeedKind::Commit,
-                        detail: format!("commit on {branch}"),
-                    });
-                }
+            if let Some(new_commit) = p.git.last_commit_at
+                && prev_p.git.last_commit_at.is_none_or(|old_commit| new_commit > old_commit)
+            {
+                let branch = p.git.branch.clone().unwrap_or("detached".to_string());
+                rows.push(FeedEvent {
+                    at: new_commit,
+                    project: project_name.clone(),
+                    kind: FeedKind::Commit,
+                    detail: format!("commit on {branch}"),
+                });
             }
 
             // Bucket: a section move.
