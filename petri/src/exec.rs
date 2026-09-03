@@ -126,11 +126,21 @@ pub fn spawn_detached(launch: &Launch, cwd: &Path) -> Outcome {
         .stderr(Stdio::null())
         .spawn()
     {
-        // The child handle is dropped immediately and never waited on. On
-        // Unix that leaves a zombie until `petri` itself exits, which is
-        // acceptable for a process the user starts a handful of times per
-        // session — and is the same trade every editor-launching TUI makes.
-        Ok(_child) => Outcome::Detached,
+        // Hand the child to a thread that does nothing but wait on it. Dropping
+        // the handle instead would leave a zombie on Unix until `petri` itself
+        // exits: `Child`'s Drop is explicitly documented not to reap. An earlier
+        // version of this comment called that acceptable "for a process the user
+        // starts a handful of times per session", which mis-frames the lifetime —
+        // `petri` is an ambient monitor meant to stay open for days, and the
+        // commonest target here is macOS `open`, which exits at once and so leaves
+        // a zombie every single time. The thread costs one blocked `waitpid` and
+        // ends when the child does.
+        Ok(mut child) => {
+            std::thread::spawn(move || {
+                let _ = child.wait();
+            });
+            Outcome::Detached
+        }
         Err(e) => Outcome::Failed(e),
     }
 }

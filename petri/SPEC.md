@@ -341,9 +341,9 @@ has nothing to do with color and is not relaxed by anything here.
 
 **Every non-ASCII character `petri` puts on screen needs a documented, deliberate
 reason — this is a tested constraint, not a preference.** Enforced by
-`petri/tests/glyph_portability.rs`, which scans the production code of the three
-modules that actually build on-screen content (`app.rs`, `browser.rs`,
-`dashboard.rs`) against a hand-maintained, reasoned allowlist, and separately
+`petri/tests/glyph_portability.rs`, which scans the production code of every module
+that builds on-screen content (`app.rs`, `browser.rs`, `dashboard.rs`, `feed.rs`,
+`picker.rs`) against a hand-maintained, reasoned allowlist, and separately
 verifies every allowlist entry really is `UnicodeWidthChar::width() == Some(1)` — a
 single, unambiguous narrow cell — per the `unicode-width` crate ratatui and
 crossterm actually use for their own cell math. A character that's `None` (needs a
@@ -371,6 +371,13 @@ Unicode 1.1") that had no bearing on this dependency in the first place and woul
 have blocked glyphs that are simply fine here — Braille patterns (U+2800–28FF,
 Unicode 3.0, the sparkline/graph glyph set tools like btop use) are a single narrow
 cell by this measure and are not excluded by anything in this section.
+
+**That list tracks what draws, and keeping it current is part of the gate.** It read
+`app.rs`/`browser.rs`/`dashboard.rs` for as long as those were the only render modules,
+and stayed that way after `feed.rs` and `picker.rs` arrived — so a feed row's `→` and the
+picker's `▌` cursor were on screen, unreviewed, for several slices. Found in review, not
+by the gate, which is the point: a module added after the gate was written is precisely
+the one whose glyphs nobody has width-checked. Adding a render module means adding it here.
 
 **Known, deliberate scope limit:** the gate checks `width()`, ratatui's default
 (non-CJK) interpretation, not `width_cjk()`. A few glyphs already in real use here

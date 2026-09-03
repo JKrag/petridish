@@ -217,11 +217,18 @@ fn event_name_for(obj: &serde_json::Map<String, Value>) -> Option<DerivedEvent> 
 }
 
 /// Sanitizes a `tool_use` name before it becomes a single-line row label. Returns `None` when
-/// the name can't render as a label — empty, longer than 40 chars, or containing a control
-/// character (e.g. a newline) — rather than letting it corrupt the layout. The two literal
-/// strings ("assistant message", "user prompt") need no check.
+/// the name can't render as a label — empty, longer than 40 characters, or containing a
+/// control character (e.g. a newline) — rather than letting it corrupt the layout. The two
+/// literal strings ("assistant message", "user prompt") need no check.
+///
+/// The limit counts **characters, not bytes**: byte length would reject a short name written
+/// in any non-Latin script purely for being encoded in more than one byte per character.
+/// Characters are not the same as terminal columns either — a wide character occupies two —
+/// but this is a guard against an absurd name corrupting a row, not a layout calculation, and
+/// the real inputs are ASCII tool identifiers (`Bash`, `WebFetch`, `mcp__server__tool`) where
+/// all three measures agree. `petri` does the actual column math at render time.
 fn sanitize_tool_name(name: &str) -> Option<String> {
-    if name.is_empty() || name.len() > 40 || name.chars().any(|c| c.is_control()) {
+    if name.is_empty() || name.chars().count() > 40 || name.chars().any(|c| c.is_control()) {
         return None;
     }
     Some(name.to_string())
@@ -860,6 +867,39 @@ mod tests {
             ],
         );
         assert_eq!(event.as_deref(), Some("Bash"));
+    }
+
+    // 21b. The length limit counts characters, not bytes — a name written in a
+    // non-Latin script must not be rejected merely for encoding to more bytes than
+    // it has characters. 40 three-byte characters is 120 bytes: accepted on the
+    // documented rule, rejected by a byte count.
+    #[test]
+    fn the_length_limit_counts_characters_not_bytes() {
+        let forty_wide: String = "あ".repeat(40);
+        assert_eq!(forty_wide.chars().count(), 40);
+        assert_eq!(forty_wide.len(), 120, "fixture must be multi-byte per character");
+
+        let event = event_from(
+            "ev_multibyte_name",
+            &[typed_line(
+                Some("__CWD__"),
+                "assistant",
+                Some(tool_use(&forty_wide)),
+            )],
+        );
+        assert_eq!(event.as_deref(), Some(forty_wide.as_str()));
+
+        // One character over the limit is still rejected, on the same measure.
+        let forty_one: String = "あ".repeat(41);
+        let event = event_from(
+            "ev_multibyte_too_long",
+            &[typed_line(
+                Some("__CWD__"),
+                "assistant",
+                Some(tool_use(&forty_one)),
+            )],
+        );
+        assert_eq!(event, None);
     }
 
     // 22. The informative half of the fix: a turn almost always ends with the agent
