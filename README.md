@@ -19,18 +19,29 @@ This puts `swab` and `swab-hook` on `~/.cargo/bin` (verify it's on `PATH`). Veri
 swab --help
 ```
 
-**`petri`** (the TUI dashboard) is being reimplemented in Rust/ratatui (`petri/`, see
-`petri/SPEC.md`) and is not yet built. Until it lands, the Python original — renamed
-`petripy` to free up the `petri` name, deprecated but still working, see `CONTEXT.md`'s
-`petripy` entry — is what reads `~/.petridish/projects.json` (via `petridish.schema`); it
-never scans:
+**`petri`** (the TUI dashboard) is Rust/ratatui and is built — both screens, filtering,
+collapsible sections, worktree nesting and the activity feed. `petri/SPEC.md` is
+authoritative for its behaviour:
+
+```sh
+cargo install --path petri
+```
+
+This puts `petri` on `~/.cargo/bin` alongside `swab`. It only ever reads
+`~/.petridish/projects.json`; `swab scan` remains its sole writer.
+
+**`petripy`** is the Python original, renamed to free up the `petri` name. It is
+deprecated and frozen — kept installed as a fallback while the Rust build earns trust,
+not developed further (see `CONTEXT.md`'s `petripy` entry for its deletion trigger). The
+same `uv` install also provides `petridish-installer`, which is used below, so this step
+is still needed even if you never run `petripy`:
 
 ```sh
 uv tool install --editable .
 ```
 
-This puts a `petripy` shim (plus `petridish-installer`, used below) on `~/.local/bin`
-(already first on `PATH` for most `uv` setups).
+This puts `petripy` and `petridish-installer` on `~/.local/bin` (already first on `PATH`
+for most `uv` setups).
 
 ## Wire up the launchd job + Claude Code hook
 
