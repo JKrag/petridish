@@ -128,32 +128,57 @@ fn feed_of(n: usize) -> FeedState {
 fn feed_gets_nothing_in_the_compact_tier() {
     // Below COMPACT_TIER_MAX_CONTENT_ROWS the screen is already rationing space, which is
     // the opposite of the surplus SPACE-1 exists to spend.
-    assert_eq!(feed_rows_for(true, 40, 4, &[], &[]), 0);
+    assert_eq!(feed_rows_for(true, 40, 4, &[], &[], 30), 0);
 }
 
 #[test]
 fn feed_gets_nothing_when_a_section_was_skipped() {
     assert_eq!(
-        feed_rows_for(false, 40, 4, &[], &[(StatusBucket::Cold, 7)]),
+        feed_rows_for(false, 40, 4, &[], &[(StatusBucket::Cold, 7)], 30),
         0,
         "projects hidden entirely must outrank the feed"
     );
 }
 
 #[test]
-fn feed_gets_the_surplus_when_the_whole_fleet_is_shown() {
-    let rows = feed_rows_for(false, 40, 20, &[], &[]);
-    assert!(rows > 0, "20 spare rows and nothing hidden: the feed should draw");
-    assert!(rows <= 12, "feed must not claim more than FEED_MAX_ROWS, got {rows}");
+fn feed_gets_the_whole_surplus_when_there_is_activity_to_fill_it() {
+    // SPACE-1 is "fill the slack". An earlier version capped this at 12 rows, which left
+    // two thirds of a 30-row surplus blank — the exact complaint the idea exists to answer.
+    assert_eq!(
+        feed_rows_for(false, 40, 20, &[], &[], 50),
+        20,
+        "with plenty of activity the feed takes every spare row"
+    );
+    assert_eq!(
+        feed_rows_for(false, 60, 20, &[], &[], 50),
+        40,
+        "and keeps taking them on a much taller terminal — there is no fixed ceiling"
+    );
+}
+
+#[test]
+fn feed_claims_only_what_it_can_fill() {
+    // The other half of the rule: surplus it would fill with blank rows is better given
+    // back to the layout than fenced off inside an mostly-empty block.
+    assert_eq!(
+        feed_rows_for(false, 40, 10, &[], &[], 5),
+        7,
+        "5 events plus the rule and the label"
+    );
+    assert_eq!(
+        feed_rows_for(false, 40, 10, &[], &[], 0),
+        4,
+        "an empty feed still gets enough rows to say it is empty"
+    );
 }
 
 #[test]
 fn feed_gets_nothing_when_too_few_rows_remain() {
     // 3 spare rows cannot carry a rule + label + two events; an almost-empty labelled box
     // is worse than no box.
-    assert_eq!(feed_rows_for(false, 40, 37, &[], &[]), 0);
-    assert_eq!(feed_rows_for(false, 40, 40, &[], &[]), 0);
-    assert_eq!(feed_rows_for(false, 40, 41, &[], &[]), 0, "must not underflow past `used`");
+    assert_eq!(feed_rows_for(false, 40, 37, &[], &[], 30), 0);
+    assert_eq!(feed_rows_for(false, 40, 40, &[], &[], 30), 0);
+    assert_eq!(feed_rows_for(false, 40, 41, &[], &[], 30), 0, "must not underflow past `used`");
 }
 
 #[test]
@@ -172,7 +197,7 @@ fn feed_yields_to_a_section_that_truncated_its_own_rows() {
         })
         .collect();
     let radar = radar_at("2026-09-03T09:30:00Z", projects);
-    let plan = plan_layout(Rect::new(0, 0, 70, 30), &radar, [false, false, false, false]);
+    let plan = plan_layout(Rect::new(0, 0, 70, 30), &radar, [false, false, false, false], 30);
 
     let truncated = plan.sections.iter().any(|s| s.truncated_remaining.is_some());
     let skipped = !plan.skipped.is_empty();

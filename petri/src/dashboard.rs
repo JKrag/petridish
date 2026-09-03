@@ -49,11 +49,6 @@ const COMPACT_TIER_MAX_CONTENT_ROWS: usize = 16;
 /// least two event rows. Below that the block is chrome with nothing in it.
 const FEED_MIN_ROWS: usize = 4;
 
-/// Ceiling on how much surplus height the feed claims. SPACE-1 is meant to *fill slack*,
-/// not to become the Dashboard's main event — on a 100-row terminal the remaining surplus
-/// should still be there for `SPACE-2`/`SPACE-3` (auto-expanding STALE/COLD, a third
-/// density tier) to spend later.
-const FEED_MAX_ROWS: usize = 12;
 
 /// Minimum roomy-card width before a second grid column is added. Below this a real branch
 /// name (`analysis/cross-registry-identity`) and its `git`/`agent` zone rows have no room to
@@ -446,14 +441,24 @@ pub struct DashPlan {
 /// It is also suppressed in the compact tier: below `COMPACT_TIER_MAX_CONTENT_ROWS` the
 /// screen is already rationing space, which is the opposite of the surplus this fills.
 ///
-/// Otherwise: every unspent row, clamped to `FEED_MAX_ROWS`, and `0` rather than a stub
-/// block if fewer than `FEED_MIN_ROWS` remain.
+/// Otherwise it **grows to fill the slack**, which is SPACE-1's entire purpose — bounded
+/// only by how much activity there is to show (`feed_events` rows plus the rule and label).
+/// Claiming surplus it would fill with blank rows would be worse than giving it back to the
+/// `Fill` catch-all, so a quiet fleet gets a small block and a busy one gets a tall one.
+///
+/// `0` rather than a stub block if fewer than `FEED_MIN_ROWS` remain.
+///
+/// There is deliberately **no fixed ceiling**. An earlier version capped this at 12 rows to
+/// reserve surplus for `SPACE-2`/`SPACE-3` to spend later; that reserved space for features
+/// that do not exist, against the one that does, and on a 30-row-surplus terminal it left
+/// two thirds of the slack blank — the exact complaint SPACE-1 was written to answer.
 pub fn feed_rows_for(
     compact_tier: bool,
     fleet_rows: usize,
     used: usize,
     sections: &[SectionPlan],
     skipped: &[(StatusBucket, usize)],
+    feed_events: usize,
 ) -> usize {
     // Rationing height already: the feed is for surplus, and there is none by definition.
     if compact_tier {
@@ -467,10 +472,12 @@ pub fn feed_rows_for(
     }
     let surplus = fleet_rows.saturating_sub(used);
     if surplus < FEED_MIN_ROWS {
-        0
-    } else {
-        surplus.min(FEED_MAX_ROWS)
+        return 0;
     }
+    // Take the slack, up to what there is to put in it. `+ 2` is the rule and the label;
+    // the `max` keeps an empty feed big enough to say so rather than vanishing.
+    let wanted = FEED_MIN_ROWS.max(feed_events.saturating_add(2));
+    wanted.min(surplus)
 }
 
 /// Compute `DashPlan` from `area`, `radar`'s section membership, and which sections
@@ -478,7 +485,12 @@ pub fn feed_rows_for(
 /// budget accounting exactly for the `columns == 1` case (same `fleet_rows` formula, same
 /// per-section chrome/truncation rules) — the grid only changes how a section's *own* row
 /// budget gets spent, not the overall section-fits-or-not accounting.
-pub fn plan_layout(area: Rect, radar: &Radar, collapsed: CollapsedState) -> DashPlan {
+pub fn plan_layout(
+    area: Rect,
+    radar: &Radar,
+    collapsed: CollapsedState,
+    feed_events: usize,
+) -> DashPlan {
     let width = area.width as usize;
     let elapsed_secs = chrono::Utc::now().signed_duration_since(radar.updated_at).num_seconds().max(0);
     let is_stale = elapsed_secs > 86400;
@@ -588,7 +600,7 @@ pub fn plan_layout(area: Rect, radar: &Radar, collapsed: CollapsedState) -> Dash
         });
     }
 
-    let feed_rows = feed_rows_for(compact_tier, fleet_rows, used, &sections, &skipped);
+    let feed_rows = feed_rows_for(compact_tier, fleet_rows, used, &sections, &skipped, feed_events);
     DashPlan { compact_tier, fleet_rows, sections, skipped, feed_rows }
 }
 
@@ -636,7 +648,7 @@ pub fn render(
     let now = chrono::Utc::now();
     let scan_secs = radar.scan_duration_ms as f64 / 1000.0;
 
-    let plan = plan_layout(area, radar, state.collapsed);
+    let plan = plan_layout(area, radar, state.collapsed, feed.events().len());
 
     let [header_area, banner_area, fleet_area, footer_area] = Layout::vertical([
         Constraint::Length(2),
@@ -1358,17 +1370,17 @@ mod layout_tests {
     #[test]
     fn narrow_terminal_stays_single_column() {
         let radar = radar_with(6);
-        let plan = plan_layout(Rect::new(0, 0, 80, 40), &radar, EXPANDED);
+        let plan = plan_layout(Rect::new(0, 0, 80, 40), &radar, EXPANDED, 0);
         assert_eq!(plan.sections[0].columns, 1, "80 cols is below 2×MIN_ROOMY_CARD_WIDTH, so no second column");
     }
 
     #[test]
     fn wide_terminal_grows_columns_up_to_the_cap() {
         let radar = radar_with(20);
-        let plan = plan_layout(Rect::new(0, 0, 200, 60), &radar, EXPANDED);
+        let plan = plan_layout(Rect::new(0, 0, 200, 60), &radar, EXPANDED, 0);
         assert_eq!(plan.sections[0].columns, 3, "200 cols fits 3× MIN_ROOMY_CARD_WIDTH+gutter but not 4");
 
-        let plan = plan_layout(Rect::new(0, 0, 400, 60), &radar, EXPANDED);
+        let plan = plan_layout(Rect::new(0, 0, 400, 60), &radar, EXPANDED, 0);
         assert_eq!(plan.sections[0].columns, MAX_GRID_COLUMNS, "an very wide terminal must still respect the column cap");
     }
 
@@ -1376,7 +1388,7 @@ mod layout_tests {
     fn grid_rows_account_for_multiple_columns_not_one_row_per_item() {
         let radar = radar_with(6);
         // 3 columns, 6 items -> 2 grid rows, not 6.
-        let plan = plan_layout(Rect::new(0, 0, 200, 60), &radar, EXPANDED);
+        let plan = plan_layout(Rect::new(0, 0, 200, 60), &radar, EXPANDED, 0);
         let section = &plan.sections[0];
         assert_eq!(section.columns, 3);
         assert_eq!(section.items_shown, 6);
@@ -1392,7 +1404,7 @@ mod layout_tests {
         // IN FLIGHT rows in a very tall, very wide terminal must stay 1 column even though the
         // width alone would allow several.
         let radar = radar_with_bucket(5, StatusBucket::InFlight);
-        let plan = plan_layout(Rect::new(0, 0, 300, 200), &radar, EXPANDED);
+        let plan = plan_layout(Rect::new(0, 0, 300, 200), &radar, EXPANDED, 0);
         let section = &plan.sections[0];
         assert_eq!(section.bucket, StatusBucket::InFlight);
         assert_eq!(section.columns, 1, "5 rows already fit in 1 column with room to spare, so no grid is needed");
@@ -1405,7 +1417,7 @@ mod layout_tests {
         // The needs-driven column count must still reach for more columns when 1 genuinely
         // isn't enough to show everything in the available height.
         let radar = radar_with_bucket(60, StatusBucket::InFlight);
-        let plan = plan_layout(Rect::new(0, 0, 300, 20), &radar, EXPANDED);
+        let plan = plan_layout(Rect::new(0, 0, 300, 20), &radar, EXPANDED, 0);
         let section = &plan.sections[0];
         assert!(section.columns > 1, "60 rows cannot fit in 1 column within a 20-row terminal, so it must grid");
     }
@@ -1416,7 +1428,7 @@ mod layout_tests {
         // information from a wider column (the agent sparkline scales up), so they always claim
         // the width-driven column count — unlike compact rows, going wider isn't wasted here.
         let radar = radar_with(3);
-        let plan = plan_layout(Rect::new(0, 0, 200, 200), &radar, EXPANDED);
+        let plan = plan_layout(Rect::new(0, 0, 200, 200), &radar, EXPANDED, 0);
         let section = &plan.sections[0];
         assert!(section.columns > 1, "3 roomy cards easily fit in 1 column at this height, but width should still be used");
     }
@@ -1426,7 +1438,7 @@ mod layout_tests {
         // A short terminal with many projects: even a multi-column grid must truncate rather
         // than overflow, and say how many were cut.
         let radar = radar_with(200);
-        let plan = plan_layout(Rect::new(0, 0, 200, 12), &radar, EXPANDED);
+        let plan = plan_layout(Rect::new(0, 0, 200, 12), &radar, EXPANDED, 0);
         let section = &plan.sections[0];
         assert!(section.items_shown < 200, "must truncate rather than render all 200 projects into 12 rows");
         assert_eq!(
@@ -1440,7 +1452,7 @@ mod layout_tests {
     fn does_not_panic_at_degenerate_and_pinned_sizes() {
         let radar = radar_with(10);
         for (w, h) in [(0, 0), (1, 1), (80, 24), (200, 50), (400, 100)] {
-            let _ = plan_layout(Rect::new(0, 0, w, h), &radar, EXPANDED);
+            let _ = plan_layout(Rect::new(0, 0, w, h), &radar, EXPANDED, 0);
         }
     }
 }

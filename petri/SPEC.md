@@ -255,8 +255,13 @@ The ambient monitor: "does anything need me?" across a fleet of unattended runs.
     surplus *while* truncating, because a roomy card spans 7 rows — a 20-row budget
     fits two of them and strands five. Spending those on a feed while a `… +N more`
     marker is on screen would inverse this section's whole priority order.
-  - **Suppressed in the compact tier**, and never larger than `FEED_MAX_ROWS` (12), so
-    a very tall terminal keeps surplus for `SPACE-2`/`SPACE-3` to spend later.
+  - **Suppressed in the compact tier**, and otherwise **grows to fill the slack** — that
+    is SPACE-1's whole purpose. There is no fixed ceiling; the only bound is how much
+    activity there is to show (`events + 2` for the rule and label), because surplus the
+    feed would fill with blank rows belongs back in the layout, not fenced off inside a
+    mostly-empty block. An earlier version capped it at 12 rows to reserve height for
+    `SPACE-2`/`SPACE-3`; that reserved space for features that do not exist against the
+    one that does, and left two thirds of a 30-row surplus blank.
   - **Rows carry a date, not a clock, once they are from an earlier day** (`09-02` in
     the same five columns), and the time field is **tinted on that axis**: `FRESH` for
     today's clocks, `COLD` for earlier dates, reusing §4.1's existing silence gradient

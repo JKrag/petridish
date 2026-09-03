@@ -651,7 +651,17 @@ Six things worth keeping:
    where the label trivially fits. A test aimed at a new feature is a good moment to widen
    the range the old ones were checked over.
 
-8. **A gate that rejects correct work costs as much as one that passes broken work.** This
+8. **A speculative reservation beat the feature it was reserving against.** `FEED_MAX_ROWS`
+   capped the block at 12 rows so `SPACE-2`/`SPACE-3` would still have surplus to spend
+   "later". Neither exists; SPACE-1 does, and its title is *"fill the slack"*. On a terminal
+   with ~30 spare rows the cap left two thirds of them blank — reported immediately on first
+   real use, and correctly, as the feature not doing what it says. Replaced with a
+   content-aware bound: take the whole surplus, but never more rows than there is activity
+   to put in them. **The transferable version: do not ration a shipped feature on behalf of
+   an unbuilt one.** The reservation costs real value now to protect hypothetical value
+   later, and the unbuilt feature can argue for the space when it is real.
+
+9. **A gate that rejects correct work costs as much as one that passes broken work.** This
    slice's verify script twice failed on things that were not this job's doing: pre-existing
    clippy debt in `petridish-core` *and* `petri` (`browser.rs`, `dashboard.rs`, `lib.rs`,
    `prefs.rs` are all unclean at BASE), and — worse — `cargo clippy` only emits diagnostics
