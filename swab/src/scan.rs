@@ -370,6 +370,36 @@ pub fn run_scan(config: &Config, paths: &ScanPaths, previous: Option<&Radar>) ->
         }
     }
 
+    // 4b. The hook and the transcript describe the same Claude Code session from two
+    // angles, and they alternate as fold winners — the hook fires, then the transcript's
+    // mtime advances a moment later, then the next hook fires. Their `at` values are
+    // interchangeable for liveness (which is why the newest still wins above; the hook's
+    // clock is the more precise of the two). Their `event` values are not: the hook
+    // records a *lifecycle label* (`PreToolUse`, `Stop`) while the transcript sensor
+    // derives what the agent actually did (`Bash`, `Write` — `sensors::claude::
+    // event_name_for`). Letting the newest win wholesale therefore made an active project
+    // flicker between "claude-code grep" and "claude-code pre tool use", i.e. between a
+    // fact and an internal label nobody outside this codebase should have to read.
+    //
+    // So the transcript's name replaces whatever won, wherever it has one. Keyed on the
+    // source rather than on a list of known lifecycle names, deliberately: Claude Code's
+    // hook vocabulary is theirs to change, and a name-matching rule would silently start
+    // leaking again the day they add an event. The two timestamps are seconds apart at
+    // most (the hook only fires while the session is writing its transcript), so the name
+    // shown next to the winning `at` is not meaningfully staler than the one it replaces.
+    //
+    // Guarded on the winner actually being claude-code: a root that saw copilot activity
+    // more recently must not be labelled `copilot` and then handed a name derived from a
+    // Claude transcript.
+    for (root, sig) in merged.iter_mut() {
+        if sig.agent != "claude-code" {
+            continue;
+        }
+        if let Some(name) = claude_signals.get(root).and_then(|c| c.event.as_ref()) {
+            sig.event = Some(name.clone());
+        }
+    }
+
     // 3. UNION of (discovered) paths and signal roots — every root that appears anywhere
     // becomes a Project, even one without a discovery entry (e.g. an out-of-roots project
     // with Claude activity). `discovery::resolve_root` collapses monorepo subdirs.
@@ -923,6 +953,65 @@ mod tests {
             "project must have an active_agent from whichever source had the newer at"
         );
         assert_eq!(radar.projects.len(), 1);
+    }
+
+    // ═══ Test 8b: the hook's lifecycle label must not displace the transcript's name. ═══
+    //
+    // Regression, found on screen rather than in a test: an actively-running project
+    // flickered between "claude-code grep" and "claude-code pre tool use" as the hook and
+    // the transcript alternated as fold winners. The hook's `at` is the more precise
+    // liveness clock and still wins; its `event` is a Claude Code lifecycle label and must
+    // lose to what the transcript says the agent actually did.
+    #[test]
+    fn a_newer_hook_signal_does_not_displace_the_transcripts_event_name() {
+        let fixture = Tmp::new("hook_name_loses");
+        let repo = fixture.path.join("repo");
+        std::fs::create_dir_all(repo.join(".git")).expect("mkdir repo/.git");
+        let repo_str = repo.to_str().unwrap();
+
+        // Transcript, 60s old, whose last conversational record is a `Bash` tool call.
+        let tool_record = serde_json::json!({
+            "type": "assistant",
+            "cwd": repo_str,
+            "sessionId": "claude-sess",
+            "message": {"content": [{"type": "tool_use", "name": "Bash", "input": {}}]},
+        })
+        .to_string();
+        write_transcript(
+            &fixture.path.join(".claude/projects/-claude/sess.jsonl"),
+            &[&tool_record],
+            60,
+        );
+
+        // Hook event, NEWER than the transcript, carrying only a lifecycle label.
+        std::fs::create_dir_all(fixture.path.join(".petridish")).expect("mkdir .petridish");
+        let hook_at = chrono::Utc::now() + chrono::Duration::seconds(30);
+        std::fs::write(
+            fixture.path.join(".petridish/events.ndjson"),
+            format!(
+                "{{\"cwd\":\"{}\",\"event\":\"PreToolUse\",\"at\":\"{}\"}}\n",
+                repo_str,
+                hook_at.format("%Y-%m-%dT%H:%M:%SZ")
+            ),
+        )
+        .expect("write events");
+
+        let paths = ScanPaths::for_home(&fixture.path);
+        let config = test_config(vec![repo.clone()]);
+        let radar = run_scan(&config, &paths, None);
+
+        assert_eq!(radar.projects.len(), 1);
+        let agent = &radar.projects[0].agent;
+        assert_eq!(
+            agent.last_event.as_deref(),
+            Some("Bash"),
+            "the transcript's derived tool name must survive a newer hook signal"
+        );
+        assert_eq!(
+            agent.last_event_at,
+            Some(hook_at.trunc_subsecs(0)),
+            "the hook's timestamp must still win — it is the more precise liveness clock"
+        );
     }
 
     // ═══ Test 9: id stability across runs + path-specificity. ═════════════════════

@@ -762,6 +762,31 @@ Three things worth carrying forward:
    being actively watched, which is the only place the feed is read anyway. **Look for a
    non-destructive probe entry point before reaching for the real writer.**
 
+5. **The hook's name had to be made to lose, which is the fold change §10 proposed —
+   arriving for the opposite reason.** Once tool names existed, an actively-running project
+   flickered on screen between `claude-code grep` and `claude-code pre tool use`: the hook
+   and the transcript alternate as fold winners (the hook fires, the transcript's mtime
+   advances a moment later, the next hook fires), and the hook records a *lifecycle label*
+   rather than a description of anything. So `scan.rs` now lets the transcript's name
+   replace whatever won, while the hook's timestamp still wins — it is the more precise
+   liveness clock. Keyed on the **source**, not on a list of known lifecycle names:
+   Claude Code's hook vocabulary is theirs to change, and a name-matching rule would
+   silently start leaking the day they add an event. Note what this vindicates and what it
+   does not: §10's instinct that the fold needed changing was right, and its proposed change
+   — teach the fold to *prefer* the hook's name — was exactly backwards. Found by looking at
+   the screen, not by any test.
+
+**Deliberately not done: widening `HOOK_EVENTS`.** After the change above, a hook-supplied
+name always loses for Claude Code projects, and Claude Code always writes a transcript, so
+more registered events would add names that can never be seen. The remaining gain is finer
+liveness granularity, worth seconds on a surface that redraws at scan cadence, against real
+`swab-hook` invocations on the declared latency path (`PostToolUse` alone roughly doubles
+them). The one thing that would change this: `Notification`/`PermissionRequest` carry
+"the agent is waiting on you", which **no transcript record expresses**. That is a real
+capability the transcript cannot supply, and it should be designed as a feature — a
+distinct waiting state on the Dashboard — rather than acquired as a side effect of
+lengthening a list.
+
 Implementation note for whoever extends this: `sensors/copilot.rs` still hardcodes
 `event: None` and has no event source at all, so its ~14 projects keep reading
 `"copilot activity"`. That is untouched scope, not an oversight.
