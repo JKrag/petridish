@@ -36,6 +36,9 @@ struct TranscriptFacts {
     session_id: Option<String>,
     raw_cwd: Option<String>,
     event: Option<String>,
+    /// Whether `event` is a *weak* name — see `DerivedEvent::weak`. Internal to
+    /// the scan; never leaves this module.
+    event_is_weak: bool,
 }
 
 /// Scan a single transcript file and return its `TranscriptFacts`: first-hit `sessionId`,
@@ -77,11 +80,18 @@ fn parse_transcript(file_path: &Path, size: u64) -> TranscriptFacts {
             if let Some(Value::String(s)) = obj.get("cwd") {
                 facts.raw_cwd = Some(s.clone());
             }
-            // Derive a conversational event name from this record (last-recognized-wins, same
-            // spirit as `cwd`'s last-hit-wins). An unrecognized record leaves `event` untouched,
-            // so a stretch of internal bookkeeping records can't erase the last real event name.
-            if let Some(name) = event_name_for(obj) {
-                facts.event = Some(name);
+            // Derive a conversational event name from this record. Last-recognized-wins,
+            // same spirit as `cwd`'s last-hit-wins, with one exception: the agent's own
+            // closing prose (`weak`) fills an empty slot but never displaces a name already
+            // there. Without that exception a turn shaped "run Bash, then say what it found"
+            // reports "assistant message", which is the shape of nearly every turn. An
+            // unrecognized record leaves `event` untouched either way, so a stretch of
+            // internal bookkeeping records can't erase the last real event name.
+            if let Some(ev) = event_name_for(obj) {
+                if !ev.weak || facts.event.is_none() || facts.event_is_weak {
+                    facts.event = Some(ev.name);
+                    facts.event_is_weak = ev.weak;
+                }
             }
         }
     }
@@ -124,6 +134,23 @@ fn parse_transcript(file_path: &Path, size: u64) -> TranscriptFacts {
     facts
 }
 
+/// An event name plus how firmly it holds the slot.
+///
+/// The distinction exists because "last recognized record wins" is the wrong rule
+/// on its own. An agent's turn almost always ends with prose — it runs `Bash`, then
+/// replies about what it found — so plain last-wins reported "assistant message" for
+/// nearly every project, which is true and says nothing the row didn't already say by
+/// naming the project. A tool name is the informative thing, and it must not be
+/// displaced by the agent's own closing sentence.
+struct DerivedEvent {
+    name: String,
+    /// `true` only for the agent's own prose. A weak name fills an empty slot and
+    /// may be replaced by anything; it never overwrites a name already there.
+    /// A *user* prompt is deliberately strong: it starts a new turn, so it is real
+    /// news rather than a trailing remark about work already reported.
+    weak: bool,
+}
+
 /// Maps one parsed JSONL record to a human event name, or `None` if the record isn't a
 /// recognized conversational record. Last-recognized-wins across a file (see `scan_lines`); an
 /// unrecognized record degrades to `None`, which the TUI renders as the old generic "activity"
@@ -135,7 +162,7 @@ fn parse_transcript(file_path: &Path, size: u64) -> TranscriptFacts {
 /// bookkeeping records, and any future Claude Code record type — returns `None`. This is an
 /// allowlist on purpose: real transcripts are full of unmodeled records, and a new release can
 /// add more, and none of them should leak a meaningless label into a single-line row.
-fn event_name_for(obj: &serde_json::Map<String, Value>) -> Option<String> {
+fn event_name_for(obj: &serde_json::Map<String, Value>) -> Option<DerivedEvent> {
     // Case A — assistant. The event is the last `tool_use` in the content array (the
     // assistant's final action). No `tool_use` but a non-empty array → "assistant message"; a
     // string content is the same. Missing, null, or empty content yields nothing.
@@ -148,19 +175,21 @@ fn event_name_for(obj: &serde_json::Map<String, Value>) -> Option<String> {
                     continue;
                 }
                 if let Some(Value::String(name)) = map.get("name") {
-                    return sanitize_tool_name(name);
+                    return sanitize_tool_name(name).map(|name| DerivedEvent { name, weak: false });
                 }
             }
             // Array had no tool_use — but it may be empty, which per the rules is None.
             if !items.is_empty() {
-                return Some("assistant message".to_string());
+                return Some(DerivedEvent { name: "assistant message".to_string(), weak: true });
             }
             return None;
         }
         // A string content is still a message; a missing or null one carries nothing to
         // report and must not be reported as activity that didn't happen.
         return match obj.get("message").and_then(|m| m.get("content")) {
-            Some(Value::String(_)) => Some("assistant message".to_string()),
+            Some(Value::String(_)) => {
+                Some(DerivedEvent { name: "assistant message".to_string(), weak: true })
+            }
             _ => None,
         };
     }
@@ -178,7 +207,7 @@ fn event_name_for(obj: &serde_json::Map<String, Value>) -> Option<String> {
         if echoes_a_tool {
             return None;
         }
-        return Some("user prompt".to_string());
+        return Some(DerivedEvent { name: "user prompt".to_string(), weak: false });
     }
 
     // Case C — anything else (attachment, mode, permission-mode, atis-latch, bridge-session,
@@ -831,5 +860,65 @@ mod tests {
             ],
         );
         assert_eq!(event.as_deref(), Some("Bash"));
+    }
+
+    // 22. The informative half of the fix: a turn almost always ends with the agent
+    // saying what it did, so plain last-wins reported "assistant message" for nearly
+    // every project. The tool that ran is the thing worth showing.
+    #[test]
+    fn a_tool_name_survives_the_agents_closing_prose() {
+        let event = event_from(
+            "ev_prose_after_tool",
+            &[
+                typed_line(Some("__CWD__"), "assistant", Some(tool_use("Bash"))),
+                typed_line(
+                    Some("__CWD__"),
+                    "assistant",
+                    Some(serde_json::json!([{"type": "text", "text": "that worked"}])),
+                ),
+            ],
+        );
+        assert_eq!(event.as_deref(), Some("Bash"));
+    }
+
+    // 23. The other half: a *user* prompt is a new turn, not a trailing remark about
+    // work already reported, so it does replace the tool name. Otherwise a project
+    // would keep reporting a tool it ran before the human last spoke.
+    #[test]
+    fn a_new_user_prompt_replaces_the_tool_name() {
+        let event = event_from(
+            "ev_prompt_after_tool",
+            &[
+                typed_line(Some("__CWD__"), "assistant", Some(tool_use("Bash"))),
+                typed_line(
+                    Some("__CWD__"),
+                    "assistant",
+                    Some(serde_json::json!([{"type": "text", "text": "done"}])),
+                ),
+                typed_line(
+                    Some("__CWD__"),
+                    "user",
+                    Some(Value::String("now do the other thing".into())),
+                ),
+            ],
+        );
+        assert_eq!(event.as_deref(), Some("user prompt"));
+    }
+
+    // 24. A weak name fills an empty slot, and a later strong one takes it over.
+    #[test]
+    fn prose_fills_an_empty_slot_and_a_later_tool_takes_it() {
+        let event = event_from(
+            "ev_prose_then_tool",
+            &[
+                typed_line(
+                    Some("__CWD__"),
+                    "assistant",
+                    Some(serde_json::json!([{"type": "text", "text": "let me look"}])),
+                ),
+                typed_line(Some("__CWD__"), "assistant", Some(tool_use("Read"))),
+            ],
+        );
+        assert_eq!(event.as_deref(), Some("Read"));
     }
 }

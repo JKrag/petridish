@@ -10,10 +10,14 @@ Two separate pieces, two separate toolchains:
 **`swab` / `swab-hook`** (the scanner) are Rust, built from `swab/`:
 
 ```sh
-cargo install --path swab
+cargo install --path swab --locked
 ```
 
-This puts `swab` and `swab-hook` on `~/.cargo/bin` (verify it's on `PATH`). Verify:
+This puts `swab` and `swab-hook` on `~/.cargo/bin` (verify it's on `PATH`). **`--locked`
+is required, not optional:** `cargo install` ignores `Cargo.lock` by default and
+re-resolves from scratch, and a transitive `gix` dependency (`bisync`) has had its
+matching versions yanked from crates.io, so the default resolution fails outright. The
+lockfile pins a working set. Same flag for `petri` below, for the same reason.
 
 ```sh
 swab --help
@@ -24,7 +28,7 @@ collapsible sections, worktree nesting and the activity feed. `petri/SPEC.md` is
 authoritative for its behaviour:
 
 ```sh
-cargo install --path petri
+cargo install --path petri --locked
 ```
 
 This puts `petri` on `~/.cargo/bin` alongside `swab`. It only ever reads

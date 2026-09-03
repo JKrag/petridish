@@ -292,9 +292,14 @@ The ambient monitor: "does anything need me?" across a fleet of unattended runs.
     sensor derives names from an **allowlist** of conversational record types, so an
     unmodelled or future record type yields `None` on purpose and lands back on
     `"activity"`. A row reading `"claude-code activity"` is therefore honest output, not
-    a bug to chase. Expect `"{agent} {tool}"` (`Bash`, `Edit`) from a project mid-run,
-    and the blunter `"assistant message"`/`"user prompt"` from a dormant one whose
-    transcript ended on a reply — the feed is sharpest exactly where it is being watched.
+    a bug to chase. Otherwise expect the **tool** the agent last ran (`Bash`, `Write`,
+    `Edit`) or `"user prompt"` when the human spoke most recently. The sensor
+    deliberately does *not* let the agent's own closing prose displace a tool name:
+    a turn is almost always shaped "run a tool, then say what it found", so the
+    last-recognized-record rule on its own reported `"assistant message"` for nearly
+    every project — true, and saying nothing the row did not already say by naming the
+    project. A new *user* prompt does displace it, being a fresh turn rather than a
+    remark about work already reported.
 - **Staleness banner:** when the state file's `updated_at` is older than 24h
   (matching `swab doctor`'s freshness check), render normally *and* show a
   persistent banner (`▲ Data stale (updated {age} ago)`, on the danger color, §4.1)

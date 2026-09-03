@@ -736,11 +736,24 @@ Three things worth carrying forward:
    `None` and lands on the pre-existing `"activity"` fallback. **A Claude Code format change
    therefore degrades to boring, never to garbage** — which is only an acceptable outcome
    because the product decision was explicitly that boring historic rows are fine.
-2. **The `tool_result` exclusion is what makes it readable.** Every `tool_use` is followed by
+2. **First real use immediately revised the derivation, and the revision is the whole
+   value of the feature.** The first version took the last recognized record, full stop.
+   Against 25 real transcripts that produced `assistant message` **19 times** — because a
+   turn is shaped "run a tool, then say what it found", so the agent's own closing prose
+   is almost always the last thing in the file. Technically correct; practically an empty
+   column, since the row already names the project. Names now come with a *strength*: the
+   agent's prose is weak (fills an empty slot, never displaces), a tool name and a user
+   prompt are strong. Same 25 roots then gave `Bash` x8, `user prompt` x8, `Write` x7,
+   `StructuredOutput` x1 — and `assistant message` disappeared entirely, since in practice
+   it only ever appeared as a trailing remark after something more specific. **The
+   transferable bit: "last wins" is a plausible default that quietly loses to whatever
+   your data happens to end with. Check the resulting distribution, not just the rule.**
+
+3. **The `tool_result` exclusion is what makes it readable.** Every `tool_use` is followed by
    a `user` record echoing its result, so honouring those would make a live session read
    `"tool result"` on nearly every tick — the last-wins rule fighting the thing it was meant
    to surface. Excluding them means a live run names the tool that actually ran.
-3. **The real-data probe found what fixtures could not, again** (same lesson as §10's
+4. **The real-data probe found what fixtures could not, again** (same lesson as §10's
    finding 4, one level up). `swab/examples/probe.rs` runs one sensor against the real
    `~/.claude/projects` *without* writing `projects.json`, which is what made it safe to run
    repeatedly mid-change. 25 real roots gave `assistant message` x19, `user prompt` x4,
