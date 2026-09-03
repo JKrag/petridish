@@ -45,9 +45,10 @@ use ratatui::{
 /// budget, not column width — width is spent widening the one line instead.
 const COMPACT_TIER_MAX_CONTENT_ROWS: usize = 16;
 
-/// Fewest rows worth spending on the SPACE-1 activity feed: one rule, one label, and at
-/// least two event rows. Below that the block is chrome with nothing in it.
-const FEED_MIN_ROWS: usize = 4;
+/// Fewest rows worth spending on the SPACE-1 activity feed: one label and at least two
+/// event rows. Below that the block is chrome with nothing in it. (The feed draws no rule of
+/// its own — the section above it always ends in one; see `feed::feed_block_lines`.)
+const FEED_MIN_ROWS: usize = 3;
 
 
 /// Minimum roomy-card width before a second grid column is added. Below this a real branch
@@ -430,16 +431,21 @@ pub struct DashPlan {
 /// How many rows the SPACE-1 activity feed gets out of whatever height the sections left
 /// unspent — `0` when it must not be drawn at all.
 ///
-/// **The feed always yields to project rows.** It is drawn only when the fleet is fully
-/// shown: no section was skipped for want of a header, and no section truncated its own
-/// rows. This is not belt-and-braces — `plan_layout` really can leave surplus *while*
-/// truncating: a roomy RUNNING section has `item_span == 7`, so a 20-row budget fits two
-/// cards (14 rows), reports `truncated_remaining`, and leaves 5 rows over. Spending those
-/// on a feed while projects are hidden behind a `… +N more` marker would invert SPEC.md
-/// §3.2's whole priority.
+/// **The feed only ever gets rows no section could have used**, which is why it needs no
+/// yield rule at all. An earlier version refused to draw whenever anything was truncated or
+/// skipped, on the reasoning that hidden projects outrank a feed. That reasoning was right
+/// and the guard was still redundant, because of how `plan_layout` spends its budget:
 ///
-/// It is also suppressed in the compact tier: below `COMPACT_TIER_MAX_CONTENT_ROWS` the
-/// screen is already rationing space, which is the opposite of the surplus this fills.
+/// - A section that **truncated** stopped because the remainder is smaller than one more
+///   `item_span` — a roomy card is 7 rows, so at most 6 are left and no further card fits.
+/// - A section that was **skipped** was skipped because fewer than its 3 chrome rows
+///   remained, so under 3 are left and `FEED_MIN_ROWS` rejects that anyway.
+/// - Later sections in both cases already took whatever they could on their own pass.
+///
+/// So the leftover is unusable by the fleet by construction, and the guard was reserving
+/// blank rows rather than protecting project rows. Removing it strictly increases what is
+/// on screen. The same argument retires the old compact-tier suppression: leftover is
+/// leftover, and blank rows help nobody on a small terminal either.
 ///
 /// Otherwise it **grows to fill the slack**, which is SPACE-1's entire purpose — bounded
 /// only by how much activity there is to show (`feed_events` rows plus the rule and label).
@@ -460,23 +466,18 @@ pub fn feed_rows_for(
     skipped: &[(StatusBucket, usize)],
     feed_events: usize,
 ) -> usize {
-    // Rationing height already: the feed is for surplus, and there is none by definition.
-    if compact_tier {
-        return 0;
-    }
-    // Anything hidden outranks the feed — a section that lost its header entirely, or one
-    // that stopped short with a `… +N more` marker. The second case is the one that needs
-    // stating: truncation and surplus genuinely co-occur.
-    if !skipped.is_empty() || sections.iter().any(|s| s.truncated_remaining.is_some()) {
-        return 0;
-    }
+    // `compact_tier`, `sections` and `skipped` are no longer consulted — see the doc comment
+    // for why each guard turned out to be redundant with the arithmetic below. They stay in
+    // the signature because the caller has them and a future rule may want them again;
+    // silently dropping the parameters would make that rule harder to write.
+    let _ = (compact_tier, sections, skipped);
     let surplus = fleet_rows.saturating_sub(used);
     if surplus < FEED_MIN_ROWS {
         return 0;
     }
-    // Take the slack, up to what there is to put in it. `+ 2` is the rule and the label;
-    // the `max` keeps an empty feed big enough to say so rather than vanishing.
-    let wanted = FEED_MIN_ROWS.max(feed_events.saturating_add(2));
+    // Take the slack, up to what there is to put in it. `+ 1` is the label row; the `max`
+    // keeps an empty feed big enough to say so rather than vanishing.
+    let wanted = FEED_MIN_ROWS.max(feed_events.saturating_add(1));
     wanted.min(surplus)
 }
 
@@ -516,7 +517,21 @@ pub fn plan_layout(
         }
 
         let is_first_section = sections.is_empty();
-        let chrome_rows = if is_first_section { 2 } else { 3 };
+        // Consecutive collapsed sections share one strip (`collapsed_strip_line`), so only
+        // the first of a run pays for chrome; the rest cost nothing at all. Three collapsed
+        // sections used to spend 9 rows saying almost nothing — the same 3 a single expanded
+        // section's header costs, times three.
+        let joins_open_strip = collapsed[si]
+            && sections
+                .last()
+                .is_some_and(|prev| collapsed[section_index(&prev.bucket)]);
+        let chrome_rows = if joins_open_strip {
+            0
+        } else if is_first_section {
+            2
+        } else {
+            3
+        };
         if used + chrome_rows > fleet_rows {
             skipped.push((*bucket, members.len()));
             for later_bucket in SECTION_ORDER.iter().skip(si + 1) {
@@ -696,8 +711,39 @@ pub fn render(
     section_constraints.push(Constraint::Fill(1));
     let section_rects = Layout::vertical(section_constraints).split(fleet_area);
 
+    // Group consecutive collapsed sections into strips. Derived here rather than stored on
+    // `DashPlan` because `state.collapsed` is the only input and `plan_layout` already
+    // encoded the consequence in `chrome_rows` — a second copy could disagree with it.
+    let mut strips: Vec<Option<Vec<StatusBucket>>> = vec![None; plan.sections.len()];
+    let mut i = 0;
+    while i < plan.sections.len() {
+        if state.collapsed[section_index(&plan.sections[i].bucket)] {
+            let mut run = Vec::new();
+            let mut j = i;
+            while j < plan.sections.len()
+                && state.collapsed[section_index(&plan.sections[j].bucket)]
+            {
+                run.push(plan.sections[j].bucket);
+                j += 1;
+            }
+            strips[i] = Some(run);
+            i = j;
+        } else {
+            i += 1;
+        }
+    }
+
     for (plan_idx, section) in plan.sections.iter().enumerate() {
-        render_section(frame, section_rects[plan_idx], radar, state, section, width, plan_idx == 0);
+        render_section(
+            frame,
+            section_rects[plan_idx],
+            radar,
+            state,
+            section,
+            width,
+            plan_idx == 0,
+            strips[plan_idx].as_deref(),
+        );
     }
 
     if !plan.skipped.is_empty() {
@@ -738,7 +784,14 @@ fn render_section(
     section: &SectionPlan,
     fleet_width: usize,
     is_first_section: bool,
+    strip: Option<&[StatusBucket]>,
 ) {
+    // A collapsed section that merely joins a strip has no rows of its own: the lead of its
+    // run already drew every label, including this one. `plan_layout` gave it a zero-height
+    // rect to match.
+    if section.chrome_rows == 0 {
+        return;
+    }
     let members = DashboardState::section_members(radar, section.bucket);
 
     let [chrome_rect, grid_rect, marker_rect] = Layout::vertical([
@@ -756,7 +809,10 @@ fn render_section(
         state.selected.and_then(|i| state.visible.get(i)),
         Some(DashRow::Header(b)) if *b == section.bucket
     );
-    chrome_lines.push(section_header_line(radar, section.bucket, section.member_count, is_selected_header, fleet_width));
+    chrome_lines.push(match strip {
+        Some(run) => collapsed_strip_line(radar, run, state, fleet_width),
+        None => section_header_line(radar, section.bucket, section.member_count, is_selected_header, fleet_width),
+    });
     chrome_lines.push(rule_line(fleet_width, Color::DarkGray));
     frame.render_widget(Paragraph::new(chrome_lines), chrome_rect);
 
@@ -956,13 +1012,13 @@ fn header_lines(radar: &Radar, now: &chrono::DateTime<chrono::Utc>, scan_secs: f
     vec![title, Line::from(Span::styled("═".repeat(width), Style::default().fg(theme::ACCENT).add_modifier(Modifier::BOLD)))]
 }
 
-/// Section header line: " RUNNING" left, "25" right, between the two light
-/// rules `render` pushes around it. RUNNING degrades to RECENT when no
-/// member project has an active agent (`agent.active_agent.is_some()`) —
-/// petri/SPEC.md §3.2's "because RUNNING would then overstate it", documented
-/// interpretation per `s6_snapshot.rs`'s module doc comment.
-fn section_header_line(radar: &Radar, bucket: StatusBucket, count: usize, is_selected: bool, width: usize) -> Line<'static> {
-    let label: &str = if bucket == StatusBucket::Active {
+/// The label a section shows. RUNNING degrades to RECENT when no member project has an
+/// active agent (`agent.active_agent.is_some()`) — petri/SPEC.md §3.2's "because RUNNING
+/// would then overstate it", documented interpretation per `s6_snapshot.rs`'s module doc
+/// comment. Shared with `collapsed_strip_line` so a collapsed RUNNING cannot say something
+/// different from an expanded one.
+fn section_label(radar: &Radar, bucket: StatusBucket) -> &'static str {
+    if bucket == StatusBucket::Active {
         let has_agent = DashboardState::running_membership(radar)
             .iter()
             .any(|&idx| radar.projects[idx].agent.active_agent.is_some());
@@ -973,7 +1029,75 @@ fn section_header_line(radar: &Radar, bucket: StatusBucket, count: usize, is_sel
             .find(|(b, _)| *b == bucket)
             .map(|(_, l)| *l)
             .expect("SECTION_LABELS covers all buckets in SECTION_ORDER")
+    }
+}
+
+/// One line standing in for a run of consecutive collapsed sections:
+/// `" IN FLIGHT 12  ·  STALE 32  ·  COLD 18 "`.
+///
+/// Three collapsed sections previously cost 9 rows — rule, label, rule, three times over —
+/// to say what fits comfortably in one. The rows that buys go to the fleet and the activity
+/// feed, which is what the screen is actually for.
+///
+/// Each label keeps its own bucket colour and its own count, so the strip reads as the same
+/// information in less space rather than as a different, vaguer thing. Every entry is still
+/// an independent selection stop (`DashRow::Header`), so `j`/`k` walks along the strip and
+/// the selected label carries the same highlight it would as a full-width header — which is
+/// what makes the collapsed state feel like tabs rather than a summary you cannot act on.
+///
+/// Truncates on a whole entry rather than mid-label when the width runs out, and appends `…`
+/// so a hidden section is never silently absent — the same rule the "not shown" summary row
+/// follows.
+fn collapsed_strip_line(
+    radar: &Radar,
+    run: &[StatusBucket],
+    state: &DashboardState,
+    width: usize,
+) -> Line<'static> {
+    let selected_bucket = match state.selected.and_then(|i| state.visible.get(i)) {
+        Some(DashRow::Header(b)) => Some(*b),
+        _ => None,
     };
+
+    let mut spans: Vec<Span<'static>> = vec![Span::raw(" ")];
+    let mut used = 1usize;
+    let mut dropped = 0usize;
+
+    for (i, bucket) in run.iter().enumerate() {
+        let count = DashboardState::section_members(radar, *bucket).len();
+        let entry = format!("{} {count}", section_label(radar, *bucket));
+        let sep = if i > 0 { "  ·  " } else { "" };
+        // Reserve a column for the `…` that would announce anything dropped after this.
+        if used + sep.chars().count() + entry.chars().count() + 2 > width {
+            dropped = run.len() - i;
+            break;
+        }
+        if !sep.is_empty() {
+            spans.push(Span::styled(sep.to_string(), Style::default().fg(theme::DIMMER)));
+            used += sep.chars().count();
+        }
+        let style = if Some(*bucket) == selected_bucket {
+            Style::default().fg(Color::Black).bg(theme::ACCENT).add_modifier(Modifier::BOLD)
+        } else {
+            Style::default().fg(crate::theme::bucket_color(*bucket)).add_modifier(Modifier::BOLD)
+        };
+        used += entry.chars().count();
+        spans.push(Span::styled(entry, style));
+    }
+
+    if dropped > 0 {
+        spans.push(Span::styled(
+            format!(" +{dropped}…"),
+            Style::default().fg(theme::AGING),
+        ));
+    }
+    Line::from(spans)
+}
+
+/// Section header line: " RUNNING" left, "25" right, between the two light
+/// rules `render` pushes around it.
+fn section_header_line(radar: &Radar, bucket: StatusBucket, count: usize, is_selected: bool, width: usize) -> Line<'static> {
+    let label = section_label(radar, bucket);
     // Section label previews the state of what's inside it, reusing the same
     // gradient `silence_tier_color` applies per-project: RUNNING reads
     // fresh-green, IN FLIGHT amber, STALE grey, COLD dimmer-grey — one

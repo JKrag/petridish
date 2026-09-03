@@ -357,6 +357,29 @@ user's explicit toggle.
 Symmetric to the existing compact/roomy switch: on tall terminals, more sparkline history,
 more fields per card, bigger cards.
 
+### SPACE-5 — Collapsed sections as a tab strip, not three rows each
+**DONE** (slice 5) — `dashboard::collapsed_strip_line`, and the `joins_open_strip` branch in
+`plan_layout`.
+
+Raised from real use, with a screenshot: collapsing `IN FLIGHT`, `STALE` and `COLD` to get a
+"what's running" view still spent **9 rows** — rule, label, rule, three times — to say almost
+nothing. `STALE 32` does not need three rows of screen to communicate 32.
+
+Consecutive collapsed sections now share one line, bracketed by the same two rules a single
+header gets: 3 rows for the whole run. Three things made it work rather than merely fit:
+
+- **Each entry stays a selection stop.** The temptation is to render a summary; that would
+  break `SPEC.md` §3.2's load-bearing rule that a collapsed section must be reachable, since
+  `STALE`/`COLD` ship collapsed and there would be no way to reopen them. `j`/`k` walks the
+  strip and the selected entry takes the usual highlight, which is also what makes it read as
+  *tabs* rather than a caption.
+- **Runs group in place**, not "all collapsed sections gathered into one strip". Gathering is
+  simpler and lets a section jump out of `SECTION_ORDER` position when the collapsed ones
+  aren't contiguous, which is a worse surprise than the extra branch costs.
+- **The label rule is shared** with the full-width header (`section_label`), so a collapsed
+  `RUNNING` cannot say something a expanded one wouldn't — it still degrades to `RECENT` when
+  no member has a live agent.
+
 ### SPACE-4 — Make "truncate, do not scroll" height-conditional
 The rule exists so a glance surface can't be scrolled into a state where it hides the
 alert — a risk that is really about *small* terminals. Truncating with blank space below
@@ -661,7 +684,16 @@ Six things worth keeping:
    an unbuilt one.** The reservation costs real value now to protect hypothetical value
    later, and the unbuilt feature can argue for the space when it is real.
 
-9. **A gate that rejects correct work costs as much as one that passes broken work.** This
+9. **Two guards were protecting rows that no section could have used.** The feed refused to
+   draw whenever anything was truncated or skipped, and in the compact tier. The reasoning
+   ("hidden projects outrank a feed") was right and the guards were still redundant, because
+   of how the budget is spent: a section truncates precisely when the remainder is smaller
+   than one more `item_span`, and is skipped precisely when fewer than its 3 chrome rows
+   remain. Either way the leftover cannot hold a project row, so the guards reserved *blank*
+   rows. Worth generalising: **a guard justified by a priority argument still needs checking
+   against the arithmetic** — the priority can be correct while the guard protects nothing.
+
+10. **A gate that rejects correct work costs as much as one that passes broken work.** This
    slice's verify script twice failed on things that were not this job's doing: pre-existing
    clippy debt in `petridish-core` *and* `petri` (`browser.rs`, `dashboard.rs`, `lib.rs`,
    `prefs.rs` are all unclean at BASE), and — worse — `cargo clippy` only emits diagnostics

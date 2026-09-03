@@ -125,18 +125,20 @@ fn feed_of(n: usize) -> FeedState {
 // ------------------------------------------------------------------ feed_rows_for
 
 #[test]
-fn feed_gets_nothing_in_the_compact_tier() {
-    // Below COMPACT_TIER_MAX_CONTENT_ROWS the screen is already rationing space, which is
-    // the opposite of the surplus SPACE-1 exists to spend.
-    assert_eq!(feed_rows_for(true, 40, 4, &[], &[], 30), 0);
-}
-
-#[test]
-fn feed_gets_nothing_when_a_section_was_skipped() {
+fn feed_takes_leftover_rows_even_when_something_was_hidden() {
+    // Relaxed deliberately. Rows left after planning cannot be used by any section — a
+    // truncated one stopped because the remainder is smaller than one more item, and a
+    // skipped one because fewer than its 3 chrome rows remained. Refusing them reserved
+    // blank rows rather than protecting project rows.
     assert_eq!(
         feed_rows_for(false, 40, 4, &[], &[(StatusBucket::Cold, 7)], 30),
-        0,
-        "projects hidden entirely must outrank the feed"
+        31,
+        "leftover after a skip is still leftover (30 events + the label)"
+    );
+    assert_eq!(
+        feed_rows_for(true, 40, 4, &[], &[], 30),
+        31,
+        "and the compact tier has no more use for a blank row than a tall one does"
     );
 }
 
@@ -162,12 +164,12 @@ fn feed_claims_only_what_it_can_fill() {
     // back to the layout than fenced off inside an mostly-empty block.
     assert_eq!(
         feed_rows_for(false, 40, 10, &[], &[], 5),
-        7,
-        "5 events plus the rule and the label"
+        6,
+        "5 events plus the label"
     );
     assert_eq!(
         feed_rows_for(false, 40, 10, &[], &[], 0),
-        4,
+        3,
         "an empty feed still gets enough rows to say it is empty"
     );
 }
@@ -176,13 +178,14 @@ fn feed_claims_only_what_it_can_fill() {
 fn feed_gets_nothing_when_too_few_rows_remain() {
     // 3 spare rows cannot carry a rule + label + two events; an almost-empty labelled box
     // is worse than no box.
-    assert_eq!(feed_rows_for(false, 40, 37, &[], &[], 30), 0);
+    assert_eq!(feed_rows_for(false, 40, 38, &[], &[], 30), 0, "2 spare rows is below the floor");
+    assert_eq!(feed_rows_for(false, 40, 37, &[], &[], 30), 3, "3 is exactly the floor");
     assert_eq!(feed_rows_for(false, 40, 40, &[], &[], 30), 0);
     assert_eq!(feed_rows_for(false, 40, 41, &[], &[], 30), 0, "must not underflow past `used`");
 }
 
 #[test]
-fn feed_yields_to_a_section_that_truncated_its_own_rows() {
+fn leftover_beside_a_truncated_section_is_too_small_for_another_card() {
     // The case that motivates the rule and that no naive check catches: `plan_layout` can
     // leave surplus WHILE truncating, because a roomy card spans 7 rows. A tall-but-narrow
     // terminal with many RUNNING projects is exactly that shape.
@@ -205,9 +208,12 @@ fn feed_yields_to_a_section_that_truncated_its_own_rows() {
         truncated || skipped,
         "fixture must actually overflow for this test to mean anything"
     );
-    assert_eq!(
-        plan.feed_rows, 0,
-        "the feed must not take rows while a `… +N more` marker is on screen"
+    // Whatever those leftover rows are, they are fewer than one roomy card (7) — which is
+    // precisely why the section stopped — so no project row could have used them.
+    assert!(
+        plan.feed_rows < 7,
+        "leftover beside a truncated section must be smaller than one card, got {}",
+        plan.feed_rows
     );
 }
 
@@ -222,9 +228,28 @@ fn block_is_exactly_the_rows_it_was_given() {
 }
 
 #[test]
-fn block_is_empty_below_three_rows() {
-    assert!(feed_block_lines(&feed_of(5), ts("2026-09-03T20:00:00Z"), 80, 2).is_empty());
+fn block_is_empty_below_two_rows() {
+    // A label with no room for one event is not worth the row.
+    assert!(feed_block_lines(&feed_of(5), ts("2026-09-03T20:00:00Z"), 80, 1).is_empty());
     assert!(feed_block_lines(&feed_of(5), ts("2026-09-03T20:00:00Z"), 80, 0).is_empty());
+}
+
+#[test]
+fn block_draws_no_rule_of_its_own() {
+    // Whatever sits above always ends in one; a second produced two identical dividers in
+    // consecutive rows on a real dashboard.
+    let lines = feed_block_lines(&feed_of(4), ts("2026-09-03T20:00:00Z"), 40, 5);
+    let first: String = lines[0].spans.iter().map(|s| s.content.as_ref()).collect();
+    assert!(
+        first.contains("ACTIVITY"),
+        "the block must start at its label, got {first:?}"
+    );
+    assert!(
+        !lines
+            .iter()
+            .any(|l| l.spans.iter().map(|s| s.content.as_ref()).collect::<String>().contains("──")),
+        "the block must draw no rule"
+    );
 }
 
 #[test]
@@ -380,12 +405,30 @@ fn a_tall_dashboard_draws_the_feed() {
 }
 
 #[test]
-fn a_short_dashboard_draws_no_feed() {
+fn a_short_dashboard_still_spends_its_leftover_on_the_feed() {
+    // Retired premise: this used to assert the compact tier never draws a feed. Four
+    // projects fit in a 14-row terminal with rows to spare, and those rows were blank —
+    // a small terminal has no more use for a blank row than a tall one does.
     let radar = radar_at("2026-09-03T20:00:00Z", fleet(4));
     let screen = joined(&render_rows(&radar, &feed_of(6), 100, 14));
+    assert!(screen.contains("ACTIVITY"), "leftover rows should carry the feed");
+    for i in 0..4 {
+        assert!(
+            screen.contains(&format!("proj-{i:02}")),
+            "every project must still be on screen: proj-{i:02}"
+        );
+    }
+}
+
+#[test]
+fn a_full_dashboard_draws_no_feed() {
+    // The case that actually matters: when the fleet consumes the budget there is nothing
+    // left, and the feed must not take a row from it.
+    let radar = radar_at("2026-09-03T20:00:00Z", fleet(40));
+    let rows = render_rows(&radar, &feed_of(6), 100, 14);
     assert!(
-        !screen.contains("ACTIVITY"),
-        "compact tier must spend every row on the fleet"
+        !joined(&rows).contains("ACTIVITY"),
+        "a screen with no spare rows gets no feed"
     );
 }
 
@@ -454,7 +497,7 @@ fn rows_are_tinted_by_what_produced_them() {
     // helper because a PADDED body row is `Line::default()` with zero spans: a fixture
     // change that shortens the feed would otherwise turn this into an index panic instead
     // of a legible failure. Flagged by the delegate's own review of these tests.
-    let body_styles: Vec<_> = lines[2..4].iter().map(|l| span_fg(l, 1)).collect();
+    let body_styles: Vec<_> = lines[1..3].iter().map(|l| span_fg(l, 1)).collect();
     assert_ne!(
         body_styles[0], body_styles[1],
         "a bucket-change row and an agent row must not render identically"
@@ -487,8 +530,8 @@ fn a_clock_and_a_date_are_visually_distinct() {
 
     let now = ts("2026-09-03T09:00:00Z");
     let lines = feed_block_lines(&feed, now, 80, 4);
-    let stamps: Vec<_> = lines[2..4].iter().map(|l| span_fg(l, 0)).collect();
-    let texts: Vec<String> = lines[2..4]
+    let stamps: Vec<_> = lines[1..3].iter().map(|l| span_fg(l, 0)).collect();
+    let texts: Vec<String> = lines[1..3]
         .iter()
         .map(|l| l.spans.iter().map(|s| s.content.as_ref()).collect())
         .collect();

@@ -369,14 +369,19 @@ fn kind_color(kind: FeedKind) -> Color {
 /// Render the feed as exactly `rows` lines, `width` columns wide. `now` decides which rows
 /// are recent enough to show a clock rather than a date — see `FeedEvent::row_text`.
 ///
-/// Layout, top to bottom: one light rule, one ` ACTIVITY` label line, then the newest
-/// `rows - 2` events, newest first, each `FeedEvent::row_text` prefixed with a space and
-/// **truncated — never wrapped** — to `width`. A `Paragraph` without `Wrap` would silently
-/// drop the overflow anyway; truncating on char boundaries makes it deliberate and keeps
-/// multi-byte project names from panicking a byte slice.
+/// Layout, top to bottom: one ` ACTIVITY` label line, then the newest `rows - 1` events,
+/// newest first, each `FeedEvent::row_text` prefixed with a space and **truncated — never
+/// wrapped** — to `width`. A `Paragraph` without `Wrap` would silently drop the overflow
+/// anyway; truncating on char boundaries makes it deliberate and keeps multi-byte project
+/// names from panicking a byte slice.
 ///
-/// Returns an empty `Vec` when `rows < 3` — there is no honest way to draw a labelled block
-/// in two lines, and `feed_rows_for` already refuses to hand out fewer than
+/// **The block draws no rule of its own.** Whatever sits above it already ends in one —
+/// every section closes with a light rule, collapsed or not — so drawing another produced
+/// two identical dividers in consecutive rows. On the degenerate screens where nothing
+/// precedes it, the header's own heavy rule is directly above instead.
+///
+/// Returns an empty `Vec` when `rows < 2` — a label with no room for a single event is not
+/// worth the row, and `feed_rows_for` already refuses to hand out fewer than
 /// `FEED_MIN_ROWS`, so this is a defensive floor rather than a reachable layout.
 ///
 /// When the feed holds no events at all the body is a single dim line saying so, rather
@@ -390,17 +395,12 @@ pub fn feed_block_lines(
 ) -> Vec<Line<'static>> {
     // A labelled block needs a rule + a label to hold; below that there is no honest way to
     // draw it, and `feed_rows_for` never asks for fewer rows, so this is a defensive floor.
-    if rows < 3 {
+    if rows < 2 {
         return Vec::new();
     }
 
     let mut lines: Vec<Line<'static>> = Vec::with_capacity(rows);
 
-    // A thin rule, then the section's label.
-    lines.push(Line::from(Span::styled(
-        "─".repeat(width),
-        Style::default().fg(theme::DIMMER),
-    )));
     // Clipped like every other line: at a degenerate width the label would otherwise be the
     // one row that overruns the pane. Caught by `the_stamp_survives_a_narrow_pane_before_the_
     // body_does`, which is the first test to check a width narrower than the label itself.
@@ -409,7 +409,7 @@ pub fn feed_block_lines(
         Style::default().fg(theme::COLD).add_modifier(Modifier::BOLD),
     )));
 
-    // The body is the newest `rows - 2` events, newest first. An empty feed has nothing to
+    // The body is the newest `rows - 1` events, newest first. An empty feed has nothing to
     // list, so its body is a single dim line saying so rather than an unexplained empty box.
     if feed.is_empty() {
         lines.push(Line::from(Span::styled(
@@ -425,7 +425,7 @@ pub fn feed_block_lines(
         let body: Vec<&FeedEvent> = feed
             .events()
             .iter()
-            .take(rows - 2)
+            .take(rows - 1)
             .collect();
         for e in body {
             // Two spans, because the stamp and the body answer different questions and are

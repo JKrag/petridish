@@ -210,6 +210,17 @@ The ambient monitor: "does anything need me?" across a fleet of unattended runs.
   `IN FLIGHT` expanded, `STALE` and `COLD` collapsed. This is how real estate gets
   allocated on this screen — deliberately by the user, not by a fixed priority
   ladder.
+- **A *run* of consecutive collapsed sections shares one line**, tab-style:
+  `IN FLIGHT 6  ·  STALE 32  ·  COLD 27`, bracketed by the same two light rules a single
+  section header gets. Three collapsed sections therefore cost 3 rows in total, not 9 —
+  collapsing used to reclaim a section's rows while still spending a full header's chrome
+  on each, which on a "show me only what's running" layout gave back less than it looked
+  like. Each entry keeps its own bucket colour and count and stays an independent
+  selection stop, so `j`/`k` walks along the strip and the selected entry carries the
+  usual highlight — collapsed sections remain actionable rather than becoming a summary
+  you cannot reopen. Runs group **in place** rather than gathering every collapsed section
+  into one strip, so a section never jumps out of `SECTION_ORDER` position. Entries that
+  do not fit the width are dropped with a trailing `+N…`, never silently.
 - **Section headers are selection stops, and this is load-bearing.** A collapsed
   section has no visible rows, so if the cursor only visited rows there would be no
   way to put the cursor on a collapsed section and therefore no way to reopen it —
