@@ -253,7 +253,7 @@ The ambient monitor: "does anything need me?" across a fleet of unattended runs.
   is a likely future addition, not v1.
 - **Activity feed (SPACE-1).** Surplus height below the fleet carries a rolling
   record of what the fleet has been doing — a light rule, an ` ACTIVITY` label, then
-  newest-first rows shaped `14:22  project-radar · claude-code stop · 3 files`. Four
+  newest-first rows shaped `14:22  project-radar · claude-code Bash · 3 files`. Five
   things pin its behaviour:
   - **It is derived by diffing successive `Radar` snapshots, not by reading
     `events.ndjson`.** That file is truncated by `swab`'s scanner on every tick
@@ -283,6 +283,18 @@ The ambient monitor: "does anything need me?" across a fleet of unattended runs.
     (as few as two body rows) — a divider would spend real activity on a boundary.
     The row's *body* keeps its own colour, by event kind: the two columns answer
     different questions ("when was this" vs "what was it") and vary independently.
+  - **The event name comes from the transcript, not from the hook** — `swab`'s
+    `sensors/claude.rs::event_name_for`, so this bullet describes a dependency, not
+    `petri` code. It was once true that `agent.last_event` was `null` for *every*
+    project in a real `projects.json`, which made `agent_detail`'s `"{agent} activity"`
+    fallback the only thing anyone ever saw; that is fixed at the source. What `petri`
+    must keep is the fallback itself, which is load-bearing rather than vestigial: the
+    sensor derives names from an **allowlist** of conversational record types, so an
+    unmodelled or future record type yields `None` on purpose and lands back on
+    `"activity"`. A row reading `"claude-code activity"` is therefore honest output, not
+    a bug to chase. Expect `"{agent} {tool}"` (`Bash`, `Edit`) from a project mid-run,
+    and the blunter `"assistant message"`/`"user prompt"` from a dormant one whose
+    transcript ended on a reply — the feed is sharpest exactly where it is being watched.
 - **Staleness banner:** when the state file's `updated_at` is older than 24h
   (matching `swab doctor`'s freshness check), render normally *and* show a
   persistent banner (`▲ Data stale (updated {age} ago)`, on the danger color, §4.1)
@@ -513,12 +525,6 @@ Cut from v1 by explicit decision:
 - **Responsive detail pane** (beside vs below). Always right, hidden when too
   narrow.
 - **Inline card expansion** on the Dashboard.
-- **A richer event name in the feed.** `Project::agent.last_event` is `null` for every
-  project in a real `projects.json`, so every feed row falls back to
-  `"{agent} activity"`. `swab`'s pipeline is correct end to end — the hook records
-  `hook_event_name`, and `derive_agent` copies it — but the transcript sensor supplies
-  most signals and has no event name to give, so it wins the newest-wins fold and the
-  name is lost. Fixing it is `swab` work, not `petri` work; see `IDEAS.md` §10.
 - **A non-interactive `petri dash`** printing one frame and exiting (pipeable into a
   tmux status pane). Free while screens were pure functions; now needs an explicit
   off-screen buffer render.

@@ -642,10 +642,8 @@ Six things worth keeping:
    `agent.last_event` is `null` for **every** project, so every row reads
    `"{agent} activity"`. The second is upstream: `swab`'s pipeline is correct end to end,
    but the transcript sensor supplies most signals and carries no event name, so it wins
-   the newest-wins fold and the hook's name is discarded. **Follow-up worth doing:** make
-   the fold prefer a signal that *has* an event name when timestamps are close, or carry
-   both sources' fields forward instead of letting one win wholesale. Until then the feed's
-   most informative field is dead weight in practice.
+   the newest-wins fold and the hook's name is discarded. **Resolved 2026-09-03, but not by
+   the follow-up proposed here** — see §11.
 
 5. **Two bugs in this slice were the same shape as slice 1's finding 3: one branch handling
    a case its sibling silently drops.** `ingest`'s commit arm required `Some`/`Some` while
@@ -701,3 +699,56 @@ Six things worth keeping:
    no work. Both fixed: the clause now `touch`es its targets to force a re-lint and is scoped
    to the files this slice authors outright, where zero diagnostics is achievable and means
    something.
+
+## 11. The feed's event name — fixed in the sensor, not in the fold
+
+§10's finding 4 proposed fixing this in `swab`'s newest-wins fold: prefer a signal that
+*has* an event name when timestamps are close, or carry both sources' fields forward. That
+would have worked and it was the wrong fix. Recorded here because the reasoning generalises.
+
+**The fold fix inherits a two-word vocabulary.** `installer.py`'s `HOOK_EVENTS` registers
+`swab-hook` on exactly `PreToolUse` and `Stop`. That is the entire set of names the hook path
+can ever supply, so a successful fold fix turns `"claude-code activity"` into
+`"claude-code pre tool use"` — internal jargon on a glance surface — or `"claude-code stop"`.
+Widening `HOOK_EVENTS` to earn a real vocabulary means rewriting every existing user's
+`settings.json` and adding invocations on `swab-hook`, the declared latency path. A fix whose
+value depends on a prerequisite that expensive is not the cheap fix it appears to be.
+
+**The name was also never durable.** `events::read_and_compact` truncates `events.ndjson`
+every tick, so even a hook signal that *won* its fold reverted to `null` on the next scan.
+The fold fix would have populated the field intermittently — arguably worse than never,
+since a field that flickers reads as a bug rather than as a limitation.
+
+**So: derive the name where the winning signal already comes from.** `sensors/claude.rs`
+already reads each transcript's tail for `cwd` and `sessionId`; `event_name_for` now also
+takes the last recognized conversational record's name off that same pass. This dissolves
+three problems at once rather than mitigating one — the name rides the signal that already
+wins the fold (no fold change, and no skew between a name and the timestamp printed beside
+it), and it is re-derived from a durable file every tick (so it survives idle periods and
+`FeedState::seeded` rows too, which the fold fix could never have reached).
+
+Three things worth carrying forward:
+
+1. **The allowlist is the design, not a safety net.** Real transcript tails are full of
+   records this sensor does not model — `atis-latch`, `bridge-session`, `permission-mode`,
+   `ai-title`, `attachment`. "Take the last record's `type`" would have rendered
+   `"bridge session"` into the feed. Recognised types map to a name; everything else yields
+   `None` and lands on the pre-existing `"activity"` fallback. **A Claude Code format change
+   therefore degrades to boring, never to garbage** — which is only an acceptable outcome
+   because the product decision was explicitly that boring historic rows are fine.
+2. **The `tool_result` exclusion is what makes it readable.** Every `tool_use` is followed by
+   a `user` record echoing its result, so honouring those would make a live session read
+   `"tool result"` on nearly every tick — the last-wins rule fighting the thing it was meant
+   to surface. Excluding them means a live run names the tool that actually ran.
+3. **The real-data probe found what fixtures could not, again** (same lesson as §10's
+   finding 4, one level up). `swab/examples/probe.rs` runs one sensor against the real
+   `~/.claude/projects` *without* writing `projects.json`, which is what made it safe to run
+   repeatedly mid-change. 25 real roots gave `assistant message` x19, `user prompt` x4,
+   `Bash` x1, `None` x1 — and that distribution is itself the finding: a dormant transcript
+   ends on the agent's closing reply, so the informative names appear exactly on the projects
+   being actively watched, which is the only place the feed is read anyway. **Look for a
+   non-destructive probe entry point before reaching for the real writer.**
+
+Implementation note for whoever extends this: `sensors/copilot.rs` still hardcodes
+`event: None` and has no event source at all, so its ~14 projects keep reading
+`"copilot activity"`. That is untouched scope, not an oversight.
