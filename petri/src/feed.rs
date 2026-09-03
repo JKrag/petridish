@@ -82,12 +82,27 @@ impl FeedEvent {
     /// `04:58`, which reads as a sorting bug when the order is in fact correct. A bare clock
     /// simply cannot express "yesterday", and the feed's whole purpose is chronology.
     pub fn row_text(&self, now: DateTime<Utc>) -> String {
-        let stamp = if self.at.date_naive() == now.date_naive() {
+        format!("{}  {}", self.stamp(now), self.body_text())
+    }
+
+    /// True when this event happened on `now`'s UTC date — i.e. its stamp is a clock
+    /// rather than a date.
+    pub fn is_today(&self, now: DateTime<Utc>) -> bool {
+        self.at.date_naive() == now.date_naive()
+    }
+
+    /// The five-column time field: `HH:MM` for today, `MM-DD` for any earlier day.
+    pub fn stamp(&self, now: DateTime<Utc>) -> String {
+        if self.is_today(now) {
             self.at.format("%H:%M").to_string()
         } else {
             self.at.format("%m-%d").to_string()
-        };
-        format!("{stamp}  {} · {}", self.project, self.detail)
+        }
+    }
+
+    /// Everything after the stamp: `"{project} · {detail}"`.
+    pub fn body_text(&self) -> String {
+        format!("{} · {}", self.project, self.detail)
     }
 }
 
@@ -323,6 +338,25 @@ impl FeedState {
 /// The colour a row is drawn in, by what produced it. Agent rows are the ordinary case and
 /// stay in the foreground colour; the rarer structural events are tinted so they stand out
 /// of a wall of agent chatter without needing a second column.
+/// The colour of a row's time field, by whether it is a clock or a date.
+///
+/// Same-day-ness is a *recency* statement, so this reuses `theme`'s documented
+/// `FRESH`/`COLD` silence gradient rather than inventing a pair for the feed alone — the
+/// module doc there asks for exactly that ("one gradient, reused, rather than a flat color
+/// that says nothing about what it's labeling").
+///
+/// A colour rather than a separator row is deliberate: the feed's row budget is scarce
+/// (`FEED_MIN_ROWS` is 4, so as few as two body rows), and a divider would spend a whole
+/// row of real activity on a boundary. Tinting the field costs no rows at all, and because
+/// rows are strictly newest-first the transition still reads as a single clean break down
+/// the block.
+fn stamp_color(is_today: bool) -> Color {
+    if is_today { theme::FRESH } else { theme::COLD }
+}
+
+/// The colour a row's *body* is drawn in, by what produced it. Independent of
+/// `stamp_color`: the two live in different columns and answer different questions —
+/// "when was this" versus "what was it".
 fn kind_color(kind: FeedKind) -> Color {
     match kind {
         FeedKind::Agent => theme::FG,
@@ -367,8 +401,11 @@ pub fn feed_block_lines(
         "─".repeat(width),
         Style::default().fg(theme::DIMMER),
     )));
+    // Clipped like every other line: at a degenerate width the label would otherwise be the
+    // one row that overruns the pane. Caught by `the_stamp_survives_a_narrow_pane_before_the_
+    // body_does`, which is the first test to check a width narrower than the label itself.
     lines.push(Line::from(Span::styled(
-        " ACTIVITY",
+        " ACTIVITY".chars().take(width).collect::<String>(),
         Style::default().fg(theme::COLD).add_modifier(Modifier::BOLD),
     )));
 
@@ -376,7 +413,7 @@ pub fn feed_block_lines(
     // list, so its body is a single dim line saying so rather than an unexplained empty box.
     if feed.is_empty() {
         lines.push(Line::from(Span::styled(
-            "nothing to show",
+            "nothing to show".chars().take(width).collect::<String>(),
             Style::default().fg(theme::DIMMER),
         )));
         while lines.len() < rows {
@@ -391,18 +428,20 @@ pub fn feed_block_lines(
             .take(rows - 2)
             .collect();
         for e in body {
-            // Prefix with a space, then truncate to `width` on char boundaries — never wrap.
-            // A row longer than the pane keeps its content on screen instead of pushing it off
-            // the edge silently, and char-boundary truncation keeps a multi-byte name from
-            // panicking a byte slice.
-            let text = format!(" {}", e.row_text(now))
-                .chars()
-                .take(width)
-                .collect::<String>();
-            lines.push(Line::from(Span::styled(
-                text,
-                Style::default().fg(kind_color(e.kind)),
-            )));
+            // Two spans, because the stamp and the body answer different questions and are
+            // coloured on different axes (recency vs kind). The width budget is spent on the
+            // stamp first: it is the column that makes the block chronological, so it is the
+            // last thing that should be lost to a narrow pane.
+            //
+            // Truncation is on char boundaries throughout — never wrapping, and never byte
+            // slicing, which a multi-byte project name would panic on.
+            let head: String = format!(" {}  ", e.stamp(now)).chars().take(width).collect();
+            let remaining = width.saturating_sub(head.chars().count());
+            let body_text: String = e.body_text().chars().take(remaining).collect();
+            lines.push(Line::from(vec![
+                Span::styled(head, Style::default().fg(stamp_color(e.is_today(now)))),
+                Span::styled(body_text, Style::default().fg(kind_color(e.kind))),
+            ]));
         }
         // Pad to the full height, exactly as the empty branch does. A feed holding fewer
         // events than the block has room for is the ordinary case on a freshly-started

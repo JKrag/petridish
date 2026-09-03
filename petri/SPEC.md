@@ -258,8 +258,15 @@ The ambient monitor: "does anything need me?" across a fleet of unattended runs.
   - **Suppressed in the compact tier**, and never larger than `FEED_MAX_ROWS` (12), so
     a very tall terminal keeps surplus for `SPACE-2`/`SPACE-3` to spend later.
   - **Rows carry a date, not a clock, once they are from an earlier day** (`09-02` in
-    the same five columns). A bare clock renders yesterday's `23:14` below today's
-    `04:58` and reads as a sorting bug.
+    the same five columns), and the time field is **tinted on that axis**: `FRESH` for
+    today's clocks, `COLD` for earlier dates, reusing §4.1's existing silence gradient
+    rather than a pair invented for this block. A bare clock renders yesterday's `23:14`
+    below today's `04:58` and reads as a sorting bug; `MM-DD` alone fixes the ambiguity
+    but is too weak a cue to catch while glancing, which is the only way this block is
+    read. A colour rather than a separator row because the feed's row budget is scarce
+    (as few as two body rows) — a divider would spend real activity on a boundary.
+    The row's *body* keeps its own colour, by event kind: the two columns answer
+    different questions ("when was this" vs "what was it") and vary independently.
 - **Staleness banner:** when the state file's `updated_at` is older than 24h
   (matching `swab doctor`'s freshness check), render normally *and* show a
   persistent banner (`▲ Data stale (updated {age} ago)`, on the danger color, §4.1)

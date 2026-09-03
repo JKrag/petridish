@@ -632,7 +632,26 @@ Six things worth keeping:
    diff. Worth a standing habit: when a function has parallel arms, diff the arms against
    each other, not just against the spec.
 
-6. **A gate that rejects correct work costs as much as one that passes broken work.** This
+6. **`MM-DD` fixed the ambiguity but not the readability, and those are different bugs.**
+   Once dates were in, the block was *correct* and still hard to scan: `04:58` and `09-02`
+   are the same width, same weight, same colour, and the eye has to parse each one to find
+   where "today" ends. Tinting the time field on the same axis (`FRESH` today, `COLD`
+   earlier) makes the boundary a single visual break instead of eight small reading tasks.
+   Two notes on the choice: a **separator row** was rejected because the feed's row budget
+   is scarce — `FEED_MIN_ROWS` is 4, so a divider can cost a third of the visible activity —
+   and the tint reuses `theme`'s existing silence gradient rather than a new pair, because
+   same-day-ness *is* a recency statement and that module explicitly asks for one gradient
+   reused. The row now carries two independently-coloured spans: time by recency, body by
+   event kind.
+
+7. **The test written for the new colour found an older bug in the same function.** Checking
+   that the *stamp* survives a narrow pane meant asserting every line fits `width` at
+   degenerate widths — and the ` ACTIVITY` label had never been clipped at all, so it
+   overran any pane narrower than nine columns. The existing width test only ever ran at 40,
+   where the label trivially fits. A test aimed at a new feature is a good moment to widen
+   the range the old ones were checked over.
+
+8. **A gate that rejects correct work costs as much as one that passes broken work.** This
    slice's verify script twice failed on things that were not this job's doing: pre-existing
    clippy debt in `petridish-core` *and* `petri` (`browser.rs`, `dashboard.rs`, `lib.rs`,
    `prefs.rs` are all unclean at BASE), and — worse — `cargo clippy` only emits diagnostics

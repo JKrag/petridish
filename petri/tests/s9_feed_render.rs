@@ -412,9 +412,66 @@ fn rows_are_tinted_by_what_produced_them() {
     assert_eq!(kinds, vec![FeedKind::Bucket, FeedKind::Agent], "fixture precondition");
 
     let lines = feed_block_lines(&feed, ts("2026-09-03T20:00:00Z"), 80, 4);
-    let body_styles: Vec<_> = lines[2..4].iter().map(|l| l.spans[0].style.fg).collect();
+    // span 0 is the time field, span 1 the body — kind tints the body.
+    let body_styles: Vec<_> = lines[2..4].iter().map(|l| l.spans[1].style.fg).collect();
     assert_ne!(
         body_styles[0], body_styles[1],
         "a bucket-change row and an agent row must not render identically"
     );
+}
+
+#[test]
+fn a_clock_and_a_date_are_visually_distinct() {
+    // Two rows, one from today and one from an earlier day, otherwise identical in kind.
+    // `MM-DD` versus `HH:MM` alone is too weak a cue to catch while glancing, which is the
+    // only way this block is ever read.
+    let mut feed = FeedState::default();
+    feed.ingest(
+        &radar_at("2026-09-01T08:00:00Z", vec![project("a", "alpha", StatusBucket::Active)]),
+        &radar_at(
+            "2026-09-02T23:14:00Z",
+            vec![with_agent(project("a", "alpha", StatusBucket::Active), "claude-code", "Stop", "2026-09-02T23:14:00Z")],
+        ),
+    );
+    feed.ingest(
+        &radar_at(
+            "2026-09-02T23:15:00Z",
+            vec![with_agent(project("b", "bravo", StatusBucket::Active), "claude-code", "Stop", "2026-09-02T23:14:00Z")],
+        ),
+        &radar_at(
+            "2026-09-03T04:58:00Z",
+            vec![with_agent(project("b", "bravo", StatusBucket::Active), "claude-code", "Stop", "2026-09-03T04:58:00Z")],
+        ),
+    );
+
+    let now = ts("2026-09-03T09:00:00Z");
+    let lines = feed_block_lines(&feed, now, 80, 4);
+    let stamps: Vec<_> = lines[2..4].iter().map(|l| l.spans[0].style.fg).collect();
+    let texts: Vec<String> = lines[2..4]
+        .iter()
+        .map(|l| l.spans.iter().map(|s| s.content.as_ref()).collect())
+        .collect();
+
+    assert!(texts[0].contains("04:58"), "newest row is today's clock, got {:?}", texts[0]);
+    assert!(texts[1].contains("09-02"), "older row is a date, got {:?}", texts[1]);
+    assert_ne!(
+        stamps[0], stamps[1],
+        "today's clock and an earlier day's date must not share a colour"
+    );
+}
+
+#[test]
+fn the_stamp_survives_a_narrow_pane_before_the_body_does() {
+    // The stamp is what makes the block chronological, so it is the last thing a narrow
+    // pane should lose. Also guards the two-span truncation against exceeding the budget.
+    for width in [0usize, 1, 4, 8, 12, 40] {
+        let lines = feed_block_lines(&feed_of(3), ts("2026-09-03T20:00:00Z"), width, 5);
+        for line in &lines {
+            let text: String = line.spans.iter().map(|s| s.content.as_ref()).collect();
+            assert!(
+                text.chars().count() <= width,
+                "line exceeds the {width}-column budget: {text:?}"
+            );
+        }
+    }
 }
