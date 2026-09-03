@@ -131,6 +131,20 @@ pub enum DashRow {
     Project(usize),
 }
 
+/// Where the cursor was pointing, in terms that survive a state-file reload.
+///
+/// `DashRow::Project` holds an index into `radar.projects`, and that index is
+/// **not** stable across scans — `swab` re-sorts on every tick, and projects
+/// appear and vanish — so anchoring on the raw index would silently move the
+/// cursor to a different project rather than keep it where the user put it.
+/// The anchor carries the project's name instead, which is what the user was
+/// actually looking at. A header anchors on its bucket, which never moves.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SelectionAnchor {
+    Header(StatusBucket),
+    Project(String),
+}
+
 /// Per-section collapse state, indexed by position in `SECTION_ORDER`.
 /// Defaults (petri/SPEC.md §3.2): `RUNNING`/`IN FLIGHT` (indices 0, 1)
 /// expanded, `STALE`/`COLD` (indices 2, 3) collapsed.
@@ -239,6 +253,65 @@ impl DashboardState {
         };
         state.rebuild(radar);
         state
+    }
+
+    /// The current selection expressed as a reload-stable `SelectionAnchor`.
+    /// Call this against the radar the cursor was placed under, *before*
+    /// swapping in a fresh one.
+    pub fn selection_anchor(&self, radar: &Radar) -> Option<SelectionAnchor> {
+        match self.visible.get(self.selected?)? {
+            DashRow::Header(b) => Some(SelectionAnchor::Header(*b)),
+            DashRow::Project(i) => radar
+                .projects
+                .get(*i)
+                .map(|p| SelectionAnchor::Project(p.name.clone())),
+        }
+    }
+
+    /// Re-derive the visible rows from a freshly-read `radar` while keeping the
+    /// state that belongs to the *user* rather than to the scan: which sections
+    /// they collapsed, and which row they had selected.
+    ///
+    /// This exists because the alternative — rebuilding with
+    /// `DashboardState::new` on every reload — silently discards both. The
+    /// Dashboard reloads whenever `swab` writes the state file, which on a busy
+    /// machine is every few seconds, so a section the user collapsed would pop
+    /// back open and the cursor would jump to the top of the list under their
+    /// hands. Collapse is described by petri/SPEC.md §3.2 as how real estate
+    /// gets allocated on this screen "deliberately by the user, not by a fixed
+    /// priority ladder"; a reload that overrides it makes that untrue.
+    ///
+    /// `anchor` is restored when the row it names still exists. When it does
+    /// not — the project dropped out of its section, or vanished entirely — the
+    /// cursor clamps to the nearest still-valid index rather than resetting to
+    /// the top, so a project leaving the list does not throw the cursor away
+    /// from where the user was working. This mirrors the Browser's documented
+    /// reload behaviour (`lib.rs`: selection follows the previously-selected
+    /// project when it survives), which had no counterpart here.
+    pub fn refresh(&mut self, radar: &Radar, anchor: Option<SelectionAnchor>) {
+        let previous_index = self.selected;
+        self.rebuild(radar); // resets `selected` to the first stop
+        if self.visible.is_empty() {
+            self.selected = None;
+            return;
+        }
+
+        let restored = anchor.and_then(|a| {
+            self.visible.iter().position(|row| match (row, &a) {
+                (DashRow::Header(b), SelectionAnchor::Header(want)) => b == want,
+                (DashRow::Project(i), SelectionAnchor::Project(name)) => {
+                    radar.projects.get(*i).is_some_and(|p| &p.name == name)
+                }
+                _ => false,
+            })
+        });
+
+        self.selected = Some(match restored {
+            Some(pos) => pos,
+            // The anchored row is gone: stay as close to it as the new list
+            // allows instead of snapping to row 0.
+            None => previous_index.unwrap_or(0).min(self.visible.len() - 1),
+        });
     }
 
     /// Membership list for a given section (RUNNING via `running_membership`,

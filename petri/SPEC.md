@@ -386,6 +386,19 @@ platform-specific backend to verify) for a file that's rewritten at most once ev
 few seconds by `swab scan`'s own cadence — there's no latency budget here a watcher
 would meaningfully improve on.
 
+**A reload re-derives the screens but must not re-derive the *user*.** Which sections
+are collapsed and which row is selected belong to the person, not to the scan, so
+`DashboardState::refresh` carries both across a reload rather than rebuilding from
+defaults. This is not a nicety: `swab` rewrites the state file every few seconds on an
+active machine, so a reload that resets them makes the screen rearrange itself with no
+input from the user — a section they collapsed reopens, and the cursor jumps to the top
+mid-navigation. Both were live bugs, reported from real use. The cursor anchors on the
+selected project's **name**, never its index into `radar.projects`: the scanner re-sorts
+on every tick, so an index-based restore silently lands the cursor on a different
+project, which is worse than losing it. `petri/tests/s10_pty_reload.rs` is the gate, and
+it has to be a PTY test — the defect was at the poll loop's call site, so every
+pure-state test passed while it was live.
+
 ### 4.4 Missing state file
 
 Checked *before* entering the alternate screen. Print the same message `swab

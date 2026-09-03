@@ -30,7 +30,7 @@
 //! the delegate to make a documented best-effort call.
 
 use chrono::{Duration as ChronoDuration, Utc};
-use petri::dashboard::{DashRow, DashboardState, SECTION_ORDER};
+use petri::dashboard::{DashRow, DashboardState, SelectionAnchor, SECTION_ORDER};
 use petridish_core::schema::{AgentState, GitState, Project, Radar, StatusBucket};
 use std::path::PathBuf;
 
@@ -309,4 +309,165 @@ fn running_membership_orders_quietest_first_within_the_attention_ceiling_then_th
          maximally silent) before 10h-silent (index 1) — the forgotten group never outranks the \
          fresh one, but keeps quietest-first ordering internally"
     );
+}
+
+// --- Reload preserves user state (regression) ------------------------------
+//
+// The Dashboard re-derives itself every time `swab` rewrites the state file,
+// which on an active machine is every few seconds. It used to do that with
+// `DashboardState::new`, which hardcodes the spec defaults — so a section the
+// user had collapsed reopened itself, and the cursor jumped back to the top,
+// with no input from the user. These pin the two halves of that fix.
+//
+// Collapse is the load-bearing half: petri/SPEC.md §3.2 calls collapse the way
+// real estate is allocated on this screen "deliberately by the user, not by a
+// fixed priority ladder", which a reload that overrides it makes false.
+
+#[test]
+fn refresh_preserves_a_collapsed_section_across_a_reload() {
+    let radar = load("loaded.json");
+
+    // Collapse IN FLIGHT, the case actually reported.
+    let in_flight = section_index(StatusBucket::InFlight);
+    let mut collapsed = [false, false, true, true];
+    collapsed[in_flight] = true;
+    let mut state = DashboardState::with_collapsed(&radar, collapsed);
+    let rows_while_collapsed = state.visible.len();
+
+    // A fresh scan lands: same shape, new Radar value.
+    let reloaded = load("loaded.json");
+    state.refresh(&reloaded, None);
+
+    assert!(
+        state.collapsed[in_flight],
+        "a reload must not reopen a section the user collapsed"
+    );
+    assert_eq!(
+        state.visible.len(),
+        rows_while_collapsed,
+        "row count must not change across a reload that changed nothing else"
+    );
+}
+
+#[test]
+fn refresh_keeps_every_section_collapse_flag_not_just_one() {
+    let radar = load("loaded.json");
+    // The inverse of the defaults, so a reset to defaults cannot pass by accident.
+    let mut state = DashboardState::with_collapsed(&radar, [true, true, false, false]);
+
+    state.refresh(&load("loaded.json"), None);
+
+    assert_eq!(state.collapsed, [true, true, false, false]);
+}
+
+#[test]
+fn refresh_restores_the_cursor_to_the_same_project() {
+    let radar = load("loaded.json");
+    let mut state = DashboardState::new(&radar);
+
+    // Walk onto a project row (not a header) and record what it points at.
+    let mut steps = 0;
+    while !matches!(state.visible[state.selected.unwrap()], DashRow::Project(_)) {
+        state.move_selection(1);
+        steps += 1;
+        assert!(steps < 50, "fixture must contain a selectable project row");
+    }
+    let anchor = state.selection_anchor(&radar).expect("a row is selected");
+    let name_before = match state.visible[state.selected.unwrap()] {
+        DashRow::Project(i) => radar.projects[i].name.clone(),
+        DashRow::Header(_) => unreachable!(),
+    };
+
+    state.refresh(&load("loaded.json"), Some(anchor));
+
+    let name_after = match state.visible[state.selected.unwrap()] {
+        DashRow::Project(i) => radar.projects[i].name.clone(),
+        DashRow::Header(_) => panic!("cursor moved off the project row onto a header"),
+    };
+    assert_eq!(
+        name_after, name_before,
+        "the cursor must land on the same project, not the same index"
+    );
+}
+
+#[test]
+fn refresh_restores_the_cursor_to_the_same_header() {
+    let radar = load("loaded.json");
+    let mut state = DashboardState::new(&radar);
+    state.move_selection(0); // sits on the first header
+    let anchor = state.selection_anchor(&radar).expect("a header is selected");
+    assert!(matches!(anchor, SelectionAnchor::Header(_)));
+
+    state.refresh(&load("loaded.json"), Some(anchor.clone()));
+
+    assert_eq!(state.selection_anchor(&radar), Some(anchor));
+}
+
+#[test]
+fn refresh_follows_the_project_when_the_scan_reorders_it() {
+    // The whole reason the anchor carries a name and not an index: `swab`
+    // re-sorts on every tick, so the same index is a different project.
+    let before = radar_of(vec![
+        project("a", "alpha", StatusBucket::Active),
+        project("b", "bravo", StatusBucket::Active),
+    ]);
+    let mut state = DashboardState::new(&before);
+    state.move_selection(2); // header, alpha, bravo -> lands on bravo
+    let anchor = state.selection_anchor(&before);
+    assert_eq!(anchor, Some(SelectionAnchor::Project("bravo".into())));
+
+    // Same two projects, opposite order.
+    let after = radar_of(vec![
+        project("b", "bravo", StatusBucket::Active),
+        project("a", "alpha", StatusBucket::Active),
+    ]);
+    state.refresh(&after, anchor);
+
+    assert_eq!(
+        state.selection_anchor(&after),
+        Some(SelectionAnchor::Project("bravo".into())),
+        "the cursor must follow the project, not stay on the index it used to occupy"
+    );
+}
+
+#[test]
+fn refresh_clamps_rather_than_resetting_when_the_anchored_project_vanishes() {
+    let before = radar_of(vec![
+        project("a", "alpha", StatusBucket::Active),
+        project("b", "bravo", StatusBucket::Active),
+        project("c", "charlie", StatusBucket::Active),
+    ]);
+    let mut state = DashboardState::new(&before);
+    state.move_selection(3); // header + 3 rows -> the last one, charlie
+    let anchor = state.selection_anchor(&before);
+    assert_eq!(anchor, Some(SelectionAnchor::Project("charlie".into())));
+
+    // charlie is gone from the next scan.
+    let after = radar_of(vec![
+        project("a", "alpha", StatusBucket::Active),
+        project("b", "bravo", StatusBucket::Active),
+    ]);
+    state.refresh(&after, anchor);
+
+    let selected = state.selected.expect("something must stay selected");
+    assert!(
+        selected < state.visible.len(),
+        "selection must stay in bounds after the list shrank"
+    );
+    assert_ne!(
+        selected, 0,
+        "a vanished project must clamp the cursor near where it was, not reset it to the top"
+    );
+}
+
+#[test]
+fn refresh_on_an_empty_radar_clears_the_selection_without_panicking() {
+    let before = radar_of(vec![project("a", "alpha", StatusBucket::Active)]);
+    let mut state = DashboardState::new(&before);
+    let anchor = state.selection_anchor(&before);
+
+    state.refresh(&radar_of(vec![]), anchor);
+
+    assert!(state.visible.is_empty());
+    assert_eq!(state.selected, None, "the empty selection must be representable");
 }

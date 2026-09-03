@@ -624,6 +624,16 @@ fn poll_loop(
         if mtime_changed {
             match read_state_file(state_path) {
                 Ok(r) => {
+                    // The Dashboard's selection anchor has to be read here, against the
+                    // OUTGOING radar, because `DashRow::Project` holds an index into
+                    // `radar.projects` and `absorb_snapshot` is about to replace that list.
+                    // Resolving the index afterwards would name whichever project happens to
+                    // occupy that slot in the new scan — the exact silent cursor-drift the
+                    // anchor exists to prevent.
+                    let dash_anchor = match (&dashboard_state, &last_good) {
+                        (Some(d), Some(previous)) => d.selection_anchor(previous),
+                        _ => None,
+                    };
                     // Feed first, by construction: `absorb_snapshot` owns both snapshots, so
                     // the previous one cannot be dropped before it has been diffed.
                     last_good = absorb_snapshot(&mut feed, last_good.take(), r);
@@ -643,13 +653,28 @@ fn poll_loop(
                     }
                     // Re-derive DashboardState too, regardless of which screen
                     // is currently active, so a reload while viewing the
-                    // Browser still leaves a fresh Dashboard behind it. Collapse
-                    // state resets to spec defaults on reload rather than being
-                    // preserved — not gated by any acceptance test, and `rebuild`
-                    // is private to `dashboard.rs`, so this is the simplest
-                    // correct behavior rather than a deliberate UX call.
+                    // Browser still leaves a fresh Dashboard behind it.
+                    //
+                    // `refresh`, not `DashboardState::new`: the latter rebuilt
+                    // with the hardcoded spec defaults, so every reload reopened
+                    // sections the user had collapsed and threw the cursor back
+                    // to the top. On a machine `swab` is actively scanning that
+                    // is every few seconds, i.e. the screen rearranging itself
+                    // under the user's hands with no input from them. The
+                    // `dash_anchor` was captured above, against the outgoing
+                    // radar, for the reason given there.
                     if let Some(ref radar) = last_good {
-                        dashboard_state = Some(crate::dashboard::DashboardState::new(radar));
+                        match dashboard_state {
+                            Some(ref mut d) => d.refresh(radar, dash_anchor),
+                            None => {
+                                dashboard_state = Some(
+                                    crate::dashboard::DashboardState::with_collapsed(
+                                        radar,
+                                        prefs.collapsed,
+                                    ),
+                                )
+                            }
+                        }
                     }
                 }
                 Err(e) => eprintln!("petri S5 mid-loop state read failed: {e}"),
