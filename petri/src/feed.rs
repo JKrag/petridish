@@ -25,9 +25,12 @@
 //! Agent-agnostic by construction (`IDEAS.md` §5): rows name whatever `active_agent` says,
 //! never "Claude".
 
+use crate::theme;
 use chrono::{DateTime, Utc};
 use petridish_core::present::status_bucket_str;
 use petridish_core::schema::{Project, Radar};
+use ratatui::style::{Color, Modifier, Style};
+use ratatui::text::{Line, Span};
 use std::collections::{HashMap, VecDeque};
 
 /// How many rows the feed remembers. Older rows are dropped from the back as new ones
@@ -304,4 +307,35 @@ impl FeedState {
     pub fn is_empty(&self) -> bool {
         self.events.is_empty()
     }
+}
+
+/// The colour a row is drawn in, by what produced it. Agent rows are the ordinary case and
+/// stay in the foreground colour; the rarer structural events are tinted so they stand out
+/// of a wall of agent chatter without needing a second column.
+fn kind_color(kind: FeedKind) -> Color {
+    match kind {
+        FeedKind::Agent => theme::FG,
+        FeedKind::Commit => theme::ACCENT,
+        FeedKind::Bucket => theme::AGING,
+        FeedKind::Appeared => Color::DarkGray,
+    }
+}
+
+/// Render the feed as exactly `rows` lines, `width` columns wide.
+///
+/// Layout, top to bottom: one light rule, one ` ACTIVITY` label line, then the newest
+/// `rows - 2` events, newest first, each `FeedEvent::row_text` prefixed with a space and
+/// **truncated — never wrapped** — to `width`. A `Paragraph` without `Wrap` would silently
+/// drop the overflow anyway; truncating on char boundaries makes it deliberate and keeps
+/// multi-byte project names from panicking a byte slice.
+///
+/// Returns an empty `Vec` when `rows < 3` — there is no honest way to draw a labelled block
+/// in two lines, and `feed_rows_for` already refuses to hand out fewer than
+/// `FEED_MIN_ROWS`, so this is a defensive floor rather than a reachable layout.
+///
+/// When the feed holds no events at all the body is a single dim line saying so, rather
+/// than an unexplained empty box: on a fleet that has genuinely been quiet, "nothing has
+/// happened" is the honest reading and the label alone does not say it.
+pub fn feed_block_lines(feed: &FeedState, width: usize, rows: usize) -> Vec<Line<'static>> {
+    todo!("SPACE-1 phase B")
 }

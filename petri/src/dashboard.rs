@@ -45,6 +45,16 @@ use ratatui::{
 /// budget, not column width — width is spent widening the one line instead.
 const COMPACT_TIER_MAX_CONTENT_ROWS: usize = 16;
 
+/// Fewest rows worth spending on the SPACE-1 activity feed: one rule, one label, and at
+/// least two event rows. Below that the block is chrome with nothing in it.
+const FEED_MIN_ROWS: usize = 4;
+
+/// Ceiling on how much surplus height the feed claims. SPACE-1 is meant to *fill slack*,
+/// not to become the Dashboard's main event — on a 100-row terminal the remaining surplus
+/// should still be there for `SPACE-2`/`SPACE-3` (auto-expanding STALE/COLD, a third
+/// density tier) to spend later.
+const FEED_MAX_ROWS: usize = 12;
+
 /// Minimum roomy-card width before a second grid column is added. Below this a real branch
 /// name (`analysis/cross-registry-identity`) and its `git`/`agent` zone rows have no room to
 /// stay legible — chosen from the card's actual content budget (indent + `ZONE_LABEL_WIDTH` +
@@ -417,6 +427,35 @@ pub struct DashPlan {
     /// Sections that didn't fit even their own header+count — named in the "not shown" summary
     /// row instead of silently disappearing (SPEC.md §3.2's "truncate, do not scroll").
     pub skipped: Vec<(StatusBucket, usize)>,
+    /// Rows granted to the SPACE-1 activity feed, `0` when it is not drawn at all. See
+    /// `feed_rows_for` for the rule.
+    pub feed_rows: usize,
+}
+
+/// How many rows the SPACE-1 activity feed gets out of whatever height the sections left
+/// unspent — `0` when it must not be drawn at all.
+///
+/// **The feed always yields to project rows.** It is drawn only when the fleet is fully
+/// shown: no section was skipped for want of a header, and no section truncated its own
+/// rows. This is not belt-and-braces — `plan_layout` really can leave surplus *while*
+/// truncating: a roomy RUNNING section has `item_span == 7`, so a 20-row budget fits two
+/// cards (14 rows), reports `truncated_remaining`, and leaves 5 rows over. Spending those
+/// on a feed while projects are hidden behind a `… +N more` marker would invert SPEC.md
+/// §3.2's whole priority.
+///
+/// It is also suppressed in the compact tier: below `COMPACT_TIER_MAX_CONTENT_ROWS` the
+/// screen is already rationing space, which is the opposite of the surplus this fills.
+///
+/// Otherwise: every unspent row, clamped to `FEED_MAX_ROWS`, and `0` rather than a stub
+/// block if fewer than `FEED_MIN_ROWS` remain.
+pub fn feed_rows_for(
+    compact_tier: bool,
+    fleet_rows: usize,
+    used: usize,
+    sections: &[SectionPlan],
+    skipped: &[(StatusBucket, usize)],
+) -> usize {
+    todo!("SPACE-1 phase B")
 }
 
 /// Compute `DashPlan` from `area`, `radar`'s section membership, and which sections
@@ -534,7 +573,8 @@ pub fn plan_layout(area: Rect, radar: &Radar, collapsed: CollapsedState) -> Dash
         });
     }
 
-    DashPlan { compact_tier, fleet_rows, sections, skipped }
+    let feed_rows = feed_rows_for(compact_tier, fleet_rows, used, &sections, &skipped);
+    DashPlan { compact_tier, fleet_rows, sections, skipped, feed_rows }
 }
 
 /// Render the Dashboard into `frame`. Per petri/SPEC.md §3.2, and following petripy's actual
@@ -559,7 +599,12 @@ pub fn plan_layout(area: Rect, radar: &Radar, collapsed: CollapsedState) -> Dash
 /// Worktree nesting/rollup (indented children, `name · N worktrees` rollup counts in compact
 /// sections) is deliberately NOT attempted here — the acceptance gate (`s6_dashboard.rs`'s
 /// module doc comment) documents this as ambiguous against the only fixture that exercises it.
-pub fn render(frame: &mut ratatui::Frame, radar: &Radar, state: &DashboardState) {
+pub fn render(
+    frame: &mut ratatui::Frame,
+    radar: &Radar,
+    state: &DashboardState,
+    feed: &crate::feed::FeedState,
+) {
     let area = frame.area();
     if area.width == 0 || area.height == 0 {
         return;
@@ -618,6 +663,9 @@ pub fn render(frame: &mut ratatui::Frame, radar: &Radar, state: &DashboardState)
         .map(|s| Constraint::Length((s.chrome_rows + s.grid_rows * s.item_span + usize::from(s.truncated_remaining.is_some())) as u16))
         .collect();
     section_constraints.push(Constraint::Length(u16::from(!plan.skipped.is_empty())));
+    // The SPACE-1 feed claims the surplus `feed_rows_for` granted it, ahead of the `Fill`
+    // catch-all — which stays, because `feed_rows` is 0 whenever the feed must not draw.
+    section_constraints.push(Constraint::Length(plan.feed_rows as u16));
     section_constraints.push(Constraint::Fill(1));
     let section_rects = Layout::vertical(section_constraints).split(fleet_area);
 
@@ -642,6 +690,14 @@ pub fn render(frame: &mut ratatui::Frame, radar: &Radar, state: &DashboardState)
                 Style::default().fg(theme::AGING).add_modifier(Modifier::BOLD),
             ))]),
             summary_rect,
+        );
+    }
+
+    if plan.feed_rows > 0 {
+        let feed_rect = section_rects[plan.sections.len() + 1];
+        frame.render_widget(
+            Paragraph::new(crate::feed::feed_block_lines(feed, width, plan.feed_rows)),
+            feed_rect,
         );
     }
 }

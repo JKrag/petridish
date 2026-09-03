@@ -67,7 +67,13 @@ fn rendered_lines(radar: &Radar, state: &DashboardState, width: u16, height: u16
     let backend = TestBackend::new(width, height);
     let mut terminal = Terminal::new(backend).expect("TestBackend terminal must construct");
     terminal
-        .draw(|frame| petri::dashboard::render(frame, radar, state))
+        .draw(|frame| {
+            // SPACE-1 added a feed parameter. These S6 tests are about section layout, so
+            // they pass an empty feed: `feed_rows_for` still grants rows on a tall enough
+            // terminal, and `feed_block_lines` draws its "nothing yet" body — neither of
+            // which any assertion here looks at.
+            petri::dashboard::render(frame, radar, state, &petri::feed::FeedState::default())
+        })
         .expect("draw must not error");
     let buffer = terminal.backend().buffer();
     (0..height)

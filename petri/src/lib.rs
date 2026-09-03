@@ -176,6 +176,14 @@ fn poll_loop(
         None => None,
     };
 
+    // The SPACE-1 activity feed. Deliberately NOT a field on `DashboardState`: that struct
+    // is rebuilt wholesale by `DashboardState::new` on every reload below, so a feed living
+    // there would be wiped on every scan tick — slice 1's finding 3 in a new costume.
+    let mut feed = match last_good.as_ref() {
+        Some(radar) => crate::feed::FeedState::seeded(radar),
+        None => crate::feed::FeedState::default(),
+    };
+
     // The ACT-8 tool picker, `Some` while it is open. It takes every keystroke
     // while it is up — a modal that let keys leak through to the list behind
     // it would be worse than no modal.
@@ -189,7 +197,7 @@ fn poll_loop(
     let mut picker_action: Option<crate::tools::Action> = None;
 
     // Initial draw — unconditional so we always paint something on startup.
-    render_current(terminal, &last_good, screen, &dashboard_state, &browser_state, &picker, &notice);
+    render_current(terminal, &last_good, screen, &dashboard_state, &browser_state, &picker, &notice, &feed);
 
     loop {
         // crossterm's `poll` returns true when *any* event is queued (Key,
@@ -596,7 +604,7 @@ fn poll_loop(
                     }
                 };
                 if handled {
-                    render_current(terminal, &last_good, screen, &dashboard_state, &browser_state, &picker, &notice);
+                    render_current(terminal, &last_good, screen, &dashboard_state, &browser_state, &picker, &notice, &feed);
                 }
             }
         }
@@ -616,7 +624,9 @@ fn poll_loop(
         if mtime_changed {
             match read_state_file(state_path) {
                 Ok(r) => {
-                    last_good = Some(r);
+                    // Feed first, by construction: `absorb_snapshot` owns both snapshots, so
+                    // the previous one cannot be dropped before it has been diffed.
+                    last_good = absorb_snapshot(&mut feed, last_good.take(), r);
                     // Re-derive browser state from the new Radar, preserving the
                     // current filter query. Selection follows the previously-
                     // selected project when it survives, else resets to first row
@@ -651,11 +661,33 @@ fn poll_loop(
         // ticks we skip draw so the output stream goes still — this keeps PTY
         // harnesses happy and the user's terminal clean when petri is idle.
         if event_ready || mtime_changed {
-            render_current(terminal, &last_good, screen, &dashboard_state, &browser_state, &picker, &notice);
+            render_current(terminal, &last_good, screen, &dashboard_state, &browser_state, &picker, &notice, &feed);
         }
 
         last_mtime = new_mtime;
     }
+}
+
+/// Fold a freshly-read snapshot into the activity feed and hand back the new `last_good`.
+///
+/// **This function exists to make the ordering unrepresentable rather than merely tested.**
+/// The bug it forecloses is a one-liner: `last_good = Some(r)` destroys the previous
+/// snapshot, and `FeedState::ingest` needs it — so a reload that assigns first silently
+/// produces a feed that never grows a row, on a code path no unit test naturally covers.
+/// Taking ownership of both halves means the caller *cannot* express that order. Same move
+/// as slice 2's `run_action`, where removing a parameter beat adding a test.
+///
+/// - `last_good` is `None` (nothing parsed yet, first successful read): seed the feed from
+///   `fresh` so a freshly-started `petri` has rows immediately.
+/// - `last_good` is `Some(prev)`: ingest the `prev` -> `fresh` difference.
+///
+/// Returns `Some(fresh)`, which the caller stores as the new `last_good`.
+pub fn absorb_snapshot(
+    feed: &mut crate::feed::FeedState,
+    last_good: Option<petridish_core::schema::Radar>,
+    fresh: petridish_core::schema::Radar,
+) -> Option<petridish_core::schema::Radar> {
+    todo!("SPACE-1 phase B")
 }
 
 /// Helper: redraw `terminal` from the last good radar and whichever screen's
@@ -669,12 +701,13 @@ fn render_current(
     browser_state: &Option<crate::browser::BrowserState>,
     picker: &Option<crate::picker::PickerState>,
     notice: &Option<String>,
+    feed: &crate::feed::FeedState,
 ) {
     let Some(r) = radar else { return };
     match screen {
         Screen::Dashboard => {
             if let Some(s) = dashboard_state {
-                let _ = terminal.draw(|frame| crate::dashboard::render(frame, r, s));
+                let _ = terminal.draw(|frame| crate::dashboard::render(frame, r, s, feed));
             }
         }
         Screen::Browser => {
