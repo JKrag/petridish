@@ -90,7 +90,12 @@ fn joined(rows: &[String]) -> String {
 }
 
 /// A feed with `n` agent rows, newest last in insertion order.
+///
+/// Stamps hour `8 + i`, so `n` must stay under 16 or the hour runs past 23 and `ts` panics
+/// on an out-of-range timestamp. Caught by `block_is_exactly_the_rows_it_was_given`, which
+/// originally asked for 20.
 fn feed_of(n: usize) -> FeedState {
+    assert!(n < 16, "feed_of stamps hour 8+i; n={n} would run past 23:00");
     let projects: Vec<Project> = (0..n)
         .map(|i| {
             with_agent(
@@ -173,7 +178,7 @@ fn feed_yields_to_a_section_that_truncated_its_own_rows() {
 #[test]
 fn block_is_exactly_the_rows_it_was_given() {
     for rows in [4usize, 6, 12] {
-        let lines = feed_block_lines(&feed_of(20), 80, rows);
+        let lines = feed_block_lines(&feed_of(15), 80, rows);
         assert_eq!(lines.len(), rows, "block must fill its rect exactly at rows={rows}");
     }
 }
@@ -369,4 +374,47 @@ fn rendering_with_a_feed_does_not_panic_at_hostile_sizes() {
     for (w, h) in [(40u16, 10u16), (1, 1), (80, 24), (200, 60), (40, 44)] {
         let _ = render_rows(&radar, &feed_of(8), w, h);
     }
+}
+
+// ------------------------------------------- orchestrator follow-ups (post-delegation)
+//
+// Two holes in the delegated `feed_block_lines`, found by reading it. The second is what
+// the gate's clippy clause caught as a dead `kind_color`; the first the tests missed
+// because every fixture above happens to supply more events than the block has room for.
+
+#[test]
+fn block_pads_a_short_feed_to_its_full_height() {
+    // The empty-feed branch pads with blank lines; the populated branch must too, or a
+    // fleet with three events in a twelve-row block returns five lines and the contract
+    // ("exactly `rows` lines") quietly stops holding. Same asymmetry as phase A's commit
+    // arm: one branch handling a case its sibling drops.
+    let lines = feed_block_lines(&feed_of(2), 80, 8);
+    assert_eq!(lines.len(), 8, "a short feed must still fill its rect");
+}
+
+#[test]
+fn rows_are_tinted_by_what_produced_them() {
+    // Structural events are rarer than agent chatter and are meant to stand out of it
+    // without a second column. Untinted rows render the distinction invisible.
+    let mut feed = FeedState::default();
+    feed.ingest(
+        &radar_at(
+            "2026-09-03T08:00:00Z",
+            vec![with_agent(project("a", "alpha", StatusBucket::Active), "claude-code", "Stop", "2026-09-03T07:00:00Z")],
+        ),
+        &radar_at(
+            "2026-09-03T09:00:00Z",
+            vec![with_agent(project("a", "alpha", StatusBucket::InFlight), "claude-code", "Stop", "2026-09-03T08:30:00Z")],
+        ),
+    );
+    // One Bucket row and one Agent row, in that order (newest first).
+    let kinds: Vec<FeedKind> = feed.events().iter().map(|e| e.kind).collect();
+    assert_eq!(kinds, vec![FeedKind::Bucket, FeedKind::Agent], "fixture precondition");
+
+    let lines = feed_block_lines(&feed, 80, 4);
+    let body_styles: Vec<_> = lines[2..4].iter().map(|l| l.spans[0].style.fg).collect();
+    assert_ne!(
+        body_styles[0], body_styles[1],
+        "a bucket-change row and an agent row must not render identically"
+    );
 }

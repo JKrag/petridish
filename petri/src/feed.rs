@@ -337,5 +337,63 @@ fn kind_color(kind: FeedKind) -> Color {
 /// than an unexplained empty box: on a fleet that has genuinely been quiet, "nothing has
 /// happened" is the honest reading and the label alone does not say it.
 pub fn feed_block_lines(feed: &FeedState, width: usize, rows: usize) -> Vec<Line<'static>> {
-    todo!("SPACE-1 phase B")
+    // A labelled block needs a rule + a label to hold; below that there is no honest way to
+    // draw it, and `feed_rows_for` never asks for fewer rows, so this is a defensive floor.
+    if rows < 3 {
+        return Vec::new();
+    }
+
+    let mut lines: Vec<Line<'static>> = Vec::with_capacity(rows);
+
+    // A thin rule, then the section's label.
+    lines.push(Line::from(Span::styled(
+        "─".repeat(width),
+        Style::default().fg(theme::DIMMER),
+    )));
+    lines.push(Line::from(Span::styled(
+        " ACTIVITY",
+        Style::default().fg(theme::COLD).add_modifier(Modifier::BOLD),
+    )));
+
+    // The body is the newest `rows - 2` events, newest first. An empty feed has nothing to
+    // list, so its body is a single dim line saying so rather than an unexplained empty box.
+    if feed.is_empty() {
+        lines.push(Line::from(Span::styled(
+            "nothing to show",
+            Style::default().fg(theme::DIMMER),
+        )));
+        while lines.len() < rows {
+            lines.push(Line::default());
+        }
+    } else {
+        // The deque already holds the newest at the front, so taking from the front yields
+        // the newest `rows - 2` events in newest-first order.
+        let body: Vec<&FeedEvent> = feed
+            .events()
+            .iter()
+            .take(rows - 2)
+            .collect();
+        for e in body {
+            // Prefix with a space, then truncate to `width` on char boundaries — never wrap.
+            // A row longer than the pane keeps its content on screen instead of pushing it off
+            // the edge silently, and char-boundary truncation keeps a multi-byte name from
+            // panicking a byte slice.
+            let text = format!(" {}", e.row_text())
+                .chars()
+                .take(width)
+                .collect::<String>();
+            lines.push(Line::from(Span::styled(
+                text,
+                Style::default().fg(kind_color(e.kind)),
+            )));
+        }
+        // Pad to the full height, exactly as the empty branch does. A feed holding fewer
+        // events than the block has room for is the ordinary case on a freshly-started
+        // petri, and the contract is `rows` lines either way.
+        while lines.len() < rows {
+            lines.push(Line::default());
+        }
+    }
+
+    lines
 }
