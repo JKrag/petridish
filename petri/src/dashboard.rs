@@ -455,7 +455,22 @@ pub fn feed_rows_for(
     sections: &[SectionPlan],
     skipped: &[(StatusBucket, usize)],
 ) -> usize {
-    todo!("SPACE-1 phase B")
+    // Rationing height already: the feed is for surplus, and there is none by definition.
+    if compact_tier {
+        return 0;
+    }
+    // Anything hidden outranks the feed — a section that lost its header entirely, or one
+    // that stopped short with a `… +N more` marker. The second case is the one that needs
+    // stating: truncation and surplus genuinely co-occur.
+    if !skipped.is_empty() || sections.iter().any(|s| s.truncated_remaining.is_some()) {
+        return 0;
+    }
+    let surplus = fleet_rows.saturating_sub(used);
+    if surplus < FEED_MIN_ROWS {
+        0
+    } else {
+        surplus.min(FEED_MAX_ROWS)
+    }
 }
 
 /// Compute `DashPlan` from `area`, `radar`'s section membership, and which sections

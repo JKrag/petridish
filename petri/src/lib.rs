@@ -687,7 +687,14 @@ pub fn absorb_snapshot(
     last_good: Option<petridish_core::schema::Radar>,
     fresh: petridish_core::schema::Radar,
 ) -> Option<petridish_core::schema::Radar> {
-    todo!("SPACE-1 phase B")
+    match last_good {
+        // `prev` is consumed here and cannot outlive this arm, which is the point: there is
+        // no way to write the replace-then-diff ordering that this function exists to
+        // prevent.
+        Some(prev) => feed.ingest(&prev, &fresh),
+        None => *feed = crate::feed::FeedState::seeded(&fresh),
+    }
+    Some(fresh)
 }
 
 /// Helper: redraw `terminal` from the last good radar and whichever screen's
