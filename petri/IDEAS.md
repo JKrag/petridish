@@ -336,6 +336,12 @@ Nothing in the design ever *grows* to consume surplus height, so on a tall termi
 section emits its fixed content and the remainder is blank by construction.
 
 ### SPACE-1 — Fill the slack with a live fleet event feed
+**DONE** (slice 4) — `petri/src/feed.rs`, `dashboard::feed_rows_for`, and
+`lib::absorb_snapshot`. **One substantive correction to the idea below: the feed is NOT
+derived from `events.ndjson`** — see §10 finding 1 for why that file cannot serve this, and
+what replaced it. The entry is kept as written because the *motivation* held up exactly;
+only the mechanism was wrong.
+
 `events.ndjson` already exists (written by `swab-hook`). A scrolling activity feed —
 `14:22  project-radar · agent stop · 3 files` — fills leftover height with something
 genuinely new, makes the Dashboard feel alive rather than static, and is agent-agnostic by
@@ -427,9 +433,8 @@ than deleted, because what they *predicted* turned out to be worth keeping.
 1. ~~**`MECH-2` plus one action key.**~~ **Done — slice 1 (§7).** The prediction held
    exactly: "every other `ACT-*` entry becomes a table row once this works" is now
    literally true, and it is why `ACT-2`'s six open keys are cheap.
-2. **`SPACE-1`, the event feed.** Still the highest payoff-to-effort item on the list,
-   still independent of everything built so far, and still the best demo GIF. This is
-   the obvious next slice.
+2. ~~**`SPACE-1`, the event feed.**~~ **Done — slice 4 (§10).** The payoff prediction
+   held; the mechanism prediction did not (§10 finding 1).
 
 Two cheaper things worth doing before or alongside it:
 
@@ -567,3 +572,71 @@ above carries what replaced it). It was machine-generated, never a decision
 anyone made, and it had started to shape work — the header-vs-footer choice
 above was originally argued from the rule rather than from the design. The
 current footer is good; future ones should be good too, not compliant.
+
+## 10. Slice 4 — `SPACE-1`, the activity feed
+
+Landed 2026-09-03. Surplus height below the fleet now carries a rolling record of
+what the fleet has been doing, newest first, agent-agnostic. `SPEC.md` §3.2 has the
+behaviour; this section has the reasoning.
+
+- **`feed.rs`** — `FeedEvent`/`FeedKind`, `FeedState::{seeded,ingest}`,
+  `humanize_event`, `agent_detail`, `feed_block_lines`.
+- **`dashboard.rs`** — `feed_rows_for` plus `DashPlan.feed_rows`.
+- **`lib.rs`** — `absorb_snapshot`, and `FeedState` threaded through the poll loop.
+- **`s9_feed.rs`** (26 tests, pure) and **`s9_feed_render.rs`** (20, layout + render).
+
+Six things worth keeping:
+
+1. **`events.ndjson` cannot back this feature, and that is not a detail.** The idea
+   above assumes it is a log. It is a *hand-off buffer*: `swab::events::read_and_compact`
+   truncates it on every scan tick, by design, so at any moment it holds at most one
+   tick's events and a reader would also race the scanner's truncation. The same facts
+   live durably in `projects.json` (`agent.last_event_at`, `git.last_commit_at`,
+   `status_bucket`), so the feed diffs successive `Radar` snapshots instead. That is
+   race-free, needs no second file, and keeps `petri` a pure reader (invariant 1). The
+   cost, accepted openly: the feed advances at scan cadence, so nothing may call it
+   "live", and only the newest event per project per tick is visible.
+
+2. **Surplus height and truncation genuinely co-occur — the yield rule is load-bearing.**
+   The obvious implementation ("spend whatever `plan_layout` left over") is wrong: a
+   roomy RUNNING card spans 7 rows, so a 20-row budget fits two, reports
+   `truncated_remaining`, and strands five rows. Drawing a feed in those five while
+   projects sit behind a `… +N more` marker inverts §3.2's priority order. `feed_rows_for`
+   therefore refuses whenever anything was skipped or truncated. No test one would write
+   naturally covers this; it needed a fixture built specifically to overflow.
+
+3. **The reload-order trap was designed out, not tested around.** `lib.rs`'s reload branch
+   destroys the previous snapshot (`last_good = Some(r)`), and `ingest` needs it — so
+   assigning first yields a feed that never grows a row, on a path no unit test naturally
+   reaches. `absorb_snapshot` takes ownership of *both* snapshots, so the bad order is
+   unrepresentable. Same move as slice 2's `run_action`: a parameter removed beats a test
+   added.
+
+4. **Testing against the real `projects.json` found two things no fixture did.** Rendering
+   the feed from `~/.petridish/projects.json` (79 projects, 38 rows) showed (a) yesterday's
+   `23:14` sitting below today's `04:58` — correct order, but a bare clock cannot express
+   "yesterday", so rows from an earlier day now show `MM-DD`; and (b) that
+   `agent.last_event` is `null` for **every** project, so every row reads
+   `"{agent} activity"`. The second is upstream: `swab`'s pipeline is correct end to end,
+   but the transcript sensor supplies most signals and carries no event name, so it wins
+   the newest-wins fold and the hook's name is discarded. **Follow-up worth doing:** make
+   the fold prefer a signal that *has* an event name when timestamps are close, or carry
+   both sources' fields forward instead of letting one win wholesale. Until then the feed's
+   most informative field is dead weight in practice.
+
+5. **Two bugs in this slice were the same shape as slice 1's finding 3: one branch handling
+   a case its sibling silently drops.** `ingest`'s commit arm required `Some`/`Some` while
+   the agent arm treated `None` as older than any `Some` (so a repo's first-ever commit
+   emitted nothing); and `feed_block_lines` padded to full height in its empty branch but
+   not its populated one. Neither was caught by a green suite — both came from reading the
+   diff. Worth a standing habit: when a function has parallel arms, diff the arms against
+   each other, not just against the spec.
+
+6. **A gate that rejects correct work costs as much as one that passes broken work.** This
+   slice's verify script twice failed on things that were not this job's doing: pre-existing
+   clippy debt in `petridish-core` *and* `petri` (`browser.rs`, `dashboard.rs`, `lib.rs`,
+   `prefs.rs` are all unclean at BASE), and — worse — `cargo clippy` only emits diagnostics
+   for crates it *recompiles*, so a cached run prints nothing and the check passes by doing
+   no work. Both fixed: the clause now `touch`es its targets to force a re-lint and is scoped
+   to the files this slice authors outright, where zero diagnostics is achievable and means
+   something.

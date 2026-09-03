@@ -240,6 +240,26 @@ The ambient monitor: "does anything need me?" across a fleet of unattended runs.
   petripy made this screen strictly input-free so it could be a pure function; in
   real use that was the wrong trade (see `CONTEXT.md`). Inline expansion in place
   is a likely future addition, not v1.
+- **Activity feed (SPACE-1).** Surplus height below the fleet carries a rolling
+  record of what the fleet has been doing — a light rule, an ` ACTIVITY` label, then
+  newest-first rows shaped `14:22  project-radar · claude-code stop · 3 files`. Four
+  things pin its behaviour:
+  - **It is derived by diffing successive `Radar` snapshots, not by reading
+    `events.ndjson`.** That file is truncated by `swab`'s scanner on every tick
+    (`swab::events::read_and_compact` — events are consumed exactly once), so it holds
+    at most one tick and a reader would race the truncation. `projects.json` carries
+    the same facts durably. Consequence, stated rather than hidden: the feed advances
+    at **scan cadence**, not in real time, and nothing about it may be labelled "live".
+  - **It always yields to project rows.** Drawn only when no section was skipped and
+    none truncated. This is not belt-and-braces: `plan_layout` really can leave
+    surplus *while* truncating, because a roomy card spans 7 rows — a 20-row budget
+    fits two of them and strands five. Spending those on a feed while a `… +N more`
+    marker is on screen would inverse this section's whole priority order.
+  - **Suppressed in the compact tier**, and never larger than `FEED_MAX_ROWS` (12), so
+    a very tall terminal keeps surplus for `SPACE-2`/`SPACE-3` to spend later.
+  - **Rows carry a date, not a clock, once they are from an earlier day** (`09-02` in
+    the same five columns). A bare clock renders yesterday's `23:14` below today's
+    `04:58` and reads as a sorting bug.
 - **Staleness banner:** when the state file's `updated_at` is older than 24h
   (matching `swab doctor`'s freshness check), render normally *and* show a
   persistent banner (`▲ Data stale (updated {age} ago)`, on the danger color, §4.1)
@@ -470,6 +490,12 @@ Cut from v1 by explicit decision:
 - **Responsive detail pane** (beside vs below). Always right, hidden when too
   narrow.
 - **Inline card expansion** on the Dashboard.
+- **A richer event name in the feed.** `Project::agent.last_event` is `null` for every
+  project in a real `projects.json`, so every feed row falls back to
+  `"{agent} activity"`. `swab`'s pipeline is correct end to end — the hook records
+  `hook_event_name`, and `derive_agent` copies it — but the transcript sensor supplies
+  most signals and has no event name to give, so it wins the newest-wins fold and the
+  name is lost. Fixing it is `swab` work, not `petri` work; see `IDEAS.md` §10.
 - **A non-interactive `petri dash`** printing one frame and exiting (pipeable into a
   tmux status pane). Free while screens were pure functions; now needs an explicit
   off-screen buffer render.
