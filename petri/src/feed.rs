@@ -28,7 +28,7 @@
 use chrono::{DateTime, Utc};
 use petridish_core::present::status_bucket_str;
 use petridish_core::schema::{Project, Radar};
-use std::collections::VecDeque;
+use std::collections::{HashMap, VecDeque};
 
 /// How many rows the feed remembers. Older rows are dropped from the back as new ones
 /// arrive at the front. Sized well past any plausible on-screen row count so that
@@ -73,7 +73,7 @@ impl FeedEvent {
     /// on a different clock from the header directly above it would be worse than either
     /// choice on its own.
     pub fn row_text(&self) -> String {
-        todo!("SPACE-1 phase A")
+        format!("{}  {} · {}", self.at.format("%H:%M"), self.project, self.detail)
     }
 }
 
@@ -85,7 +85,35 @@ impl FeedEvent {
 /// `"http start"`). An input that yields nothing at all (empty, or only separators) falls
 /// back to `"activity"` so a row is never left with a dangling `·`.
 pub fn humanize_event(raw: &str) -> String {
-    todo!("SPACE-1 phase A")
+    let mut words: Vec<String> = Vec::new();
+    for segment in raw.split('_') {
+        if segment.is_empty() {
+            continue;
+        }
+        let b = segment.as_bytes();
+        let n = b.len();
+        let mut start = 0usize;
+        for i in 1..n {
+            let cur = b[i];
+            if cur.is_ascii_uppercase() {
+                // A word boundary sits before an uppercase letter when it follows a
+                // lowercase one (camelCase) or ends a run of capitals ("HTTPStart").
+                let prev_lower = b[i - 1].is_ascii_lowercase();
+                let next_lower = i + 1 < n && b[i + 1].is_ascii_lowercase();
+                if prev_lower || next_lower {
+                    words.push(segment[start..i].to_ascii_lowercase());
+                    start = i;
+                }
+            }
+        }
+        words.push(segment[start..].to_ascii_lowercase());
+    }
+    let joined = words.join(" ");
+    if joined.is_empty() {
+        "activity".to_string()
+    } else {
+        joined
+    }
 }
 
 /// The `detail` string for an agent event on `p`: `"{agent} {event}"`, plus a
@@ -96,7 +124,16 @@ pub fn humanize_event(raw: &str) -> String {
 /// The file count is singular at 1 (`"1 file"`), plural otherwise, and is omitted entirely
 /// when the project is not a repo or has no uncommitted files.
 pub fn agent_detail(p: &Project) -> String {
-    todo!("SPACE-1 phase A")
+    let agent = p.agent.active_agent.clone().unwrap_or("agent".to_string());
+    let event = humanize_event(p.agent.last_event.as_deref().unwrap_or(""));
+    let mut detail = format!("{agent} {event}");
+    // A dirty repo appends how many uncommitted files sit on it.
+    if p.git.is_repo && p.git.is_dirty {
+        let count = p.git.uncommitted_files;
+        let unit = if count == 1 { "file" } else { "files" };
+        detail.push_str(&format!(" · {count} {unit}"));
+    }
+    detail
 }
 
 /// The rolling activity feed. Newest event at the front.
@@ -117,7 +154,27 @@ impl FeedState {
     /// These rows are a snapshot fanned out, not recovered history — each says "this is the
     /// last thing this project did", which is exactly what it claims on screen.
     pub fn seeded(radar: &Radar) -> Self {
-        todo!("SPACE-1 phase A")
+        // One Agent row per project with an agent timestamp, then newest-first.
+        let mut events: Vec<FeedEvent> = Vec::new();
+        for p in &radar.projects {
+            if let Some(at) = p.agent.last_event_at {
+                events.push(FeedEvent {
+                    at,
+                    project: p.name.clone(),
+                    kind: FeedKind::Agent,
+                    detail: agent_detail(p),
+                });
+            }
+        }
+        events.sort_by(|a, b| b.at.cmp(&a.at).then_with(|| a.project.cmp(&b.project)));
+        let mut state = FeedState::default();
+        for e in events {
+            state.events.push_back(e);
+        }
+        while state.events.len() > FEED_CAPACITY {
+            state.events.pop_back();
+        }
+        state
     }
 
     /// Fold the difference between two consecutive snapshots into new rows at the front.
@@ -142,7 +199,92 @@ impl FeedState {
     /// the result never depends on `Vec` iteration luck. The queue is truncated to
     /// `FEED_CAPACITY` from the back afterwards.
     pub fn ingest(&mut self, prev: &Radar, next: &Radar) {
-        todo!("SPACE-1 phase A")
+        // Match the previous snapshot's projects by id.
+        let mut prev_by_id: HashMap<&str, &Project> = HashMap::new();
+        for p in &prev.projects {
+            prev_by_id.insert(p.id.as_str(), p);
+        }
+
+        let mut rows: Vec<FeedEvent> = Vec::new();
+
+        for p in &next.projects {
+            let project_name = p.name.clone();
+            let prev_p = match prev_by_id.get(p.id.as_str()) {
+                Some(p) => p,
+                None => {
+                    rows.push(FeedEvent {
+                        at: next.updated_at,
+                        project: project_name.clone(),
+                        kind: FeedKind::Appeared,
+                        detail: "discovered".to_string(),
+                    });
+                    continue;
+                }
+            };
+
+            // Agent: a strictly newer last_event_at. `None` counts as older than any `Some`.
+            if let Some(new_at) = p.agent.last_event_at {
+                match prev_p.agent.last_event_at {
+                    None => rows.push(FeedEvent {
+                        at: new_at,
+                        project: project_name.clone(),
+                        kind: FeedKind::Agent,
+                        detail: agent_detail(p),
+                    }),
+                    Some(old_at) => {
+                        if new_at > old_at {
+                            rows.push(FeedEvent {
+                                at: new_at,
+                                project: project_name.clone(),
+                                kind: FeedKind::Agent,
+                                detail: agent_detail(p),
+                            });
+                        }
+                    }
+                }
+            }
+
+            // Commit: a strictly newer last_commit_at.
+            if let (Some(new_commit), Some(old_commit)) = (p.git.last_commit_at, prev_p.git.last_commit_at) {
+                if new_commit > old_commit {
+                    let branch = p.git.branch.clone().unwrap_or("detached".to_string());
+                    rows.push(FeedEvent {
+                        at: new_commit,
+                        project: project_name.clone(),
+                        kind: FeedKind::Commit,
+                        detail: format!("commit on {branch}"),
+                    });
+                }
+            }
+
+            // Bucket: a section move.
+            if p.status_bucket != prev_p.status_bucket {
+                rows.push(FeedEvent {
+                    at: next.updated_at,
+                    project: project_name.clone(),
+                    kind: FeedKind::Bucket,
+                    detail: format!(
+                        "{} → {}",
+                        status_bucket_str(&prev_p.status_bucket),
+                        status_bucket_str(&p.status_bucket)
+                    ),
+                });
+            }
+        }
+
+        // Oldest first (at, then project, then kind); pushing oldest-first to the front
+        // leaves the newest at the very front, deterministically.
+        rows.sort_by(|a, b| {
+            a.at.cmp(&b.at)
+                .then_with(|| a.project.cmp(&b.project))
+                .then_with(|| a.kind.cmp(&b.kind))
+        });
+        for row in rows {
+            self.events.push_front(row);
+        }
+        while self.events.len() > FEED_CAPACITY {
+            self.events.pop_back();
+        }
     }
 
     /// Newest-first view of the retained rows.
