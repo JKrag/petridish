@@ -445,3 +445,47 @@ fn feed_is_capped_at_feed_capacity_dropping_the_oldest() {
         "truncation drops from the back (oldest), not the front"
     );
 }
+
+// ------------------------------------------- orchestrator follow-ups (post-delegation)
+//
+// Two holes the 24 tests above did not cover, found by reading the delegated diff rather
+// than by the gate. Both are asymmetries: one arm of `ingest` handles a case its sibling
+// silently drops, and one detail suffix trusts a flag instead of the number it summarises.
+
+#[test]
+fn ingest_treats_a_first_ever_commit_as_an_advance() {
+    // Mirrors `ingest_treats_a_first_ever_agent_timestamp_as_an_advance`: `None` is older
+    // than any `Some` for commits too. A repo landing its first commit while petri is open
+    // must produce a row, not silence.
+    let mut before = project("a", "alpha", StatusBucket::Active);
+    before.git = GitState { is_repo: true, branch: Some("main".to_string()), ..GitState::not_a_repo() };
+    let after = with_git(project("a", "alpha", StatusBucket::Active), "main", 0, Some("2026-09-03T09:30:00Z"));
+
+    let mut feed = FeedState::default();
+    feed.ingest(
+        &radar_at("2026-09-03T09:00:00Z", vec![before]),
+        &radar_at("2026-09-03T09:31:00Z", vec![after]),
+    );
+
+    assert_eq!(feed.len(), 1, "first-ever commit must emit a row");
+    let e = feed.events().front().unwrap();
+    assert_eq!(e.kind, FeedKind::Commit);
+    assert_eq!(e.at, ts("2026-09-03T09:30:00Z"));
+    assert_eq!(e.detail, "commit on main");
+}
+
+#[test]
+fn agent_detail_suffix_follows_the_count_not_the_dirty_flag() {
+    // `is_dirty` and `uncommitted_files` are derived independently by the scanner; if they
+    // ever disagree, the row must not read "· 0 files". The count is the thing being
+    // reported, so the count is what decides whether the suffix exists at all.
+    let mut p = with_agent(project("a", "alpha", StatusBucket::Active), "claude-code", "Stop", "2026-09-03T09:00:00Z");
+    p.git = GitState {
+        is_repo: true,
+        branch: Some("main".to_string()),
+        is_dirty: true,
+        uncommitted_files: 0,
+        ..GitState::not_a_repo()
+    };
+    assert_eq!(agent_detail(&p), "claude-code stop");
+}

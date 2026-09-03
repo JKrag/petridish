@@ -127,9 +127,12 @@ pub fn agent_detail(p: &Project) -> String {
     let agent = p.agent.active_agent.clone().unwrap_or("agent".to_string());
     let event = humanize_event(p.agent.last_event.as_deref().unwrap_or(""));
     let mut detail = format!("{agent} {event}");
-    // A dirty repo appends how many uncommitted files sit on it.
-    if p.git.is_repo && p.git.is_dirty {
-        let count = p.git.uncommitted_files;
+    // A dirty repo appends how many uncommitted files sit on it. Keyed on the COUNT, not
+    // on `is_dirty`: the scanner derives the two independently, and the suffix reports the
+    // number — so a flag/count disagreement must drop the suffix rather than render
+    // "· 0 files".
+    let count = p.git.uncommitted_files;
+    if p.git.is_repo && count > 0 {
         let unit = if count == 1 { "file" } else { "files" };
         detail.push_str(&format!(" · {count} {unit}"));
     }
@@ -244,9 +247,11 @@ impl FeedState {
                 }
             }
 
-            // Commit: a strictly newer last_commit_at.
-            if let (Some(new_commit), Some(old_commit)) = (p.git.last_commit_at, prev_p.git.last_commit_at) {
-                if new_commit > old_commit {
+            // Commit: a strictly newer last_commit_at. `None` counts as older than any
+            // `Some` here exactly as it does for the agent arm above — a repo landing its
+            // first-ever commit while petri is open is a commit, not silence.
+            if let Some(new_commit) = p.git.last_commit_at {
+                if prev_p.git.last_commit_at.is_none_or(|old_commit| new_commit > old_commit) {
                     let branch = p.git.branch.clone().unwrap_or("detached".to_string());
                     rows.push(FeedEvent {
                         at: new_commit,
