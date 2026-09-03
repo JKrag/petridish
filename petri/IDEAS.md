@@ -123,6 +123,58 @@ live log tail in a corner — not for "press `g`, look at the graph, come back,"
 
 ---
 
+### MECH-5 — "Waiting on you" as a state the schema can express
+
+**Today it cannot, and the reason is structural.** Every agent state is derived from
+*silence*: `agent_state_for_silence` maps seconds-since-last-event onto
+`Working` (<90s) / `Recent` / `Idle`, and that is the whole vocabulary. An agent blocked on
+a permission prompt and an agent mid-thought produce the *same observation* — nothing. So a
+blocked run first looks busy, then **decays**: it slides to `Recent`, then `Idle`, then out
+of RUNNING altogether, exactly as if it had finished cleanly. An attention monitor that
+quietly downgrades the one project actually waiting for you has the priority inverted, and
+no amount of tuning the thresholds fixes it, because the signal isn't in the input.
+
+**The signal exists, just not in a place anything currently reads.** Claude Code's
+`Notification` and `PermissionRequest` hooks fire precisely when it needs a human. No
+transcript record expresses this — `sensors::claude::event_name_for` can say what the agent
+last *did*, never that it is now stuck — so this is a genuine capability the transcript
+cannot supply, unlike the event names in §11 where the transcript strictly dominated.
+
+**Why this is a different trade from widening `HOOK_EVENTS` generally** (§11's rejected
+option): the objection there was `swab-hook` invocations on the declared latency path, and
+it was fatal mainly because `PostToolUse` fires on every tool call. `Notification` and
+`PermissionRequest` are *rare* — they fire when a human is already being asked to stop and
+look. This is the cheap subset of the expensive idea, and it is the half that buys a
+capability rather than a few seconds of liveness precision.
+
+Sketch, in dependency order:
+
+- **Register the two events** in `installer.py`'s `HOOK_EVENTS`. Existing `settings.json`
+  files need rewriting — cheap while the user count is one, and worth stating plainly
+  because it stops being cheap later.
+- **Clear the state on the edge that already exists.** A `PreToolUse` or `Stop` after a
+  `Notification` means the human answered, so "no longer waiting" needs no new event —
+  both are registered today. The cleared-by rule matters more than the set-by rule: a
+  waiting indicator that can latch on and never release is worse than none.
+- **Carry it as a new optional field, not a new `AgentActivity` variant.** The enum is
+  serialized into `projects.json`, which `petripy`, the menubar and any older `swab`/`petri`
+  build also parse; an unknown variant is a hard parse failure, whereas an unknown *field*
+  is skipped. §4.6 of `SPEC.md` (schema drift) is explicit that a readable file must never
+  hard-fail, and a new variant would violate it for every reader that has not been rebuilt.
+- **Render it brightly, and let it outrank silence in the sort.** The Dashboard already has
+  the vocabulary — `theme::DANGER`, and the `▲` convention from the staleness banner (§4.2:
+  deliberately not `⚠`). A waiting project should sit at the top of RUNNING regardless of
+  `RUNNING_ATTENTION_CEILING_S`, since that ceiling exists to demote *forgotten* runs and
+  this is the opposite case: the run most certainly not forgotten.
+- **`SURF-2` gets its best trigger for free.** "Notify on state transition" is vague until
+  there is a transition worth interrupting someone for; entering `waiting` is that
+  transition, and it is far more useful to notify on than crossing a silence threshold.
+
+Worth being honest about the ceiling: this is Claude Code-specific. `sensors/copilot.rs`
+has no equivalent signal (it has no event source at all — §11), so the indicator will be
+blank for copilot projects rather than false. Blank-not-false is the right failure mode,
+but it does mean this improves one agent's rows and not the other's.
+
 ## 2. Actions — making the Browser *do* something (`ACT-*`)
 
 ### ACT-1 — An external-tool registry, not hardcoded keys
@@ -397,7 +449,9 @@ events.
 ### SURF-2 — Native notifications on state transitions
 petri already knows when a run has gone silent past a threshold. A macOS notification on
 transition (`osascript`, no new dependencies) makes petri useful when it is *not* on
-screen — which is the entire point of an ambient monitor.
+screen — which is the entire point of an ambient monitor. **Best done after `MECH-5`**:
+"crossed a silence threshold" is a weak thing to interrupt someone for, since silence is
+ambiguous between thinking, blocked and finished. "This run is waiting on you" is not.
 
 ### SURF-3 — Session manager for tmux / zellij
 Given projects and their sessions, "give me a session for this project, creating it if it
@@ -458,6 +512,12 @@ than deleted, because what they *predicted* turned out to be worth keeping.
    literally true, and it is why `ACT-2`'s six open keys are cheap.
 2. ~~**`SPACE-1`, the event feed.**~~ **Done — slice 4 (§10).** The payoff prediction
    held; the mechanism prediction did not (§10 finding 1).
+
+3. **`MECH-5` — a real "waiting on you" state.** The strongest remaining item, and the
+   only one on this list that adds a signal rather than a rendering. Everything else here
+   presents facts `projects.json` already holds; this one closes a hole in what the file
+   can express at all — today a blocked run is indistinguishable from a busy one and then
+   decays like a finished one, which inverts the whole point of an attention monitor.
 
 Two cheaper things worth doing before or alongside it:
 
@@ -783,8 +843,9 @@ liveness granularity, worth seconds on a surface that redraws at scan cadence, a
 `swab-hook` invocations on the declared latency path (`PostToolUse` alone roughly doubles
 them). The one thing that would change this: `Notification`/`PermissionRequest` carry
 "the agent is waiting on you", which **no transcript record expresses**. That is a real
-capability the transcript cannot supply, and it should be designed as a feature — a
-distinct waiting state on the Dashboard — rather than acquired as a side effect of
+capability the transcript cannot supply, and it is worth the invocations precisely because
+those two events are rare where `PostToolUse` is not. Written up as **`MECH-5`** (§1) —
+as a designed feature with a bright Dashboard indicator, not as a side effect of
 lengthening a list.
 
 Implementation note for whoever extends this: `sensors/copilot.rs` still hardcodes
