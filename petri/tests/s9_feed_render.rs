@@ -11,7 +11,7 @@
 //! it.
 
 use petri::dashboard::{DashboardState, feed_rows_for, plan_layout};
-use petri::feed::{FeedEvent, FeedKind, FeedState, feed_block_lines};
+use petri::feed::{FeedKind, FeedState, feed_block_lines};
 use petridish_core::schema::{
     AgentActivity, AgentState, GitState, Project, Radar, StatusBucket,
 };
