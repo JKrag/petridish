@@ -178,20 +178,20 @@ fn feed_yields_to_a_section_that_truncated_its_own_rows() {
 #[test]
 fn block_is_exactly_the_rows_it_was_given() {
     for rows in [4usize, 6, 12] {
-        let lines = feed_block_lines(&feed_of(15), 80, rows);
+        let lines = feed_block_lines(&feed_of(15), ts("2026-09-03T20:00:00Z"), 80, rows);
         assert_eq!(lines.len(), rows, "block must fill its rect exactly at rows={rows}");
     }
 }
 
 #[test]
 fn block_is_empty_below_three_rows() {
-    assert!(feed_block_lines(&feed_of(5), 80, 2).is_empty());
-    assert!(feed_block_lines(&feed_of(5), 80, 0).is_empty());
+    assert!(feed_block_lines(&feed_of(5), ts("2026-09-03T20:00:00Z"), 80, 2).is_empty());
+    assert!(feed_block_lines(&feed_of(5), ts("2026-09-03T20:00:00Z"), 80, 0).is_empty());
 }
 
 #[test]
 fn block_is_labelled_and_lists_newest_first() {
-    let lines = feed_block_lines(&feed_of(6), 80, 6);
+    let lines = feed_block_lines(&feed_of(6), ts("2026-09-03T20:00:00Z"), 80, 6);
     let text: Vec<String> = lines
         .iter()
         .map(|l| l.spans.iter().map(|s| s.content.as_ref()).collect::<String>())
@@ -220,7 +220,7 @@ fn block_is_labelled_and_lists_newest_first() {
 fn block_says_so_when_there_is_nothing_to_show() {
     // An unexplained empty box reads as breakage; "nothing has happened" is the honest
     // reading of a quiet fleet and must be stated.
-    let lines = feed_block_lines(&FeedState::default(), 80, 5);
+    let lines = feed_block_lines(&FeedState::default(), ts("2026-09-03T20:00:00Z"), 80, 5);
     let text: String = lines
         .iter()
         .flat_map(|l| l.spans.iter().map(|s| s.content.to_string()))
@@ -250,7 +250,7 @@ fn rows_are_truncated_to_width_never_wrapped() {
             ],
         ),
     );
-    let lines = feed_block_lines(&feed, 40, 5);
+    let lines = feed_block_lines(&feed, ts("2026-09-03T20:00:00Z"), 40, 5);
     for line in &lines {
         let text: String = line.spans.iter().map(|s| s.content.as_ref()).collect();
         assert!(
@@ -263,7 +263,7 @@ fn rows_are_truncated_to_width_never_wrapped() {
 #[test]
 fn block_does_not_panic_on_a_hostile_width() {
     for width in [0usize, 1, 3, 10] {
-        let _ = feed_block_lines(&feed_of(4), width, 5);
+        let _ = feed_block_lines(&feed_of(4), ts("2026-09-03T20:00:00Z"), width, 5);
     }
 }
 
@@ -388,7 +388,7 @@ fn block_pads_a_short_feed_to_its_full_height() {
     // fleet with three events in a twelve-row block returns five lines and the contract
     // ("exactly `rows` lines") quietly stops holding. Same asymmetry as phase A's commit
     // arm: one branch handling a case its sibling drops.
-    let lines = feed_block_lines(&feed_of(2), 80, 8);
+    let lines = feed_block_lines(&feed_of(2), ts("2026-09-03T20:00:00Z"), 80, 8);
     assert_eq!(lines.len(), 8, "a short feed must still fill its rect");
 }
 
@@ -411,7 +411,7 @@ fn rows_are_tinted_by_what_produced_them() {
     let kinds: Vec<FeedKind> = feed.events().iter().map(|e| e.kind).collect();
     assert_eq!(kinds, vec![FeedKind::Bucket, FeedKind::Agent], "fixture precondition");
 
-    let lines = feed_block_lines(&feed, 80, 4);
+    let lines = feed_block_lines(&feed, ts("2026-09-03T20:00:00Z"), 80, 4);
     let body_styles: Vec<_> = lines[2..4].iter().map(|l| l.spans[0].style.fg).collect();
     assert_ne!(
         body_styles[0], body_styles[1],

@@ -711,7 +711,7 @@ pub fn render(
     if plan.feed_rows > 0 {
         let feed_rect = section_rects[plan.sections.len() + 1];
         frame.render_widget(
-            Paragraph::new(crate::feed::feed_block_lines(feed, width, plan.feed_rows)),
+            Paragraph::new(crate::feed::feed_block_lines(feed, now, width, plan.feed_rows)),
             feed_rect,
         );
     }

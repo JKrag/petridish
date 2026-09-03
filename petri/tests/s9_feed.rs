@@ -160,9 +160,29 @@ fn row_text_is_clock_project_then_detail() {
         None,
     );
     let feed = FeedState::seeded(&radar_at("2026-09-03T14:30:00Z", vec![p]));
-    let row = feed.events().front().expect("one seeded row").row_text();
+    let row = feed
+        .events()
+        .front()
+        .expect("one seeded row")
+        .row_text(ts("2026-09-03T14:30:00Z"));
     // The shape IDEAS.md's SPACE-1 entry names, on a UTC minute-precision clock.
     assert_eq!(row, "14:22  project-radar · claude-code stop · 3 files");
+}
+
+#[test]
+fn row_text_shows_a_date_for_an_event_from_an_earlier_day() {
+    // Found against real data: a fleet quiet overnight renders yesterday's 23:14 below
+    // today's 04:58, which reads as a sorting bug even though the order is right. A bare
+    // clock cannot say "yesterday". Same five columns, so rows stay aligned.
+    let p = with_agent(
+        project("a", "project-radar", StatusBucket::Active),
+        "claude-code",
+        "Stop",
+        "2026-09-02T23:14:00Z",
+    );
+    let feed = FeedState::seeded(&radar_at("2026-09-03T05:00:00Z", vec![p]));
+    let row = feed.events().front().unwrap().row_text(ts("2026-09-03T05:00:00Z"));
+    assert_eq!(row, "09-02  project-radar · claude-code stop");
 }
 
 // ---------------------------------------------------------------- seeded

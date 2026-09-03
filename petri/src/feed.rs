@@ -75,8 +75,19 @@ impl FeedEvent {
     /// already formats `chrono::Utc::now()` as `%H:%M` (`dashboard::header_lines`) — a feed
     /// on a different clock from the header directly above it would be worse than either
     /// choice on its own.
-    pub fn row_text(&self) -> String {
-        format!("{}  {} · {}", self.at.format("%H:%M"), self.project, self.detail)
+    ///
+    /// **An event from an earlier day shows `MM-DD` instead of a clock**, in the same
+    /// five-column field so the rows stay aligned. Found by running the feed against a real
+    /// `projects.json`: a fleet that has been quiet overnight renders `23:14` *below*
+    /// `04:58`, which reads as a sorting bug when the order is in fact correct. A bare clock
+    /// simply cannot express "yesterday", and the feed's whole purpose is chronology.
+    pub fn row_text(&self, now: DateTime<Utc>) -> String {
+        let stamp = if self.at.date_naive() == now.date_naive() {
+            self.at.format("%H:%M").to_string()
+        } else {
+            self.at.format("%m-%d").to_string()
+        };
+        format!("{stamp}  {} · {}", self.project, self.detail)
     }
 }
 
@@ -321,7 +332,8 @@ fn kind_color(kind: FeedKind) -> Color {
     }
 }
 
-/// Render the feed as exactly `rows` lines, `width` columns wide.
+/// Render the feed as exactly `rows` lines, `width` columns wide. `now` decides which rows
+/// are recent enough to show a clock rather than a date — see `FeedEvent::row_text`.
 ///
 /// Layout, top to bottom: one light rule, one ` ACTIVITY` label line, then the newest
 /// `rows - 2` events, newest first, each `FeedEvent::row_text` prefixed with a space and
@@ -336,7 +348,12 @@ fn kind_color(kind: FeedKind) -> Color {
 /// When the feed holds no events at all the body is a single dim line saying so, rather
 /// than an unexplained empty box: on a fleet that has genuinely been quiet, "nothing has
 /// happened" is the honest reading and the label alone does not say it.
-pub fn feed_block_lines(feed: &FeedState, width: usize, rows: usize) -> Vec<Line<'static>> {
+pub fn feed_block_lines(
+    feed: &FeedState,
+    now: DateTime<Utc>,
+    width: usize,
+    rows: usize,
+) -> Vec<Line<'static>> {
     // A labelled block needs a rule + a label to hold; below that there is no honest way to
     // draw it, and `feed_rows_for` never asks for fewer rows, so this is a defensive floor.
     if rows < 3 {
@@ -378,7 +395,7 @@ pub fn feed_block_lines(feed: &FeedState, width: usize, rows: usize) -> Vec<Line
             // A row longer than the pane keeps its content on screen instead of pushing it off
             // the edge silently, and char-boundary truncation keeps a multi-byte name from
             // panicking a byte slice.
-            let text = format!(" {}", e.row_text())
+            let text = format!(" {}", e.row_text(now))
                 .chars()
                 .take(width)
                 .collect::<String>();
