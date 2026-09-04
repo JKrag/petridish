@@ -362,7 +362,7 @@ fn kind_color(kind: FeedKind) -> Color {
         FeedKind::Agent => theme::FG,
         FeedKind::Commit => theme::ACCENT,
         FeedKind::Bucket => theme::AGING,
-        FeedKind::Appeared => Color::DarkGray,
+        FeedKind::Appeared => crate::theme::DIMMER,
     }
 }
 
@@ -433,11 +433,14 @@ pub fn feed_block_lines(
             // stamp first: it is the column that makes the block chronological, so it is the
             // last thing that should be lost to a narrow pane.
             //
-            // Truncation is on char boundaries throughout — never wrapping, and never byte
-            // slicing, which a multi-byte project name would panic on.
-            let head: String = format!(" {}  ", e.stamp(now)).chars().take(width).collect();
-            let remaining = width.saturating_sub(head.chars().count());
-            let body_text: String = e.body_text().chars().take(remaining).collect();
+            // Truncation is by DISPLAY COLUMNS throughout — never wrapping, never byte
+            // slicing (which a multi-byte project name would panic on), and not by
+            // character count either: `width` is a column budget from the layout, and a
+            // project or branch name holding a wide character makes those two disagree,
+            // which shows up as the row bleeding past its pane.
+            let head = crate::width::take_width(&format!(" {}  ", e.stamp(now)), width);
+            let remaining = width.saturating_sub(crate::width::width(&head));
+            let body_text = crate::width::take_width(&e.body_text(), remaining);
             lines.push(Line::from(vec![
                 Span::styled(head, Style::default().fg(stamp_color(e.is_today(now)))),
                 Span::styled(body_text, Style::default().fg(kind_color(e.kind))),

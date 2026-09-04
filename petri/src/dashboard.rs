@@ -137,8 +137,18 @@ pub enum DashRow {
 /// **not** stable across scans — `swab` re-sorts on every tick, and projects
 /// appear and vanish — so anchoring on the raw index would silently move the
 /// cursor to a different project rather than keep it where the user put it.
-/// The anchor carries the project's name instead, which is what the user was
-/// actually looking at. A header anchors on its bucket, which never moves.
+/// The anchor carries the project's `id` instead — the path-derived, stable key.
+///
+/// It carried the *name* first, which was wrong for a reason review caught and the
+/// author's own fleet proves: names are not unique. Two checkouts under different
+/// roots both called `smoke`, or a `git-katas` in two places, are ordinary — the
+/// live fleet this was developed against has `smoke` three times. Anchoring on a
+/// name therefore restores the cursor to *a* project with that name, not the one it
+/// was on, which is a subtler failure than losing the cursor outright: it looks like
+/// it worked. `Project::id` is derived from the path and is what the schema offers
+/// for exactly this.
+///
+/// A header anchors on its bucket, which never moves.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SelectionAnchor {
     Header(StatusBucket),
@@ -264,7 +274,7 @@ impl DashboardState {
             DashRow::Project(i) => radar
                 .projects
                 .get(*i)
-                .map(|p| SelectionAnchor::Project(p.name.clone())),
+                .map(|p| SelectionAnchor::Project(p.id.clone())),
         }
     }
 
@@ -299,8 +309,8 @@ impl DashboardState {
         let restored = anchor.and_then(|a| {
             self.visible.iter().position(|row| match (row, &a) {
                 (DashRow::Header(b), SelectionAnchor::Header(want)) => b == want,
-                (DashRow::Project(i), SelectionAnchor::Project(name)) => {
-                    radar.projects.get(*i).is_some_and(|p| &p.name == name)
+                (DashRow::Project(i), SelectionAnchor::Project(id)) => {
+                    radar.projects.get(*i).is_some_and(|p| &p.id == id)
                 }
                 _ => false,
             })
@@ -991,16 +1001,12 @@ fn render_section(
 /// compact row out of alignment with the rows above and below it. Byte-safe
 /// truncation point via `char_indices` — branch names can contain non-ASCII.
 fn fixed_width(s: &str, w: usize) -> String {
-    let char_count = s.chars().count();
-    if char_count <= w {
-        format!("{s}{}", " ".repeat(w - char_count))
-    } else if w == 0 {
-        String::new()
-    } else {
-        let keep = w - 1;
-        let truncated: String = s.chars().take(keep).collect();
-        format!("{truncated}…")
-    }
+    // Delegates to the shared column arithmetic. This function counted characters and
+    // called them columns, which is the same defect review found in the filter chip and
+    // the feed — it was simply not flagged here. A wide character in a project or branch
+    // name made every column after this cell drift, which on a grid of cards is the
+    // ragged-row symptom rather than an obviously wrong string.
+    crate::width::fit_exact(s, w)
 }
 
 /// A full-width rule line in the given color — `─` for the light rules that
@@ -1320,7 +1326,13 @@ fn roomy_card_lines(radar: &Radar, proj_idx: usize, card_width: usize) -> Vec<Li
     // exists, so widening it further would only pad with the zero-level bar, not show more data.
     let agent_facts = match p.agent.active_agent.as_deref() {
         Some(agent) => match p.agent.session_id.as_deref() {
-            Some(session) => format!("{agent} · sess {}", &session[..session.len().min(18)]),
+            // Truncated by characters, not bytes: `session_id` is copied verbatim out of
+            // a transcript and the schema does not constrain it to ASCII, so a byte slice
+            // at 18 can land inside a code point and panic. Sensors degrade, never crash.
+            Some(session) => {
+                let short: String = session.chars().take(18).collect();
+                format!("{agent} · sess {short}")
+            }
             None => agent.to_string(),
         },
         None => "idle".to_string(),

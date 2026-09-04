@@ -81,9 +81,14 @@ def resolve_binary(name: str) -> str:
     """Resolve `name` to an absolute path via PATH. Never hardcode (D1)."""
     path = shutil.which(name)
     if not path:
+        # The Rust binaries (`swab`, `swab-hook`) are the ones this resolves in
+        # practice, and they come from cargo — the old message here said
+        # `uv tool install`, which installs the Python read-side and would leave
+        # the user with exactly the same missing binary they started with.
         raise InstallError(
             f"{name!r} not found on PATH. Install it first: "
-            "uv tool install --editable . (see ARCHITECTURE.md §8.1)."
+            "cargo install --path swab --locked "
+            "(--locked is required; see README.md and ARCHITECTURE.md §8.1)."
         )
     return os.path.abspath(path)
 

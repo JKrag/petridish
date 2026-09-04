@@ -405,7 +405,7 @@ fn refresh_restores_the_cursor_to_the_same_header() {
 
 #[test]
 fn refresh_follows_the_project_when_the_scan_reorders_it() {
-    // The whole reason the anchor carries a name and not an index: `swab`
+    // The whole reason the anchor carries an identity and not an index: `swab`
     // re-sorts on every tick, so the same index is a different project.
     let before = radar_of(vec![
         project("a", "alpha", StatusBucket::Active),
@@ -414,7 +414,7 @@ fn refresh_follows_the_project_when_the_scan_reorders_it() {
     let mut state = DashboardState::new(&before);
     state.move_selection(2); // header, alpha, bravo -> lands on bravo
     let anchor = state.selection_anchor(&before);
-    assert_eq!(anchor, Some(SelectionAnchor::Project("bravo".into())));
+    assert_eq!(anchor, Some(SelectionAnchor::Project("b".into())));
 
     // Same two projects, opposite order.
     let after = radar_of(vec![
@@ -425,9 +425,47 @@ fn refresh_follows_the_project_when_the_scan_reorders_it() {
 
     assert_eq!(
         state.selection_anchor(&after),
-        Some(SelectionAnchor::Project("bravo".into())),
+        Some(SelectionAnchor::Project("b".into())),
         "the cursor must follow the project, not stay on the index it used to occupy"
     );
+}
+
+// Names are not unique — two checkouts under different roots are routinely called the
+// same thing (the fleet this was built against has `smoke` three times). The anchor
+// carried the display name first, which meant a reload restored the cursor to *a*
+// project with that name rather than the one it was on: a silent wrong-target, which is
+// worse than losing the cursor because it looks like it worked. Found in review.
+#[test]
+fn refresh_distinguishes_two_projects_that_share_a_name() {
+    let before = radar_of(vec![
+        project("work-smoke", "smoke", StatusBucket::Active),
+        project("play-smoke", "smoke", StatusBucket::Active),
+    ]);
+    let mut state = DashboardState::new(&before);
+    state.move_selection(2); // header, first smoke, second smoke -> the second
+    let anchor = state.selection_anchor(&before);
+    assert_eq!(
+        anchor,
+        Some(SelectionAnchor::Project("play-smoke".into())),
+        "the anchor must carry the stable id, not the shared display name"
+    );
+
+    // Next scan puts the other one first — under a name anchor, the cursor would
+    // "restore" onto work-smoke and nothing would look wrong.
+    let after = radar_of(vec![
+        project("play-smoke", "smoke", StatusBucket::Active),
+        project("work-smoke", "smoke", StatusBucket::Active),
+    ]);
+    state.refresh(&after, anchor);
+
+    let selected = state.selected.expect("something must stay selected");
+    match state.visible[selected] {
+        DashRow::Project(i) => assert_eq!(
+            after.projects[i].id, "play-smoke",
+            "the cursor must land on the same project, not the first one sharing its name"
+        ),
+        DashRow::Header(_) => panic!("cursor moved off the project row"),
+    }
 }
 
 #[test]
@@ -440,7 +478,7 @@ fn refresh_clamps_rather_than_resetting_when_the_anchored_project_vanishes() {
     let mut state = DashboardState::new(&before);
     state.move_selection(3); // header + 3 rows -> the last one, charlie
     let anchor = state.selection_anchor(&before);
-    assert_eq!(anchor, Some(SelectionAnchor::Project("charlie".into())));
+    assert_eq!(anchor, Some(SelectionAnchor::Project("c".into())));
 
     // charlie is gone from the next scan.
     let after = radar_of(vec![

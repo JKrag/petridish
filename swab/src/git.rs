@@ -138,19 +138,41 @@ pub fn scan(path: &Path, author_patterns: &[String], author_since: &str) -> GitS
 /// first, today last. Recomputed fresh every call (unlike `Project::agent_activity`, git
 /// already retains its own commit history so there's nothing to carry forward).
 ///
-/// Stops walking once a commit predates the window, on the same "revwalk visits commits in
-/// roughly commit-time-descending order" assumption `author_since_revwalk` above already
-/// relies on — an approximation, not a guarantee (merge commits can interleave), but
-/// consistent with the rest of this module rather than a new invented convention.
+/// Bounded by `gix`'s own `ByCommitTimeCutoff` traversal rather than by breaking out of a
+/// default walk at the first old commit. That earlier form assumed revwalk output is
+/// strictly commit-time-descending, and its own comment admitted the assumption was "an
+/// approximation, not a guarantee (merge commits can interleave)" — which is precisely a
+/// wrong answer waiting for a history to produce it. A merge whose commit date predates
+/// an in-window commit reachable behind it ended the walk early, and the sparkline then
+/// published a count that was simply too low, silently and plausibly. `ByCommitTimeCutoff`
+/// prioritises by commit time and stops only once nothing younger than the cutoff remains
+/// queued, so the bound is a property of the traversal instead of a guess about its order.
 pub(crate) fn daily_commit_counts(repo: &gix::Repository, now: DateTime<Utc>) -> Vec<u32> {
     let window = crate::schema::GIT_ACTIVITY_WINDOW_DAYS;
     let mut buckets = vec![0u32; window];
 
     let Ok(head_id) = repo.head_id() else { return buckets };
-    let Ok(walk) = repo.rev_walk([head_id]).all() else { return buckets };
 
     let today = now.date_naive();
     let window_start = today - chrono::Duration::days(window as i64 - 1);
+    // Midnight at the start of the window, as seconds since the epoch — the cutoff the
+    // traversal itself enforces. Anything the walk still yields below this (the cutoff
+    // prunes the queue, it does not filter each item) is dropped by the guard below.
+    let cutoff_seconds = window_start
+        .and_hms_opt(0, 0, 0)
+        .map(|dt| dt.and_utc().timestamp())
+        .unwrap_or(0);
+
+    let Ok(walk) = repo
+        .rev_walk([head_id])
+        .sorting(gix::revision::walk::Sorting::ByCommitTimeCutoff {
+            order: gix::traverse::commit::simple::CommitTimeOrder::NewestFirst,
+            seconds: cutoff_seconds,
+        })
+        .all()
+    else {
+        return buckets;
+    };
 
     for info in walk.filter_map(|i| i.ok()) {
         let Ok(commit) = info.object() else { continue };
@@ -158,7 +180,10 @@ pub(crate) fn daily_commit_counts(repo: &gix::Repository, now: DateTime<Utc>) ->
         let Some(commit_time) = gix_time_to_utc(time) else { continue };
         let commit_date = commit_time.date_naive();
         if commit_date < window_start {
-            break;
+            // `continue`, not `break`: the cutoff bounds how far the traversal goes, and
+            // this only discards a straggler it still handed us. Breaking here would
+            // reintroduce the ordering assumption the cutoff exists to remove.
+            continue;
         }
         // A commit dated in the future (clock skew) clamps into today's bucket rather than
         // panicking on a negative index.

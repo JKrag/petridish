@@ -10,6 +10,7 @@ pub mod exec;
 pub mod feed;
 pub mod picker;
 pub mod prefs;
+pub mod width;
 pub mod tools;
 pub mod theme;
 use crate::prefs::{LastScreen, Prefs};
@@ -798,16 +799,34 @@ fn begin_action(
         url: project.git.github_url.as_deref(),
     };
     // `ACT-4`'s resolution order for the editor: the stored answer first, then
-    // `$VISUAL`, then `$EDITOR`. Reading the environment here rather than in
-    // `tools::resolve` is what keeps that function pure and hermetically
-    // testable. Measured on a real machine: both variables are frequently
-    // unset while `code` sits on PATH, so this chain often yields nothing at
-    // all and the probe does the real work.
-    let stored = prefs.tools.get(action.id).cloned().or_else(|| {
-        (action.id == "edit")
-            .then(|| std::env::var("VISUAL").or_else(|_| std::env::var("EDITOR")).ok())
-            .flatten()
-    });
+    // `$VISUAL`, then `$EDITOR`, then the registry probe. Reading the environment here
+    // rather than in `tools::resolve` is what keeps that function pure and hermetically
+    // testable. Measured on a real machine: both variables are frequently unset while
+    // `code` sits on PATH, so this chain often yields nothing at all and the probe does
+    // the real work.
+    //
+    // Each source is filtered by *executability*, not merely by being set — the fix for a
+    // bug review caught. Taking the first source that was merely present collapsed a
+    // four-step order into one guess: with `$VISUAL` naming an editor no longer on this
+    // machine, `resolve` would find it uninstalled and skip straight to probing, so a
+    // perfectly good `$EDITOR` was never consulted. "Present" and "usable" are different
+    // questions and only the second one orders this chain.
+    let usable = |name: String| crate::exec::is_installed(&name).then_some(name);
+    let stored = prefs
+        .tools
+        .get(action.id)
+        .cloned()
+        .and_then(usable)
+        .or_else(|| {
+            (action.id == "edit")
+                .then(|| {
+                    std::env::var("VISUAL")
+                        .ok()
+                        .and_then(usable)
+                        .or_else(|| std::env::var("EDITOR").ok().and_then(usable))
+                })
+                .flatten()
+        });
 
     match crate::tools::resolve(action, &facts, stored.as_deref(), &|p| {
         crate::exec::is_installed(p)

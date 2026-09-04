@@ -273,24 +273,38 @@ requirements still describe why it's built the way it is.
 
 ### 8.1 Install model
 
-The tool ships as a **Python package with two console scripts** (`swab`,
-`swab-hook`), installed into an **isolated virtualenv** with shims placed on the
-user's `PATH`. It is deliberately *not* a `pip install` into the system or user
-site-packages: it is an application, not a library, so `uv tool` / `pipx` semantics
-are the right ones.
+**This section described a single-language install and no longer does.** `swab` and
+`swab-hook` were Python console scripts when it was written; they are Rust binaries now,
+and the Python package ships only the read-side (`petripy`, `petridish-installer`). The
+`D`-numbers and the reasoning below survive the change — what moved is *which* toolchain
+places which binary. Leaving the old text would have pointed a reader at an install that
+cannot produce the scanner at all.
 
-**Development installs use the same mechanism as end-user installs:**
+The tool ships as **two halves, installed by their own toolchains, both landing on the
+user's `PATH`**:
 
 ```sh
-uv tool install --editable ~/repos/JKrag/project-radar   # dev (repo dir name unchanged)
-uv tool install <package-name>                           # end user (post-PyPI)
-pipx install <package-name>                              # end user, equivalent
+cargo install --path swab --locked    # swab, swab-hook   -> ~/.cargo/bin
+cargo install --path petri --locked   # petri (the TUI)   -> ~/.cargo/bin
+uv tool install --editable .          # petripy, petridish-installer -> ~/.local/bin
 ```
 
-Both produce shims in `~/.local/bin`. This is not just convenience — it means the
-launchd plist, the Claude hook entry, and `swab doctor` are all exercised against
-the **real production layout** during development, rather than a dev-only
-arrangement that would need re-testing after release.
+`--locked` is load-bearing, not decoration: `cargo install` otherwise ignores
+`Cargo.lock` and re-resolves, and a yanked transitive `gix` dependency makes that
+resolution fail outright. See `README.md`, which carries the same warning where a new
+reader will actually meet it.
+
+Neither half is a `pip install` into system or user site-packages, and that part of the
+original reasoning is unchanged: this is an application, not a library, so `uv tool` /
+`pipx` semantics are the right ones for the Python side, and `cargo install`'s own
+per-binary model for the Rust side.
+
+**Development installs use the same mechanism as end-user installs** — the commands above
+are what a developer runs too. This is not just convenience: it means the launchd plist,
+the Claude hook entry, and `swab doctor` are all exercised against the **real production
+layout** during development, rather than a dev-only arrangement that would need
+re-testing after release. It also means `installer.py` resolving `swab-hook` through
+`shutil.which` is exercising the same lookup an end user gets.
 
 Rejected alternatives:
 

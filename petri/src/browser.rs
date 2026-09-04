@@ -451,8 +451,11 @@ fn filter_chip_spans(radar: &Radar, state: &BrowserState, avail: u16) -> Vec<Spa
 /// Once the input is closed there is no cursor and nothing is arriving, so the
 /// HEAD is kept (`a-fairly-lon…`), which is the half that identifies the query.
 fn truncate_query(query: &str, budget: usize, keep_tail: bool) -> String {
-    let len = query.chars().count();
-    if len <= budget {
+    // Measured in COLUMNS, not characters. `budget` comes from the header's own width, and
+    // a query with a wide character in it would otherwise overrun the chip and clip the
+    // `<matched> of <total>` count — the one part of this chip the header is explicitly
+    // laid out to protect.
+    if crate::width::width(query) <= budget {
         return query.to_string();
     }
     if budget <= 1 {
@@ -461,10 +464,10 @@ fn truncate_query(query: &str, budget: usize, keep_tail: bool) -> String {
         return "\u{2026}".chars().take(budget).collect();
     }
     if keep_tail {
-        let tail: String = query.chars().skip(len - (budget - 1)).collect();
+        let tail = crate::width::take_width_end(query, budget - 1);
         format!("\u{2026}{tail}")
     } else {
-        let head: String = query.chars().take(budget - 1).collect();
+        let head = crate::width::take_width(query, budget - 1);
         format!("{head}\u{2026}")
     }
 }

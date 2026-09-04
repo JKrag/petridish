@@ -28,13 +28,18 @@ toml = "0.8"
 # `serde_json::from_str` without hitting dev-dep visibility).
 serde_json = "1"
 
+# Column arithmetic wherever petri fits text into a width budget, plus the
+# glyph-portability gate (petri/SPEC.md §4.2). Promoted from dev-only after
+# review: the render paths were budgeting terminal COLUMNS but spending
+# CHARACTERS, which are not the same thing the moment a project, branch or
+# query contains a wide character — and `tests/fixtures/hostile.json` carries
+# a CJK name precisely because that case is meant to be handled. This is the
+# same width table ratatui and crossterm use for their own cell maths, so
+# using it here means petri measures text the way its renderer will.
+unicode-width = "0.2"
+
 # Test-only: PTY end-to-end harness (petri/SPEC.md §8 layer 3, ADR-0003). Not in
 # SPEC §10's runtime dependency list because it never ships in the binary.
 # (serde_json is already a real dependency above, also usable from tests/.)
 [dev-dependencies]
 portable-pty = "0.9"
-# Glyph-portability gate (petri/SPEC.md §4.2, petri/tests/glyph_portability.rs):
-# same width-table crate ratatui/crossterm actually use at runtime, pinned
-# directly here so the gate tests against the real dependency rather than a
-# hand-copied assumption about it.
-unicode-width = "0.2"
