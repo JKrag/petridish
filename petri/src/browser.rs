@@ -176,8 +176,8 @@ fn grouped_visible_indices(radar: &Radar, query: &str) -> Vec<usize> {
 
 /// Width threshold (inclusive): the detail pane is shown whenever the full
 /// terminal width is at least this many columns. 65 leaves ~40 cols for the
-/// detail pane after the list takes ~25, which is enough to read path + branch
-/// + one field per row without squeezing — matching petri/SPEC.md §3.1's
+/// detail pane after the list takes ~25, which is enough to read path, branch
+/// and one field per row without squeezing — matching petri/SPEC.md §3.1's
 /// "If the window is too narrow to give it a usable width, hide it entirely."
 /// The acceptance test asserts this at 40 cols (must be absent), so any value
 /// > 40 is acceptable; 65 gives a generous margin.
@@ -790,17 +790,50 @@ fn format_commit(dt: chrono::DateTime<chrono::Utc>) -> String {
 /// Abbreviate `$HOME/...` to `~/...` for display. Returns the input unchanged
 /// when `$HOME` is unset or the path doesn't start with it.
 fn abbreviate_home(path: &str) -> String {
-    if let Ok(home) = std::env::var("HOME") {
-        if let Ok(p) = std::path::Path::new(path).strip_prefix(&home) {
-            let remainder = p.to_string_lossy().to_string();
-            if remainder.is_empty() {
-                return home;
-            }
-            let start = if remainder.starts_with('/') { "" } else { "/" };
-            return format!("~{}{}", start, remainder);
+    if let Ok(home) = std::env::var("HOME")
+        && let Ok(p) = std::path::Path::new(path).strip_prefix(&home)
+    {
+        let remainder = p.to_string_lossy().to_string();
+        if remainder.is_empty() {
+            return home;
         }
+        let start = if remainder.starts_with('/') { "" } else { "/" };
+        return format!("~{}{}", start, remainder);
     }
     path.to_string()
+}
+
+/// A one-line transient message over the Browser — "nothing installed that can
+/// open in editor", "thing has no remote" (`ACT-9`).
+///
+/// Deliberately a thin bar rather than a dialog: it is informational, needs no
+/// answer, and is dismissed by the next keystroke. A modal would demand an
+/// acknowledgement the user has no decision to make about.
+pub fn render_notice(frame: &mut Frame, text: &str) {
+    use ratatui::widgets::Clear;
+
+    let area = frame.area();
+    if area.height < 3 {
+        return;
+    }
+    let width = (text.chars().count() as u16 + 4).min(area.width);
+    let bar = Rect {
+        x: area.width.saturating_sub(width) / 2,
+        y: area.height.saturating_sub(2),
+        width,
+        height: 1,
+    };
+    frame.render_widget(Clear, bar);
+    frame.render_widget(
+        Paragraph::new(Line::from(Span::styled(
+            format!("  {text}  "),
+            Style::default()
+                .fg(Color::Black)
+                .bg(crate::theme::AGING)
+                .add_modifier(Modifier::BOLD),
+        ))),
+        bar,
+    );
 }
 
 #[cfg(test)]
@@ -1035,37 +1068,4 @@ mod tests {
             );
         }
     }
-}
-
-/// A one-line transient message over the Browser — "nothing installed that can
-/// open in editor", "thing has no remote" (`ACT-9`).
-///
-/// Deliberately a thin bar rather than a dialog: it is informational, needs no
-/// answer, and is dismissed by the next keystroke. A modal would demand an
-/// acknowledgement the user has no decision to make about.
-pub fn render_notice(frame: &mut Frame, text: &str) {
-    use ratatui::widgets::Clear;
-
-    let area = frame.area();
-    if area.height < 3 {
-        return;
-    }
-    let width = (text.chars().count() as u16 + 4).min(area.width);
-    let bar = Rect {
-        x: area.width.saturating_sub(width) / 2,
-        y: area.height.saturating_sub(2),
-        width,
-        height: 1,
-    };
-    frame.render_widget(Clear, bar);
-    frame.render_widget(
-        Paragraph::new(Line::from(Span::styled(
-            format!("  {text}  "),
-            Style::default()
-                .fg(Color::Black)
-                .bg(crate::theme::AGING)
-                .add_modifier(Modifier::BOLD),
-        ))),
-        bar,
-    );
 }

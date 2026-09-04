@@ -34,16 +34,18 @@ fn str_vec(args: &Value, key: &str) -> Vec<String> {
 }
 
 fn config_from_args(args: &Value) -> Config {
-    let mut cfg = Config::default();
-    cfg.roots = str_vec(args, "roots")
-        .into_iter()
-        .map(PathBuf::from)
-        .collect();
-    cfg.extra_paths = str_vec(args, "extra_paths")
-        .into_iter()
-        .map(PathBuf::from)
-        .collect();
-    cfg.author_patterns = str_vec(args, "author_patterns");
+    let mut cfg = Config {
+        roots: str_vec(args, "roots")
+            .into_iter()
+            .map(PathBuf::from)
+            .collect(),
+        extra_paths: str_vec(args, "extra_paths")
+            .into_iter()
+            .map(PathBuf::from)
+            .collect(),
+        author_patterns: str_vec(args, "author_patterns"),
+        ..Config::default()
+    };
     if let Some(since) = args.get("author_since").and_then(Value::as_str) {
         cfg.author_since = since.to_string();
     }

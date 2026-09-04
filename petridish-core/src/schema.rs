@@ -286,12 +286,10 @@ pub fn write_atomic(path: &Path, radar: &Radar) -> std::io::Result<()> {
     // Same behavior as `petridish.schema.write_atomic`: parent dir first,
     // sibling `.tmp` for the rename to stay on the same filesystem (so
     // `os.replace` / `fs::rename` stays atomic), and cleanup on any failure.
-    std::fs::create_dir_all(path.parent().ok_or_else(|| {
-        std::io::Error::new(
-            std::io::ErrorKind::Other,
-            "radar path has no parent directory",
-        )
-    })?)?;
+    std::fs::create_dir_all(
+        path.parent()
+            .ok_or_else(|| std::io::Error::other("radar path has no parent directory"))?,
+    )?;
 
     let tmp_name = path.file_name().and_then(|n| n.to_str()).ok_or_else(|| {
         std::io::Error::new(
@@ -301,15 +299,13 @@ pub fn write_atomic(path: &Path, radar: &Radar) -> std::io::Result<()> {
     })?;
     let tmp = path.with_file_name(format!("{}.tmp", tmp_name));
 
-    let body = serde_json::to_string(radar)
-        .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e.to_string()))?;
+    let body = serde_json::to_string(radar).map_err(|e| std::io::Error::other(e.to_string()))?;
 
     std::fs::write(&tmp, &body)?;
-    std::fs::rename(&tmp, path).map_err(|rename_err| {
+    std::fs::rename(&tmp, path).inspect_err(|_rename_err| {
         // Best-effort cleanup: ignore any error from this remove so the
         // original rename failure is what the caller sees.
         let _ = std::fs::remove_file(&tmp);
-        rename_err
     })
 }
 

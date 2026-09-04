@@ -4,6 +4,21 @@
 //! sharing code between integration-test binaries without it being treated as
 //! its own test binary).
 //!
+//! `dead_code` is allowed for the whole module, and that is not blanket
+//! silencing: `mod pty_support;` compiles a *separate copy* of this file into
+//! every PTY test binary, and each of those uses a different subset of the
+//! harness. `wait_with_timeout` has nine callers and `screen_retry` seven, yet
+//! each is "never used" from the point of view of the binaries that happen not
+//! to call it. Without this, a green `-D warnings` build would demand deleting
+//! helpers that are demonstrably in use.
+//!
+//! The one genuinely uncalled item today is `spawn_and_settle_nonempty` (the
+//! ambient-`$HOME` variant). It is kept as the documented counterpart to
+//! `spawn_and_settle_nonempty_with_home`, which `s6_pty.rs`'s module docs
+//! explicitly contrast against when explaining why they use the scratch-`HOME`
+//! form.
+#![allow(dead_code)]
+
 //! Extracted from S4's `s4_pty.rs` once S5 needed the identical harness — see
 //! that module's git history for the two real bugs found and fixed here:
 //! 1. A dedicated background thread drains the pty for the ENTIRE session

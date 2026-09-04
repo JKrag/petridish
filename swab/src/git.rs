@@ -112,18 +112,18 @@ pub fn scan(path: &Path, author_patterns: &[String], author_since: &str) -> GitS
     result.is_dirty = !entries.is_empty();
     result.uncommitted_files = entries.len() as u32;
 
-    if let Ok(head_commit) = repo.head_commit() {
-        if let Ok(time) = head_commit.time() {
-            result.last_commit_at = gix_time_to_utc(time);
-        }
+    if let Ok(head_commit) = repo.head_commit()
+        && let Ok(time) = head_commit.time()
+    {
+        result.last_commit_at = gix_time_to_utc(time);
     }
 
     let mut mine_last: Option<DateTime<Utc>> = None;
     for pattern in author_patterns {
-        if let Some(dt) = author_since_revwalk(&repo, pattern, author_since) {
-            if mine_last.is_none_or(|best| dt > best) {
-                mine_last = Some(dt);
-            }
+        if let Some(dt) = author_since_revwalk(&repo, pattern, author_since)
+            && mine_last.is_none_or(|best| dt > best)
+        {
+            mine_last = Some(dt);
         }
     }
     result.mine_last_commit_at = mine_last;
@@ -328,7 +328,7 @@ pub(crate) fn author_since_revwalk(
 /// Parses git's `--since=<N> years|months|days|weeks` relative-date grammar into an
 /// absolute cutoff. Only the subset `swab`'s config actually emits is supported.
 fn parse_since(since: &str) -> Option<DateTime<Utc>> {
-    let parts: Vec<&str> = since.trim().split_whitespace().collect();
+    let parts: Vec<&str> = since.split_whitespace().collect();
     let [n, unit] = parts.as_slice() else {
         return None;
     };

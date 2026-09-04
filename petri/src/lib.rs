@@ -218,164 +218,277 @@ fn poll_loop(
         // pick up the new terminal size.
         let event_ready =
             crossterm::event::poll(std::time::Duration::from_secs(1)).unwrap_or(false);
-        if event_ready {
-            if let Ok(crossterm::event::Event::Key(key)) = crossterm::event::read() {
-                // Any keystroke dismisses a transient notice, so it can never
-                // linger as stale chrome over a screen it no longer describes.
-                notice = None;
+        if event_ready && let Ok(crossterm::event::Event::Key(key)) = crossterm::event::read() {
+            // Any keystroke dismisses a transient notice, so it can never
+            // linger as stale chrome over a screen it no longer describes.
+            notice = None;
 
-                let handled = if let Some(ref mut p) = picker {
-                    // The picker is modal: it consumes EVERY key while open,
-                    // including `q`. Letting `q` quit out from under an open
-                    // dialog would be a surprising way to lose the answer the
-                    // user was in the middle of giving — and `Esc` is right
-                    // there, advertised in the popup's own footer.
-                    match p.on_key(key.code) {
-                        crate::picker::Outcome::Pending => {}
-                        crate::picker::Outcome::Cancelled => {
-                            picker = None;
-                            picker_action = None;
-                        }
-                        crate::picker::Outcome::Chosen { program, persist } => {
-                            let action = picker_action.take();
-                            picker = None;
-                            if let Some(action) = action {
-                                // `persist` is ACT-11's verb. A one-off launch
-                                // (`Enter` in re-pick mode) deliberately leaves
-                                // the stored default alone — writing it here
-                                // would cost the user the very default they
-                                // pressed the shifted key to bypass.
-                                if persist {
-                                    // Store first, then act. If the launch
-                                    // fails the user has still been asked once
-                                    // and only once (ACT-8).
-                                    prefs.tools.insert(action.id.to_string(), program.clone());
-                                    if let Err(e) =
-                                        prefs::save(&prefs::default_prefs_path(), &prefs)
-                                    {
-                                        eprintln!("petri: persisting the tool choice failed: {e}");
-                                    }
+            let handled = if let Some(ref mut p) = picker {
+                // The picker is modal: it consumes EVERY key while open,
+                // including `q`. Letting `q` quit out from under an open
+                // dialog would be a surprising way to lose the answer the
+                // user was in the middle of giving — and `Esc` is right
+                // there, advertised in the popup's own footer.
+                match p.on_key(key.code) {
+                    crate::picker::Outcome::Pending => {}
+                    crate::picker::Outcome::Cancelled => {
+                        picker = None;
+                        picker_action = None;
+                    }
+                    crate::picker::Outcome::Chosen { program, persist } => {
+                        let action = picker_action.take();
+                        picker = None;
+                        if let Some(action) = action {
+                            // `persist` is ACT-11's verb. A one-off launch
+                            // (`Enter` in re-pick mode) deliberately leaves
+                            // the stored default alone — writing it here
+                            // would cost the user the very default they
+                            // pressed the shifted key to bypass.
+                            if persist {
+                                // Store first, then act. If the launch
+                                // fails the user has still been asked once
+                                // and only once (ACT-8).
+                                prefs.tools.insert(action.id.to_string(), program.clone());
+                                if let Err(e) = prefs::save(&prefs::default_prefs_path(), &prefs) {
+                                    eprintln!("petri: persisting the tool choice failed: {e}");
                                 }
-                                notice = run_action(
-                                    terminal,
-                                    &action,
-                                    &program,
-                                    &last_good,
-                                    &browser_state,
-                                );
                             }
+                            notice =
+                                run_action(terminal, &action, &program, &last_good, &browser_state);
                         }
                     }
+                }
+                true
+            } else if key.code == crossterm::event::KeyCode::Char('q') {
+                // `q` always quits, even in filter input mode.
+                return Ok(0);
+            } else if screen == Screen::Dashboard {
+                // `Tab` switches Dashboard → Browser (petri/SPEC.md §5).
+                if key.code == crossterm::event::KeyCode::Tab {
+                    // Build browser state lazily on the first Tab switch,
+                    // only if we have a valid radar (State read failures
+                    // happen on first run when no state file exists yet).
+                    let bstate = last_good.as_ref().map(crate::browser::BrowserState::new);
+                    screen = Screen::Browser;
+                    browser_state = bstate;
+                    prefs.last_screen = LastScreen::Browser;
+                    prefs.collapsed = dashboard_state
+                        .as_ref()
+                        .map(|d| d.collapsed)
+                        .unwrap_or([false, false, true, true]);
+                    if let Err(e) = prefs::save(&prefs::default_prefs_path(), &prefs) {
+                        eprintln!("petri S7: persist Tab switch failed: {e}");
+                    }
                     true
-                } else if key.code == crossterm::event::KeyCode::Char('q') {
-                    // `q` always quits, even in filter input mode.
-                    return Ok(0);
-                } else if screen == Screen::Dashboard {
-                    // `Tab` switches Dashboard → Browser (petri/SPEC.md §5).
-                    if key.code == crossterm::event::KeyCode::Tab {
-                        // Build browser state lazily on the first Tab switch,
-                        // only if we have a valid radar (State read failures
-                        // happen on first run when no state file exists yet).
-                        let bstate = last_good.as_ref().map(crate::browser::BrowserState::new);
-                        screen = Screen::Browser;
-                        browser_state = bstate;
-                        prefs.last_screen = LastScreen::Browser;
-                        prefs.collapsed = dashboard_state
-                            .as_ref()
-                            .map(|d| d.collapsed)
-                            .unwrap_or([false, false, true, true]);
-                        if let Err(e) = prefs::save(&prefs::default_prefs_path(), &prefs) {
-                            eprintln!("petri S7: persist Tab switch failed: {e}");
+                } else {
+                    match key.code {
+                        crossterm::event::KeyCode::Up | crossterm::event::KeyCode::Char('k') => {
+                            if let Some(ref mut dstate) = dashboard_state {
+                                dstate.move_selection(-1);
+                            }
+                            true
+                        }
+                        crossterm::event::KeyCode::Down | crossterm::event::KeyCode::Char('j') => {
+                            if let Some(ref mut dstate) = dashboard_state {
+                                dstate.move_selection(1);
+                            }
+                            true
+                        }
+                        crossterm::event::KeyCode::Char(' ') => {
+                            if let (Some(dstate), Some(radar)) = (&mut dashboard_state, &last_good)
+                            {
+                                dstate.toggle_selected(radar);
+                            }
+                            true
+                        }
+                        // `Enter`: on a header, toggle (same as Space); on a
+                        // row, jump to the Browser with that project selected
+                        // (petri/SPEC.md §5).
+                        crossterm::event::KeyCode::Enter => {
+                            if let (Some(dstate), Some(radar)) = (&mut dashboard_state, &last_good)
+                            {
+                                let current_row =
+                                    dstate.selected.and_then(|i| dstate.visible.get(i)).copied();
+                                match current_row {
+                                    Some(crate::dashboard::DashRow::Header(_)) => {
+                                        dstate.toggle_selected(radar);
+                                    }
+                                    Some(crate::dashboard::DashRow::Project(proj_idx)) => {
+                                        // Persist Dashboard → Browser transition (same as Tab).
+                                        prefs.last_screen = LastScreen::Browser;
+                                        prefs.collapsed = dstate.collapsed;
+                                        if let Err(e) =
+                                            prefs::save(&prefs::default_prefs_path(), &prefs)
+                                        {
+                                            eprintln!(
+                                                "petri S7: persist Enter→Browser failed: {e}"
+                                            );
+                                        }
+                                        let mut bstate = crate::browser::BrowserState::new(radar);
+                                        if let Some(pos) =
+                                            bstate.visible.iter().position(|&i| i == proj_idx)
+                                        {
+                                            bstate.selected = Some(pos);
+                                        }
+                                        browser_state = Some(bstate);
+                                        screen = Screen::Browser;
+                                    }
+                                    None => {}
+                                }
+                            }
+                            true
+                        }
+                        crossterm::event::KeyCode::Esc => true,
+                        _ => false,
+                    }
+                }
+            } else if key.code == crossterm::event::KeyCode::Char('/') {
+                // Enter filter input mode. The query starts empty and
+                // subsequent character keys append to it. The flag lives on
+                // `BrowserState` because `browser::render` needs it too — the
+                // ACT-10 header chip draws differently while you are typing.
+                if let Some(ref mut state) = browser_state {
+                    state.filter_input = true;
+                    state.filter_query = String::new();
+                    if let Some(ref radar) = last_good {
+                        state.apply_filter(radar, "");
+                    }
+                }
+                true
+            } else if browser_state.as_ref().is_some_and(|s| s.filter_input) {
+                match key.code {
+                    // Navigation arrows and j/k still move selection while
+                    // in filter mode (the user may want to test moves without
+                    // exiting the filter). Place before the generic Char(c)
+                    // arm so they take priority.
+                    crossterm::event::KeyCode::Up | crossterm::event::KeyCode::Char('k') => {
+                        if let Some(ref mut state) = browser_state {
+                            state.move_selection(-1);
                         }
                         true
-                    } else {
-                        match key.code {
-                            crossterm::event::KeyCode::Up
-                            | crossterm::event::KeyCode::Char('k') => {
-                                if let Some(ref mut dstate) = dashboard_state {
-                                    dstate.move_selection(-1);
-                                }
-                                true
+                    }
+                    crossterm::event::KeyCode::Down | crossterm::event::KeyCode::Char('j') => {
+                        if let Some(ref mut state) = browser_state {
+                            state.move_selection(1);
+                        }
+                        true
+                    }
+                    // Page/fast-jump/edge navigation, same as normal mode
+                    // (see that match arm's comments) — none of these are
+                    // printable characters that a filter query could want,
+                    // so binding them here doesn't cost the user anything
+                    // they could otherwise type.
+                    crossterm::event::KeyCode::PageUp => {
+                        if let Some(ref mut state) = browser_state {
+                            let step = crossterm::terminal::size()
+                                .map(|(_, h)| crate::browser::page_size(h) as i32)
+                                .unwrap_or(BROWSER_FAST_JUMP);
+                            state.move_selection(-step);
+                        }
+                        true
+                    }
+                    crossterm::event::KeyCode::PageDown => {
+                        if let Some(ref mut state) = browser_state {
+                            let step = crossterm::terminal::size()
+                                .map(|(_, h)| crate::browser::page_size(h) as i32)
+                                .unwrap_or(BROWSER_FAST_JUMP);
+                            state.move_selection(step);
+                        }
+                        true
+                    }
+                    crossterm::event::KeyCode::Home => {
+                        if let Some(ref mut state) = browser_state {
+                            state.move_selection(i32::MIN);
+                        }
+                        true
+                    }
+                    crossterm::event::KeyCode::End => {
+                        if let Some(ref mut state) = browser_state {
+                            state.move_selection(i32::MAX);
+                        }
+                        true
+                    }
+                    // `Esc` closes the filter input mode *and* clears the
+                    // query (petri/SPEC.md §5).
+                    crossterm::event::KeyCode::Esc => {
+                        if let Some(ref mut state) = browser_state {
+                            state.filter_input = false;
+                            state.filter_query = String::new();
+                            if let Some(ref radar) = last_good {
+                                state.apply_filter(radar, "");
                             }
-                            crossterm::event::KeyCode::Down
-                            | crossterm::event::KeyCode::Char('j') => {
-                                if let Some(ref mut dstate) = dashboard_state {
-                                    dstate.move_selection(1);
-                                }
-                                true
+                        }
+                        true
+                    }
+                    // `Backspace` drops the last character of the query and
+                    // re-filters. Not a "printable characters only" input:
+                    // without this the only way out of a typo is `Esc` and
+                    // retyping the whole query, which the ACT-10 chip made
+                    // impossible to ignore once the query was on screen.
+                    //
+                    // `pop()` is char-wise, not byte-wise, so a multi-byte
+                    // character deletes as one keypress rather than leaving
+                    // a broken UTF-8 tail.
+                    crossterm::event::KeyCode::Backspace => {
+                        if let Some(ref mut state) = browser_state {
+                            let mut q = std::mem::take(&mut state.filter_query);
+                            q.pop();
+                            if let Some(ref radar) = last_good {
+                                state.apply_filter(radar, &q);
+                            } else {
+                                state.filter_query = q;
                             }
-                            crossterm::event::KeyCode::Char(' ') => {
-                                if let (Some(dstate), Some(radar)) =
-                                    (&mut dashboard_state, &last_good)
-                                {
-                                    dstate.toggle_selected(radar);
-                                }
-                                true
-                            }
-                            // `Enter`: on a header, toggle (same as Space); on a
-                            // row, jump to the Browser with that project selected
-                            // (petri/SPEC.md §5).
-                            crossterm::event::KeyCode::Enter => {
-                                if let (Some(dstate), Some(radar)) =
-                                    (&mut dashboard_state, &last_good)
-                                {
-                                    let current_row = dstate
-                                        .selected
-                                        .and_then(|i| dstate.visible.get(i))
-                                        .copied();
-                                    match current_row {
-                                        Some(crate::dashboard::DashRow::Header(_)) => {
-                                            dstate.toggle_selected(radar);
-                                        }
-                                        Some(crate::dashboard::DashRow::Project(proj_idx)) => {
-                                            // Persist Dashboard → Browser transition (same as Tab).
-                                            prefs.last_screen = LastScreen::Browser;
-                                            prefs.collapsed = dstate.collapsed;
-                                            if let Err(e) =
-                                                prefs::save(&prefs::default_prefs_path(), &prefs)
-                                            {
-                                                eprintln!(
-                                                    "petri S7: persist Enter→Browser failed: {e}"
-                                                );
-                                            }
-                                            let mut bstate =
-                                                crate::browser::BrowserState::new(radar);
-                                            if let Some(pos) =
-                                                bstate.visible.iter().position(|&i| i == proj_idx)
-                                            {
-                                                bstate.selected = Some(pos);
-                                            }
-                                            browser_state = Some(bstate);
-                                            screen = Screen::Browser;
-                                        }
-                                        None => {}
-                                    }
-                                }
-                                true
-                            }
-                            crossterm::event::KeyCode::Esc => true,
-                            _ => false,
+                            true
+                        } else {
+                            false
                         }
                     }
-                } else if key.code == crossterm::event::KeyCode::Char('/') {
-                    // Enter filter input mode. The query starts empty and
-                    // subsequent character keys append to it. The flag lives on
-                    // `BrowserState` because `browser::render` needs it too — the
-                    // ACT-10 header chip draws differently while you are typing.
-                    if let Some(ref mut state) = browser_state {
-                        state.filter_input = true;
-                        state.filter_query = String::new();
-                        if let Some(ref radar) = last_good {
-                            state.apply_filter(radar, "");
+                    // `Enter` closes the filter input mode but keeps the
+                    // query, so the filtered selection persists.
+                    crossterm::event::KeyCode::Enter => {
+                        if let Some(ref mut state) = browser_state {
+                            state.filter_input = false;
+                        }
+                        true
+                    }
+                    // Character keys: append to the query (filter input
+                    // only — we don't treat these as navigation when we're
+                    // mid-filter). Non-printable / control keys fall
+                    // through and are ignored in filter mode.
+                    crossterm::event::KeyCode::Char(c) => {
+                        if let Some(ref mut state) = browser_state {
+                            let q = std::mem::take(&mut state.filter_query);
+                            let new_q = format!("{q}{c}");
+                            if let Some(ref radar) = last_good {
+                                state.apply_filter(radar, &new_q);
+                            }
+                            true
+                        } else {
+                            false
                         }
                     }
+                    _ => false,
+                }
+            } else {
+                // `Tab` from the Browser switches back to the Dashboard
+                // (petri/SPEC.md §5). Persistence is handled in the
+                // Dashboard branch above, but here on the Browser side
+                // it must also trigger a save (the Dashboard branch
+                // doesn't fire when screen is Browser).
+                if key.code == crossterm::event::KeyCode::Tab {
+                    prefs.last_screen = LastScreen::Dashboard;
+                    prefs.collapsed = dashboard_state
+                        .as_ref()
+                        .map(|d| d.collapsed)
+                        .unwrap_or([false, false, true, true]);
+                    if let Err(e) = prefs::save(&prefs::default_prefs_path(), &prefs) {
+                        eprintln!("petri S7: persist Tab switch (Browser→Dashboard) failed: {e}");
+                    }
+                    screen = Screen::Dashboard;
                     true
-                } else if browser_state.as_ref().is_some_and(|s| s.filter_input) {
+                } else {
                     match key.code {
-                        // Navigation arrows and j/k still move selection while
-                        // in filter mode (the user may want to test moves without
-                        // exiting the filter). Place before the generic Char(c)
-                        // arm so they take priority.
+                        // Navigation in normal (non-filter) mode.
                         crossterm::event::KeyCode::Up | crossterm::event::KeyCode::Char('k') => {
                             if let Some(ref mut state) = browser_state {
                                 state.move_selection(-1);
@@ -388,11 +501,26 @@ fn poll_loop(
                             }
                             true
                         }
-                        // Page/fast-jump/edge navigation, same as normal mode
-                        // (see that match arm's comments) — none of these are
-                        // printable characters that a filter query could want,
-                        // so binding them here doesn't cost the user anything
-                        // they could otherwise type.
+                        // Fast jump: ~10 rows, a fixed hop independent of
+                        // viewport size (PageUp/PageDown below is the
+                        // screen-relative jump).
+                        crossterm::event::KeyCode::Char('K') => {
+                            if let Some(ref mut state) = browser_state {
+                                state.move_selection(-BROWSER_FAST_JUMP);
+                            }
+                            true
+                        }
+                        crossterm::event::KeyCode::Char('J') => {
+                            if let Some(ref mut state) = browser_state {
+                                state.move_selection(BROWSER_FAST_JUMP);
+                            }
+                            true
+                        }
+                        // Page jump: exactly one screenful, matching the
+                        // list's own real visible-row count (`browser::page_size`
+                        // mirrors `browser::render`'s layout math). Falls back to
+                        // the fixed fast-jump distance if the terminal size can't
+                        // be read.
                         crossterm::event::KeyCode::PageUp => {
                             if let Some(ref mut state) = browser_state {
                                 let step = crossterm::terminal::size()
@@ -411,6 +539,7 @@ fn poll_loop(
                             }
                             true
                         }
+                        // Jump straight to the first/last row.
                         crossterm::event::KeyCode::Home => {
                             if let Some(ref mut state) = browser_state {
                                 state.move_selection(i32::MIN);
@@ -423,225 +552,76 @@ fn poll_loop(
                             }
                             true
                         }
-                        // `Esc` closes the filter input mode *and* clears the
-                        // query (petri/SPEC.md §5).
-                        crossterm::event::KeyCode::Esc => {
-                            if let Some(ref mut state) = browser_state {
-                                state.filter_input = false;
-                                state.filter_query = String::new();
-                                if let Some(ref radar) = last_good {
-                                    state.apply_filter(radar, "");
-                                }
-                            }
-                            true
-                        }
-                        // `Backspace` drops the last character of the query and
-                        // re-filters. Not a "printable characters only" input:
-                        // without this the only way out of a typo is `Esc` and
-                        // retyping the whole query, which the ACT-10 chip made
-                        // impossible to ignore once the query was on screen.
+                        // `Esc` in normal mode: no-op (only meaningful to
+                        // close the filter; if filter isn't open, do nothing).
+                        crossterm::event::KeyCode::Esc => true,
+                        // Action keys (IDEAS.md `ACT-2`). Last arm, so every
+                        // navigation binding above keeps priority over the
+                        // registry — a future action must never be able to
+                        // silently steal `j`/`k`/`J`/`K`.
                         //
-                        // `pop()` is char-wise, not byte-wise, so a multi-byte
-                        // character deletes as one keypress rather than leaving
-                        // a broken UTF-8 tail.
-                        crossterm::event::KeyCode::Backspace => {
-                            if let Some(ref mut state) = browser_state {
-                                let mut q = std::mem::take(&mut state.filter_query);
-                                q.pop();
-                                if let Some(ref radar) = last_good {
-                                    state.apply_filter(radar, &q);
-                                } else {
-                                    state.filter_query = q;
-                                }
-                                true
-                            } else {
-                                false
-                            }
-                        }
-                        // `Enter` closes the filter input mode but keeps the
-                        // query, so the filtered selection persists.
-                        crossterm::event::KeyCode::Enter => {
-                            if let Some(ref mut state) = browser_state {
-                                state.filter_input = false;
-                            }
-                            true
-                        }
-                        // Character keys: append to the query (filter input
-                        // only — we don't treat these as navigation when we're
-                        // mid-filter). Non-printable / control keys fall
-                        // through and are ignored in filter mode.
+                        // Note where this sits: inside the NORMAL-mode match,
+                        // never the `in_filter_input` one above. If it were in
+                        // both, typing `g` into the `/` filter would launch a
+                        // git browser instead of filtering. The two branches
+                        // being structurally separate is what makes that safe;
+                        // `s8_pty_actions.rs` gates it regardless.
                         crossterm::event::KeyCode::Char(c) => {
-                            if let Some(ref mut state) = browser_state {
-                                let q = std::mem::take(&mut state.filter_query);
-                                let new_q = format!("{q}{c}");
-                                if let Some(ref radar) = last_good {
-                                    state.apply_filter(radar, &new_q);
+                            let registry = crate::tools::registry();
+                            // The lowercase key runs the action; the SHIFTED
+                            // variant of the same key re-picks it (ACT-11).
+                            // Derived from `action.key` rather than
+                            // hard-coded, so a future registry entry gets
+                            // its shifted key for free. Note this sits
+                            // after the J/K ×10 navigation arms, which keep
+                            // priority — an action must never be able to
+                            // steal a movement key.
+                            let lower = registry.iter().find(|a| a.key == c).cloned();
+                            let shifted = registry
+                                .iter()
+                                .find(|a| a.key.to_ascii_uppercase() == c && a.key != c)
+                                .cloned();
+                            match (lower, shifted) {
+                                (Some(action), _) => {
+                                    notice = begin_action(
+                                        terminal,
+                                        &action,
+                                        &last_good,
+                                        &browser_state,
+                                        &prefs,
+                                        &mut picker,
+                                        &mut picker_action,
+                                    );
+                                    true
                                 }
-                                true
-                            } else {
-                                false
+                                (None, Some(action)) => {
+                                    notice = begin_repick(
+                                        &action,
+                                        &last_good,
+                                        &browser_state,
+                                        &mut picker,
+                                        &mut picker_action,
+                                    );
+                                    true
+                                }
+                                (None, None) => false,
                             }
                         }
                         _ => false,
                     }
-                } else {
-                    // `Tab` from the Browser switches back to the Dashboard
-                    // (petri/SPEC.md §5). Persistence is handled in the
-                    // Dashboard branch above, but here on the Browser side
-                    // it must also trigger a save (the Dashboard branch
-                    // doesn't fire when screen is Browser).
-                    if key.code == crossterm::event::KeyCode::Tab {
-                        prefs.last_screen = LastScreen::Dashboard;
-                        prefs.collapsed = dashboard_state
-                            .as_ref()
-                            .map(|d| d.collapsed)
-                            .unwrap_or([false, false, true, true]);
-                        if let Err(e) = prefs::save(&prefs::default_prefs_path(), &prefs) {
-                            eprintln!(
-                                "petri S7: persist Tab switch (Browser→Dashboard) failed: {e}"
-                            );
-                        }
-                        screen = Screen::Dashboard;
-                        true
-                    } else {
-                        match key.code {
-                            // Navigation in normal (non-filter) mode.
-                            crossterm::event::KeyCode::Up
-                            | crossterm::event::KeyCode::Char('k') => {
-                                if let Some(ref mut state) = browser_state {
-                                    state.move_selection(-1);
-                                }
-                                true
-                            }
-                            crossterm::event::KeyCode::Down
-                            | crossterm::event::KeyCode::Char('j') => {
-                                if let Some(ref mut state) = browser_state {
-                                    state.move_selection(1);
-                                }
-                                true
-                            }
-                            // Fast jump: ~10 rows, a fixed hop independent of
-                            // viewport size (PageUp/PageDown below is the
-                            // screen-relative jump).
-                            crossterm::event::KeyCode::Char('K') => {
-                                if let Some(ref mut state) = browser_state {
-                                    state.move_selection(-BROWSER_FAST_JUMP);
-                                }
-                                true
-                            }
-                            crossterm::event::KeyCode::Char('J') => {
-                                if let Some(ref mut state) = browser_state {
-                                    state.move_selection(BROWSER_FAST_JUMP);
-                                }
-                                true
-                            }
-                            // Page jump: exactly one screenful, matching the
-                            // list's own real visible-row count (`browser::page_size`
-                            // mirrors `browser::render`'s layout math). Falls back to
-                            // the fixed fast-jump distance if the terminal size can't
-                            // be read.
-                            crossterm::event::KeyCode::PageUp => {
-                                if let Some(ref mut state) = browser_state {
-                                    let step = crossterm::terminal::size()
-                                        .map(|(_, h)| crate::browser::page_size(h) as i32)
-                                        .unwrap_or(BROWSER_FAST_JUMP);
-                                    state.move_selection(-step);
-                                }
-                                true
-                            }
-                            crossterm::event::KeyCode::PageDown => {
-                                if let Some(ref mut state) = browser_state {
-                                    let step = crossterm::terminal::size()
-                                        .map(|(_, h)| crate::browser::page_size(h) as i32)
-                                        .unwrap_or(BROWSER_FAST_JUMP);
-                                    state.move_selection(step);
-                                }
-                                true
-                            }
-                            // Jump straight to the first/last row.
-                            crossterm::event::KeyCode::Home => {
-                                if let Some(ref mut state) = browser_state {
-                                    state.move_selection(i32::MIN);
-                                }
-                                true
-                            }
-                            crossterm::event::KeyCode::End => {
-                                if let Some(ref mut state) = browser_state {
-                                    state.move_selection(i32::MAX);
-                                }
-                                true
-                            }
-                            // `Esc` in normal mode: no-op (only meaningful to
-                            // close the filter; if filter isn't open, do nothing).
-                            crossterm::event::KeyCode::Esc => true,
-                            // Action keys (IDEAS.md `ACT-2`). Last arm, so every
-                            // navigation binding above keeps priority over the
-                            // registry — a future action must never be able to
-                            // silently steal `j`/`k`/`J`/`K`.
-                            //
-                            // Note where this sits: inside the NORMAL-mode match,
-                            // never the `in_filter_input` one above. If it were in
-                            // both, typing `g` into the `/` filter would launch a
-                            // git browser instead of filtering. The two branches
-                            // being structurally separate is what makes that safe;
-                            // `s8_pty_actions.rs` gates it regardless.
-                            crossterm::event::KeyCode::Char(c) => {
-                                let registry = crate::tools::registry();
-                                // The lowercase key runs the action; the SHIFTED
-                                // variant of the same key re-picks it (ACT-11).
-                                // Derived from `action.key` rather than
-                                // hard-coded, so a future registry entry gets
-                                // its shifted key for free. Note this sits
-                                // after the J/K ×10 navigation arms, which keep
-                                // priority — an action must never be able to
-                                // steal a movement key.
-                                let lower = registry.iter().find(|a| a.key == c).cloned();
-                                let shifted = registry
-                                    .iter()
-                                    .find(|a| a.key.to_ascii_uppercase() == c && a.key != c)
-                                    .cloned();
-                                match (lower, shifted) {
-                                    (Some(action), _) => {
-                                        notice = begin_action(
-                                            terminal,
-                                            &action,
-                                            &last_good,
-                                            &browser_state,
-                                            &prefs,
-                                            &mut picker,
-                                            &mut picker_action,
-                                        );
-                                        true
-                                    }
-                                    (None, Some(action)) => {
-                                        notice = begin_repick(
-                                            &action,
-                                            &last_good,
-                                            &browser_state,
-                                            &mut picker,
-                                            &mut picker_action,
-                                        );
-                                        true
-                                    }
-                                    (None, None) => false,
-                                }
-                            }
-                            _ => false,
-                        }
-                    }
-                };
-                if handled {
-                    render_current(
-                        terminal,
-                        &last_good,
-                        screen,
-                        &dashboard_state,
-                        &browser_state,
-                        &picker,
-                        &notice,
-                        &feed,
-                    );
                 }
+            };
+            if handled {
+                render_current(
+                    terminal,
+                    &last_good,
+                    screen,
+                    &dashboard_state,
+                    &browser_state,
+                    &picker,
+                    &notice,
+                    &feed,
+                );
             }
         }
 
@@ -681,10 +661,10 @@ fn poll_loop(
                     // borrows on `browser_state` at once.
                     let query_snapshot: Option<String> =
                         browser_state.as_ref().map(|s| s.filter_query.clone());
-                    if let (Some(radar), Some(q)) = (&last_good, query_snapshot) {
-                        if let Some(ref mut state) = browser_state {
-                            state.apply_filter(radar, &q);
-                        }
+                    if let (Some(radar), Some(q)) = (&last_good, query_snapshot)
+                        && let Some(ref mut state) = browser_state
+                    {
+                        state.apply_filter(radar, &q);
                     }
                     // Re-derive DashboardState too, regardless of which screen
                     // is currently active, so a reload while viewing the
@@ -768,6 +748,9 @@ pub fn absorb_snapshot(
 /// Helper: redraw `terminal` from the last good radar and whichever screen's
 /// live state is currently active, with any read errors logged but not
 /// propagated (mid-run failures degrade in place).
+// See `render_section` in dashboard.rs: distinct render-state arguments, no
+// natural grouping, so a params struct would be lint-driven noise.
+#[allow(clippy::too_many_arguments)]
 fn render_current(
     terminal: &mut ratatui::Terminal<ratatui::backend::CrosstermBackend<std::io::Stdout>>,
     radar: &Option<petridish_core::schema::Radar>,

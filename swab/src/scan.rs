@@ -248,6 +248,9 @@ fn sha1_id(resolved_path: &str) -> String {
 /// the precomputed foreignness flag. Reimplemented from `petridish.scan._build_project` —
 /// mirrors field-for-field (id, name, path, category, is_foreign, git, agent, last_activity_at,
 /// status_bucket).
+// Every argument is an independently-computed input to one project's row;
+// grouping them would just move the argument list somewhere less visible.
+#[allow(clippy::too_many_arguments)]
 fn build_project(
     resolved: &Path,
     config: &Config,
@@ -616,13 +619,15 @@ mod tests {
     /// absolute are used verbatim — default-expansion is NOT invoked, so tests retain full
     /// control over what discovery sees).
     fn test_config(roots: Vec<PathBuf>) -> Config {
-        let mut c = Config::default();
         // Default roots ("~/repos", "~/learning") would resolve via default-expansion, but we
-        // don't want that in fixture-driven tests. Hand-construct with the given paths instead.
-        c.roots = roots;
-        c.ignore_dirs = HashSet::new(); // no default skips — tests need full control
-        c.extra_paths = vec![];
-        c
+        // don't want that in fixture-driven tests. Hand-construct with the given paths instead,
+        // and with no default skips — tests need full control over what discovery sees.
+        Config {
+            roots,
+            ignore_dirs: HashSet::new(),
+            extra_paths: vec![],
+            ..Config::default()
+        }
     }
 
     /// RAII guard for temp dirs: cleaned up on drop, unique name per fixture.
@@ -873,8 +878,7 @@ mod tests {
 
         // workspace_storage_dir -> point at a file (not a dir), which the copilot sensor's
         // `read_dir` will return an Err for. Sensors degrade to empty on such failures.
-        std::fs::write(&fixture.path.join("workspaceStorage_fake"), "garbage")
-            .expect("create file");
+        std::fs::write(fixture.path.join("workspaceStorage_fake"), "garbage").expect("create file");
 
         // Build ScanPaths by hand for this test (not via `for_home`) so we can point the
         // copilot sensor at a bogus path.
@@ -1066,7 +1070,7 @@ mod tests {
         // Events file: 30s ago (Newer).
         std::fs::create_dir_all(fixture.path.join(".petridish")).expect("mkdir .petridish");
         std::fs::write(
-            &fixture.path.join(".petridish/events.ndjson"),
+            fixture.path.join(".petridish/events.ndjson"),
             format!(
                 "{{\"cwd\":\"{}\",\"at\":\"2026-08-14T12:00:30Z\"}}\n",
                 repo_str
@@ -1504,7 +1508,7 @@ mod tests {
         // Tick 2: feed one real event for this root, and carry radar1 forward as `previous`.
         std::fs::create_dir_all(fixture.path.join(".petridish")).expect("mkdir .petridish");
         std::fs::write(
-            &fixture.path.join(".petridish/events.ndjson"),
+            fixture.path.join(".petridish/events.ndjson"),
             format!(
                 "{{\"cwd\":\"{}\",\"at\":\"2026-01-01T00:00:00Z\"}}\n",
                 repo.to_str().unwrap()

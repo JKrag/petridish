@@ -23,15 +23,11 @@ use std::path::{Path, PathBuf};
 /// pinned by this stub).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "lowercase")]
+#[derive(Default)]
 pub enum LastScreen {
+    #[default]
     Dashboard,
     Browser,
-}
-
-impl Default for LastScreen {
-    fn default() -> Self {
-        LastScreen::Dashboard
-    }
 }
 
 /// The persisted preferences shape. `#[serde(default)]` on every field so a
@@ -127,12 +123,10 @@ pub fn load(path: &Path) -> Prefs {
 /// in `petri`'s own file as a separate schema, not re-exporting core.
 pub fn save(path: &Path, prefs: &Prefs) -> std::io::Result<()> {
     let tmp = path.with_extension("tmp");
-    std::fs::create_dir_all(path.parent().ok_or_else(|| {
-        std::io::Error::new(
-            std::io::ErrorKind::Other,
-            format!("path has no parent: {path:?}"),
-        )
-    })?)?;
+    std::fs::create_dir_all(
+        path.parent()
+            .ok_or_else(|| std::io::Error::other(format!("path has no parent: {path:?}")))?,
+    )?;
     let text = toml::to_string(prefs).map_err(|e| {
         std::io::Error::new(
             std::io::ErrorKind::InvalidData,

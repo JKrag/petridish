@@ -56,10 +56,10 @@ const DAEMON_LOG_MAX_BYTES: u64 = 5 * 1024 * 1024;
 /// never fails loudly: a missing log is fine (not every install runs under launchd),
 /// and the actual truncation is one `truncate` syscall — cheap.
 fn rotate_daemon_log(log_path: &std::path::Path) {
-    if let Ok(meta) = std::fs::metadata(log_path) {
-        if meta.len() > DAEMON_LOG_MAX_BYTES {
-            let _ = std::fs::File::create(log_path);
-        }
+    if let Ok(meta) = std::fs::metadata(log_path)
+        && meta.len() > DAEMON_LOG_MAX_BYTES
+    {
+        let _ = std::fs::File::create(log_path);
     }
 }
 
@@ -655,12 +655,12 @@ mod tests {
     use super::*;
     use crate::schema::{Project as SchemaProject, Radar, StatusBucket};
     use chrono::Utc;
-    use std::path::PathBuf;
+    use std::path::Path;
 
     // ── Helpers ────────────────────────────────────────────────────────
 
     /// Write a fixture `Radar` to a temp path and return its location.
-    fn write_fixture_radar(path: &PathBuf, radar: Radar) {
+    fn write_fixture_radar(path: &Path, radar: Radar) {
         crate::schema::write_atomic(path, &radar).expect("write fixture state");
     }
 
@@ -675,10 +675,6 @@ mod tests {
             Capture {
                 bytes: std::sync::Mutex::new(Vec::new()),
             }
-        }
-
-        fn as_bytes(&self) -> Vec<u8> {
-            self.bytes.lock().unwrap().clone()
         }
 
         fn as_str(&self) -> String {

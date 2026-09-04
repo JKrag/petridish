@@ -79,9 +79,11 @@ fn prefs_file_written_before_tools_existed_still_parses() {
 #[test]
 fn roundtrip_preserves_tool_choices() {
     let path = scratch_path("roundtrip_preserves_tool_choices");
-    let mut written = Prefs::default();
-    written.last_screen = LastScreen::Browser;
-    written.tools = choices(&[("gitlog", "serie"), ("edit", "code")]);
+    let written = Prefs {
+        last_screen: LastScreen::Browser,
+        tools: choices(&[("gitlog", "serie"), ("edit", "code")]),
+        ..Prefs::default()
+    };
 
     prefs::save(&path, &written).expect("save must succeed");
     let read_back = prefs::load(&path);
@@ -116,8 +118,10 @@ fn tool_choices_serialize_as_a_real_toml_table() {
     // experiment. `tools` is still declared last in `Prefs`, but for readability
     // only.
     let path = scratch_path("tool_choices_serialize_as_a_real_toml_table");
-    let mut written = Prefs::default();
-    written.tools = choices(&[("gitlog", "lazygit")]);
+    let written = Prefs {
+        tools: choices(&[("gitlog", "lazygit")]),
+        ..Prefs::default()
+    };
     prefs::save(&path, &written).expect("save must succeed — a ValueAfterTable error here means the map field is not declared last in Prefs");
 
     let text = std::fs::read_to_string(&path).expect("written prefs must be readable");

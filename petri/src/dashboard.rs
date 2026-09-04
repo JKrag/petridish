@@ -937,6 +937,9 @@ pub fn render(
 }
 
 /// Render one section's chrome + grid into `rect`, per `SectionPlan`'s resolved geometry.
+// Each argument is a distinct piece of render state with no natural grouping;
+// a params struct here would exist only to satisfy the lint.
+#[allow(clippy::too_many_arguments)]
 fn render_section(
     frame: &mut ratatui::Frame,
     rect: Rect,
@@ -1766,15 +1769,15 @@ fn humanize_secs(secs: u64) -> String {
 /// Abbreviate `$HOME/...` to `~/...` for display. Returns the input unchanged
 /// when `$HOME` is unset or the path doesn't start with it.
 fn abbreviate_home(path: &str) -> String {
-    if let Ok(home) = std::env::var("HOME") {
-        if let Ok(p) = std::path::Path::new(path).strip_prefix(&home) {
-            let remainder = p.to_string_lossy().to_string();
-            if remainder.is_empty() {
-                return home;
-            }
-            let sep = if remainder.starts_with('/') { "" } else { "/" };
-            return format!("~{sep}{remainder}");
+    if let Ok(home) = std::env::var("HOME")
+        && let Ok(p) = std::path::Path::new(path).strip_prefix(&home)
+    {
+        let remainder = p.to_string_lossy().to_string();
+        if remainder.is_empty() {
+            return home;
         }
+        let sep = if remainder.starts_with('/') { "" } else { "/" };
+        return format!("~{sep}{remainder}");
     }
     path.to_string()
 }

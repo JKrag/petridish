@@ -32,10 +32,7 @@ pub fn read_quota(path: &Path) -> Option<QuotaState> {
 /// optional and degrades independently. Returns `None` only when the top-level payload
 /// is not a JSON object; partial truth beats absence.
 fn parse_value(payload: &serde_json::Value, now: DateTime<Utc>) -> Option<QuotaState> {
-    let obj = match payload.as_object() {
-        Some(o) => o,
-        None => return None,
-    };
+    let obj = payload.as_object()?;
 
     let state = QuotaState {
         measured_at: parse_ts(obj.get("ts"), now),
@@ -89,10 +86,7 @@ fn pct(value: Option<&serde_json::Value>) -> Option<u8> {
     if v.is_boolean() {
         return None;
     }
-    let n = match v.as_i64() {
-        Some(n) => n,
-        None => return None,
-    };
+    let n = v.as_i64()?;
     if !(0..=100).contains(&n) {
         return None;
     }
@@ -118,10 +112,7 @@ fn epoch_to_dt(value: Option<&serde_json::Value>, now: DateTime<Utc>) -> Option<
     };
     let secs = n as i64;
     let subsec = ((n - secs as f64) * 1_000_000_000_f64).round() as u32;
-    let dt = match DateTime::from_timestamp(secs, subsec) {
-        Some(dt) => dt,
-        None => return None,
-    };
+    let dt = DateTime::from_timestamp(secs, subsec)?;
     if (dt - now).num_seconds().unsigned_abs() > MAX_RESET_HORIZON_S as u64 {
         return None;
     }

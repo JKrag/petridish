@@ -47,11 +47,7 @@ fn parse_at(s: &str) -> Option<DateTime<Utc>> {
     // forms: trailing `Z` (strip + synthesize UTC offset) or RFC3339 with explicit
     // fixed offset (e.g. `+00:00`). In both cases we end up with a fixed-offset
     // datetime at UTC.
-    let body = if s.ends_with('Z') {
-        &s[..s.len() - 1]
-    } else {
-        s
-    };
+    let body = s.strip_suffix('Z').unwrap_or(s);
     let with_offset = if body.contains('+') || body.ends_with("+00:00") {
         body.to_string()
     } else if body.contains('T') && !body.ends_with('+') {
@@ -101,17 +97,12 @@ fn write_single_line(path: &Path, event: &RawHookEvent, at: DateTime<Utc>) -> st
         // `cwd` empty — silently drop, no error. Mirrors hook.py's "no-op on missing cwd".
         return Ok(());
     };
-    let body = serde_json::to_string(&value)
-        .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e.to_string()))?;
+    let body = serde_json::to_string(&value).map_err(|e| std::io::Error::other(e.to_string()))?;
     let mut line_buf = body.into_bytes();
     line_buf.push(b'\n');
 
     // Mirrors `os.open(events_path, os.O_WRONLY | os.O_CREAT | os.O_APPEND)`.
-    let mut file = OpenOptions::new()
-        .write(true)
-        .create(true)
-        .append(true)
-        .open(path)?;
+    let mut file = OpenOptions::new().create(true).append(true).open(path)?;
     // One `write_all` for the entire line — split into multiple writes would defeat the
     // O_APPEND atomicity guarantee (the kernel interleaves at the syscall boundary).
     file.write_all(&line_buf)?;
@@ -293,9 +284,8 @@ mod tests {
         let id = CTR.fetch_add(1, Ordering::Relaxed);
         let dir =
             std::env::temp_dir().join(format!("swab_test_events_{id}_{}", std::process::id()));
-        std::fs::create_dir_all(&dir).unwrap_or_else(|_| {
-            // Another thread may have created it first; that's fine.
-        });
+        // Another thread may have created it first; that's fine.
+        let _ = std::fs::create_dir_all(&dir);
         let path = dir.join(name);
         let mut f = std::fs::File::create(&path).unwrap();
         f.write_all(contents.as_bytes()).unwrap();

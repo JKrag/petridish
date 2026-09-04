@@ -109,10 +109,9 @@ fn as_string_list(table: &toml::value::Table, key: &str) -> Option<Vec<String>> 
     }
     let mut out = Vec::with_capacity(array.len());
     for v in array {
-        if let Some(s) = v.as_str() {
+        {
+            let s = v.as_str()?;
             out.push(s.to_string());
-        } else {
-            return None;
         }
     }
     Some(out)
@@ -291,7 +290,7 @@ pub fn load_config(path: &std::path::Path) -> Result<Config, ConfigError> {
     }
     if let Some(depth) = table.get("max_depth").and_then(|v| v.as_integer()) {
         // Booleans are rejected: `as_integer()` returns None for bools.
-        if depth >= 0 && depth <= std::u32::MAX as i64 {
+        if depth >= 0 && depth <= u32::MAX as i64 {
             cfg.max_depth = depth as u32;
         }
     }

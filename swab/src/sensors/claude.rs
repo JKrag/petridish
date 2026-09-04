@@ -71,10 +71,10 @@ fn parse_transcript(file_path: &Path, size: u64) -> TranscriptFacts {
                 continue;
             };
             // `session_id` from the FIRST line that carries one (Python: freeze after first).
-            if facts.session_id.is_none() {
-                if let Some(Value::String(s)) = obj.get("sessionId") {
-                    facts.session_id = Some(s.clone());
-                }
+            if facts.session_id.is_none()
+                && let Some(Value::String(s)) = obj.get("sessionId")
+            {
+                facts.session_id = Some(s.clone());
             }
             // `cwd` always takes the LAST line that carries one (F9).
             if let Some(Value::String(s)) = obj.get("cwd") {
@@ -87,11 +87,11 @@ fn parse_transcript(file_path: &Path, size: u64) -> TranscriptFacts {
             // reports "assistant message", which is the shape of nearly every turn. An
             // unrecognized record leaves `event` untouched either way, so a stretch of
             // internal bookkeeping records can't erase the last real event name.
-            if let Some(ev) = event_name_for(obj) {
-                if !ev.weak || facts.event.is_none() || facts.event_is_weak {
-                    facts.event = Some(ev.name);
-                    facts.event_is_weak = ev.weak;
-                }
+            if let Some(ev) = event_name_for(obj)
+                && (!ev.weak || facts.event.is_none() || facts.event_is_weak)
+            {
+                facts.event = Some(ev.name);
+                facts.event_is_weak = ev.weak;
             }
         }
     }
@@ -348,10 +348,10 @@ pub fn scan(
 
             // Two transcripts resolving to the same root: the one with the NEWER file mtime
             // wins (Python's `if existing is not None and existing.at >= file_mtime: continue`).
-            if let Some(existing) = signals.get(&root_key) {
-                if existing.at >= file_mtime {
-                    continue;
-                }
+            if let Some(existing) = signals.get(&root_key)
+                && existing.at >= file_mtime
+            {
+                continue;
             }
 
             signals.insert(
@@ -380,11 +380,12 @@ mod tests {
     use std::time::{Duration, SystemTime};
 
     fn test_config(roots: Vec<std::path::PathBuf>) -> Config {
-        let mut cfg = Config::default();
-        cfg.roots = roots;
-        cfg.extra_paths = vec![];
-        cfg.ignore_dirs = HashSet::new();
-        cfg
+        Config {
+            roots,
+            extra_paths: vec![],
+            ignore_dirs: HashSet::new(),
+            ..Config::default()
+        }
     }
 
     /// Fresh temp dir, cleaned on drop.

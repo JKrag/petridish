@@ -202,11 +202,12 @@ mod tests {
     use std::time::{Duration, SystemTime};
 
     fn test_config(roots: Vec<std::path::PathBuf>) -> Config {
-        let mut cfg = Config::default();
-        cfg.roots = roots;
-        cfg.extra_paths = vec![];
-        cfg.ignore_dirs = HashSet::new();
-        cfg
+        Config {
+            roots,
+            extra_paths: vec![],
+            ignore_dirs: HashSet::new(),
+            ..Config::default()
+        }
     }
 
     struct Tmp {
@@ -520,7 +521,7 @@ mod tests {
         let h = ws.join("empty");
         std::fs::create_dir_all(h.join("chatSessions")).expect("mkdir");
         write_json_file(
-            &h.join("workspace.json"),
+            h.join("workspace.json"),
             r#"{"folder": "file:///fake/repo"}"#,
         );
 
@@ -548,7 +549,7 @@ mod tests {
         let h = ws.join("stale");
         std::fs::create_dir_all(h.join("chatSessions")).expect("mkdir");
         write_json_file(
-            &h.join("workspace.json"),
+            h.join("workspace.json"),
             r#"{"folder": "file:///fake/repo"}"#,
         );
         // 2000 hours ago -- well past the default 1440h (60-day) cutoff.

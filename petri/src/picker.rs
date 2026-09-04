@@ -228,10 +228,10 @@ impl PickerState {
             KeyCode::Backspace => {
                 // Drop the last character, but never underflow or exit the mode
                 // on an already-empty input.
-                if let Some(text) = self.custom.as_mut() {
-                    if !text.is_empty() {
-                        text.pop();
-                    }
+                if let Some(text) = self.custom.as_mut()
+                    && !text.is_empty()
+                {
+                    text.pop();
                 }
                 Outcome::Pending
             }

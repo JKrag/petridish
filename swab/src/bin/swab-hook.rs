@@ -87,7 +87,7 @@ pub fn handle_hook_input(stdin: &str) -> i32 {
 
 pub fn main() {
     let mut stdin_buf = String::new();
-    if let Err(_) = io::stdin().read_to_string(&mut stdin_buf) {
+    if io::stdin().read_to_string(&mut stdin_buf).is_err() {
         return;
     }
 
@@ -131,10 +131,6 @@ mod hook_tests {
             // Set the env var so `events_path()` returns our test file.
             unsafe { std::env::set_var("PETRIDISH_EVENTS_PATH", path.to_str().unwrap()) };
             Self { _path: path }
-        }
-
-        fn events_path(&self) -> &std::path::Path {
-            &self._path
         }
     }
 
