@@ -273,3 +273,79 @@ fn roomy_running_card_renders_a_git_zone_row_with_its_own_sparkline() {
         "the agent zone row must show its own label and the active agent, got:\n{agent_row:?}"
     );
 }
+
+// --- MECH-5: the "waiting on you" indicator --------------------------------
+
+#[test]
+fn roomy_card_for_a_waiting_project_says_waiting_on_you_instead_of_a_silence_age() {
+    // The header's right-hand field normally carries `silent 12m`. For a waiting project
+    // that number is the least informative thing on the row — the run is silent *because*
+    // it is blocked — so the field says so outright.
+    let mut p = project("p1", "blocked-project", StatusBucket::Active);
+    p.agent.active_agent = Some("claude-code".to_string());
+    p.last_activity_at = Some(chrono::Utc::now() - chrono::Duration::minutes(12));
+    p.agent.waiting_since = Some(chrono::Utc::now() - chrono::Duration::minutes(11));
+    let radar = radar_of(vec![p]);
+    let state = DashboardState::new(&radar);
+    let whole = rendered_lines(&radar, &state, 100, 40).join("\n");
+
+    assert!(
+        whole.to_lowercase().contains("waiting on you"),
+        "a waiting project's roomy card must say so in words, got:\n{whole}"
+    );
+    assert!(
+        !whole.contains("silent 12m"),
+        "the silence age must be displaced, not shown alongside — it is the inference the \
+         latch contradicts, got:\n{whole}"
+    );
+    assert!(
+        whole.contains('▲'),
+        "the ▲ marker (deliberately not ⚠, whose emoji-presentation default breaks column \
+         alignment in most terminals) must render, got:\n{whole}"
+    );
+}
+
+#[test]
+fn compact_row_for_a_waiting_project_shows_the_marker_and_the_words() {
+    // The compact tier is where the field budget is tightest, and it is also the tier a
+    // short terminal drops into — i.e. exactly where a truncated `waiting on…` would be
+    // easiest to ship unnoticed.
+    let mut p = project("p1", "blocked-project", StatusBucket::Active);
+    p.agent.active_agent = Some("claude-code".to_string());
+    p.last_activity_at = Some(chrono::Utc::now() - chrono::Duration::minutes(12));
+    p.agent.waiting_since = Some(chrono::Utc::now() - chrono::Duration::minutes(11));
+    let radar = radar_of(vec![p]);
+    let state = DashboardState::new(&radar);
+    let whole = rendered_lines(&radar, &state, 100, 12).join("\n");
+
+    assert!(
+        whole.contains("waiting on you"),
+        "the compact row must carry the full phrase, not an elided one, got:\n{whole}"
+    );
+    assert!(whole.contains('▲'), "compact rows carry the marker too, got:\n{whole}");
+}
+
+#[test]
+fn a_project_whose_latch_has_expired_renders_as_an_ordinary_silent_row() {
+    // Same two-clocks rule the sort test pins: petri may be drawing a snapshot written
+    // before the scanner's release tick, so the expiry has to be re-derived here.
+    let mut p = project("p1", "stale-latch", StatusBucket::Active);
+    p.agent.active_agent = Some("claude-code".to_string());
+    p.last_activity_at = Some(chrono::Utc::now() - chrono::Duration::minutes(12));
+    p.agent.waiting_since = Some(
+        chrono::Utc::now()
+            - chrono::Duration::seconds(petridish_core::schema::WAITING_MAX_LATCH_S + 60),
+    );
+    let radar = radar_of(vec![p]);
+    let state = DashboardState::new(&radar);
+    let whole = rendered_lines(&radar, &state, 100, 40).join("\n");
+
+    assert!(
+        !whole.to_lowercase().contains("waiting"),
+        "an expired latch must not draw the indicator, got:\n{whole}"
+    );
+    assert!(
+        whole.contains("silent 12m"),
+        "and the ordinary silence age comes back, got:\n{whole}"
+    );
+}

@@ -186,6 +186,17 @@ fn section_index(bucket: &StatusBucket) -> usize {
 /// process in a forgotten tab still counts), just not at the top of it.
 const RUNNING_ATTENTION_CEILING_S: i64 = 3 * 60 * 60; // 3 hours
 
+/// Is this project's agent blocked on a human right now (`MECH-5`)?
+///
+/// Re-derived at render time rather than trusted from `status_bucket`, for the reason
+/// `AGENT_WORKING_MAX_S`'s doc comment gives about the two clocks: the scanner stamps the
+/// latch, this process draws it, and a `projects.json` the daemon stopped updating an hour
+/// ago must not keep an expired latch pinned to the top of the screen. `waiting_latch_live`
+/// is the one definition both clocks read.
+pub fn is_waiting(p: &Project) -> bool {
+    petridish_core::schema::waiting_latch_live(p.agent.waiting_since, chrono::Utc::now())
+}
+
 /// Silence in seconds for sort purposes: `None` (never had any activity) is
 /// maximally silent, same convention the pre-ceiling sort used.
 fn silence_secs_for_sort(p: &Project) -> i64 {
@@ -236,10 +247,20 @@ impl DashboardState {
             let b_secs = silence_secs_for_sort(&radar.projects[b]);
             let a_forgotten = a_secs >= RUNNING_ATTENTION_CEILING_S;
             let b_forgotten = b_secs >= RUNNING_ATTENTION_CEILING_S;
+            // `MECH-5` sorts first, ahead of the ceiling: a project waiting on you outranks
+            // every silence-derived ordering below it, including the forgotten group. The
+            // ceiling exists to demote runs nobody is coming back to; a pending permission
+            // prompt is the exact opposite case, and it is the only row here whose silence
+            // has a known cause.
+            let a_wait = !is_waiting(&radar.projects[a]);
+            let b_wait = !is_waiting(&radar.projects[b]);
             // Group first (fresh group before the forgotten group), then
             // *longer* silence first within a group — silence in seconds
             // grows with age, so this is `b` vs `a`, not `a` vs `b`.
-            a_forgotten.cmp(&b_forgotten).then(b_secs.cmp(&a_secs))
+            a_wait
+                .cmp(&b_wait)
+                .then(a_forgotten.cmp(&b_forgotten))
+                .then(b_secs.cmp(&a_secs))
         });
 
         members
@@ -1217,22 +1238,38 @@ fn compact_running_row_line(radar: &Radar, proj_idx: usize, is_selected: bool, c
         Some(dt) => chrono::Utc::now().signed_duration_since(dt).num_seconds().max(0),
         None => i64::MAX / 2,
     };
-    let tier_color = silence_tier_color(silence_secs);
-    let glyph = match p.agent.state {
-        AgentActivity::Working => "●",
-        _ => "○",
+    // `MECH-5`: a waiting row abandons the silence gradient entirely — colour and glyph both
+    // say "blocked on you", because for this row the silence duration is not the fact worth
+    // reading. `▲`, not `⚠`, per the staleness banner's note below on emoji-presentation
+    // defaults in terminals.
+    let waiting = is_waiting(p);
+    let tier_color = if waiting { theme::DANGER } else { silence_tier_color(silence_secs) };
+    let glyph = if waiting {
+        "▲"
+    } else {
+        match p.agent.state {
+            AgentActivity::Working => "●",
+            _ => "○",
+        }
     };
     let dirty_marker = present::dirty_marker(&p.git);
     let branch = p.git.branch.as_deref().unwrap_or("-");
-    let silence_str = match p.last_activity_at {
-        Some(_) => format!("silent {}", humanize_secs(silence_secs as u64)),
-        None => "silent -".to_string(),
+    let silence_str = if waiting {
+        "waiting on you".to_string()
+    } else {
+        match p.last_activity_at {
+            Some(_) => format!("silent {}", humanize_secs(silence_secs as u64)),
+            None => "silent -".to_string(),
+        }
     };
     let agent = p.agent.active_agent.as_deref().unwrap_or("");
 
     let name_field = format!("{} ", fixed_width(&format!("{}{dirty_marker}", p.name), 26));
     let branch_field = format!("{} ", fixed_width(branch, 22));
-    let silence_field = format!("{} ", fixed_width(&silence_str, 12));
+    // 14, not 12: `waiting on you` is the longest string this field ever carries, and
+    // eliding it to `waiting on…` would lose the word the row exists to say. Everything else
+    // in the field is a `silent 12m`-shaped string well inside the budget.
+    let silence_field = format!("{} ", fixed_width(&silence_str, 14));
 
     if is_selected {
         return solid_selected_line(&format!(" {glyph} {name_field}{branch_field}{silence_field}{agent}"), card_width);
@@ -1259,9 +1296,14 @@ fn compact_running_row_line(radar: &Radar, proj_idx: usize, is_selected: bool, c
 /// background-only-under-some-spans highlight the border replaced.
 fn roomy_card_lines(radar: &Radar, proj_idx: usize, card_width: usize) -> Vec<Line<'static>> {
     let p = &radar.projects[proj_idx];
-    let glyph = match p.agent.state {
-        AgentActivity::Working => "●",
-        _ => "○",
+    let waiting = is_waiting(p); // `MECH-5` — see `compact_running_row_line`.
+    let glyph = if waiting {
+        "▲"
+    } else {
+        match p.agent.state {
+            AgentActivity::Working => "●",
+            _ => "○",
+        }
     };
     let dirty_marker = present::dirty_marker(&p.git);
     let uncommitted = if p.git.uncommitted_files > 0 { format!(" ✎{}", p.git.uncommitted_files) } else { String::new() };
@@ -1270,13 +1312,15 @@ fn roomy_card_lines(radar: &Radar, proj_idx: usize, card_width: usize) -> Vec<Li
         Some(dt) => chrono::Utc::now().signed_duration_since(dt).num_seconds().max(0),
         None => 0,
     };
-    let header_right = if has_agent {
+    let header_right = if waiting {
+        "▲ WAITING ON YOU".to_string()
+    } else if has_agent {
         format!("silent {}", humanize_secs(silence_secs as u64))
     } else {
         "no agent".to_string()
     };
 
-    let tier_color = silence_tier_color(silence_secs);
+    let tier_color = if waiting { theme::DANGER } else { silence_tier_color(silence_secs) };
     let name_style = Style::default().fg(theme::FG).add_modifier(Modifier::BOLD);
     let silence_style = Style::default().fg(tier_color).add_modifier(Modifier::BOLD);
     let dim = Style::default().fg(theme::DIM);

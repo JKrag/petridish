@@ -311,6 +311,78 @@ fn running_membership_orders_quietest_first_within_the_attention_ceiling_then_th
     );
 }
 
+#[test]
+fn running_membership_sorts_a_waiting_project_above_everything_including_the_fresh_group() {
+    // MECH-5. The waiting project is deliberately given the *most* favourable-to-the-old-rule
+    // shape possible: it is 10 hours silent, so under the previous ordering it would sit in
+    // the forgotten group at the very bottom. That is exactly the inversion the feature
+    // exists to fix — the ceiling demotes runs nobody is coming back to, and a pending
+    // permission prompt is the one kind of silence with a known cause.
+    let now = Utc::now();
+    let mut fresh_active = project("f1", "fresh-active", StatusBucket::Active);
+    fresh_active.last_activity_at = Some(now - ChronoDuration::minutes(5));
+    let mut quiet_but_fresh = project("q1", "quiet-but-fresh", StatusBucket::Active);
+    quiet_but_fresh.last_activity_at = Some(now - ChronoDuration::hours(1));
+    let mut waiting = project("w1", "waiting-on-you", StatusBucket::Active);
+    waiting.last_activity_at = Some(now - ChronoDuration::hours(10));
+    waiting.agent.waiting_since = Some(now - ChronoDuration::minutes(20));
+
+    let radar = radar_of(vec![fresh_active, quiet_but_fresh, waiting]);
+    let membership = DashboardState::running_membership(&radar);
+
+    assert_eq!(
+        membership,
+        vec![2, 1, 0],
+        "the waiting project (index 2) leads despite being the most silent of the three; the \
+         rest keep quietest-first inside the ceiling"
+    );
+}
+
+#[test]
+fn running_membership_ignores_an_expired_waiting_latch() {
+    // The two-clocks rule: the scanner releases an expired latch on its next tick, but petri
+    // may be drawing a `projects.json` written before that tick — or, if the daemon died,
+    // hours before it. An expired latch must not keep a project pinned to the top.
+    let now = Utc::now();
+    let mut fresh_active = project("f1", "fresh-active", StatusBucket::Active);
+    fresh_active.last_activity_at = Some(now - ChronoDuration::minutes(5));
+    let mut stale_latch = project("w1", "stale-latch", StatusBucket::Active);
+    stale_latch.last_activity_at = Some(now - ChronoDuration::minutes(2));
+    stale_latch.agent.waiting_since =
+        Some(now - ChronoDuration::seconds(petridish_core::schema::WAITING_MAX_LATCH_S + 60));
+
+    let radar = radar_of(vec![fresh_active, stale_latch]);
+    let membership = DashboardState::running_membership(&radar);
+
+    assert_eq!(
+        membership,
+        vec![0, 1],
+        "with the latch expired, plain quietest-first applies: 5m-silent before 2m-silent"
+    );
+}
+
+#[test]
+fn two_waiting_projects_keep_quietest_first_among_themselves() {
+    // The waiting key groups; it does not flatten the ordering inside the group.
+    let now = Utc::now();
+    let mut recent_wait = project("w1", "recent-wait", StatusBucket::Active);
+    recent_wait.last_activity_at = Some(now - ChronoDuration::minutes(2));
+    recent_wait.agent.waiting_since = Some(now - ChronoDuration::minutes(2));
+    let mut older_wait = project("w2", "older-wait", StatusBucket::Active);
+    older_wait.last_activity_at = Some(now - ChronoDuration::minutes(40));
+    older_wait.agent.waiting_since = Some(now - ChronoDuration::minutes(40));
+    let mut fresh_active = project("f1", "fresh-active", StatusBucket::Active);
+    fresh_active.last_activity_at = Some(now - ChronoDuration::minutes(9));
+
+    let radar = radar_of(vec![recent_wait, older_wait, fresh_active]);
+
+    assert_eq!(
+        DashboardState::running_membership(&radar),
+        vec![1, 0, 2],
+        "both waiting projects lead, quietest-first between them; the non-waiting one follows"
+    );
+}
+
 // --- Reload preserves user state (regression) ------------------------------
 //
 // The Dashboard re-derives itself every time `swab` rewrites the state file,

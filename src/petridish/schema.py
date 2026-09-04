@@ -73,6 +73,7 @@ class AgentStateDict(TypedDict):
     last_event: str | None
     last_event_at: str | None
     session_id: str | None
+    waiting_since: str | None
 
 
 # Allowed enum-ish values. Kept as plain tuples rather than Enums so the JSON
@@ -90,6 +91,26 @@ STATUS_BUCKETS = ("active", "in_flight", "stale", "cold")
 #: eventually disagree.
 AGENT_WORKING_MAX_S = 90
 AGENT_RECENT_MAX_S = 30 * 60
+
+#: How long an ``agent.waiting_since`` latch (MECH-5) survives without a
+#: clearing hook event before the scanner releases it. Duplicated from
+#: ``petridish_core::schema::WAITING_MAX_LATCH_S`` for the same two-clocks
+#: reason the silence thresholds above are: the daemon applies it at scan time,
+#: a frontend re-applies it at render time against a file that may be minutes
+#: — or, if the daemon died, hours — old.
+WAITING_MAX_LATCH_S = 3 * 60 * 60
+
+
+def waiting_latch_live(waiting_since: datetime | None, now: datetime) -> bool:
+    """Is a ``MECH-5`` "waiting on you" latch still live at ``now``?
+
+    The read-side half of the rule ``swab`` writes. A latch from the future
+    (clock skew) counts as live rather than raising, mirroring
+    :func:`agent_state_for_silence`'s negative-input clamp.
+    """
+    if waiting_since is None:
+        return False
+    return (now - waiting_since).total_seconds() < WAITING_MAX_LATCH_S
 
 
 def agent_state_for_silence(silence_s: float) -> str:
@@ -196,6 +217,12 @@ class AgentState:
     last_event: str | None = None
     last_event_at: datetime | None = None
     session_id: str | None = None
+    #: When this agent last told us it is blocked on a human (MECH-5), or
+    #: ``None``. A *field* rather than a fourth :data:`AGENT_STATES` value
+    #: precisely so a reader that predates it keeps parsing: ``from_dict``
+    #: below defaults it, where an unknown ``state`` string would have to be
+    #: interpreted. Read-side only here — only ``swab scan`` ever writes it.
+    waiting_since: datetime | None = None
 
     def to_dict(self) -> AgentStateDict:
         return {
@@ -204,6 +231,7 @@ class AgentState:
             "last_event": self.last_event,
             "last_event_at": _iso(self.last_event_at),
             "session_id": self.session_id,
+            "waiting_since": _iso(self.waiting_since),
         }
 
     @classmethod
@@ -214,6 +242,7 @@ class AgentState:
             last_event=d.get("last_event"),
             last_event_at=_parse(d.get("last_event_at")),
             session_id=d.get("session_id"),
+            waiting_since=_parse(d.get("waiting_since")),
         )
 
 

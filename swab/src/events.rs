@@ -122,6 +122,25 @@ pub fn append_event(path: &Path, event: &RawHookEvent) -> std::io::Result<()> {
     write_single_line(path, event, Utc::now())
 }
 
+/// Hook event names that mean "this agent is blocked on a human" (`MECH-5`). Claude Code
+/// fires `Notification` when it needs your attention (a permission prompt, or a turn that
+/// has been idle waiting for input) and `PermissionRequest` when a tool call is specifically
+/// held for approval. Verified against a real `~/.claude/settings.json` on Claude Code
+/// 2.1.236 — both are live event names there, registered by three other consumers.
+pub const WAITING_SET_EVENTS: [&str; 2] = ["Notification", "PermissionRequest"];
+
+/// Hook event names that mean "the human answered, carry on" (`MECH-5`). Both are already
+/// registered (`installer.py`'s `HOOK_EVENTS`), which is the whole reason the clearing half
+/// of this feature needs no new hook invocations: `PreToolUse` fires as the agent resumes
+/// tool work, `Stop` as the turn ends.
+pub const WAITING_CLEAR_EVENTS: [&str; 2] = ["PreToolUse", "Stop"];
+
+/// What this pass observed about one root's `MECH-5` waiting state: `true` = a set event was
+/// the last relevant thing seen, `false` = a clear event was. A root absent from the map saw
+/// neither, which is *not* the same as `false` — it means "no news", and the scanner must
+/// carry the previous tick's latch forward rather than releasing it.
+pub type WaitingDeltas = HashMap<String, bool>;
+
 /// Reads and folds an events ndjson file into one `AgentSignal` per resolved root, then
 /// truncates the file. See module-level doc for full contract — summary below.
 ///
@@ -132,24 +151,26 @@ pub fn append_event(path: &Path, event: &RawHookEvent) -> std::io::Result<()> {
 /// dropped on this pass (the file is still truncated at the end, so those events don't
 /// come back).
 ///
-/// Returns `(signals, counts)`: `signals` is the existing newest-`at`-wins fold, one entry
+/// Returns `(signals, counts, waiting)`: `signals` is the existing newest-`at`-wins fold, one entry
 /// per resolved root. `counts` is a second, independent tally -- how many raw valid lines
 /// resolved to each root *this pass* -- kept alongside the fold rather than replacing it,
 /// since bucketing/agent-state derivation still wants "the latest signal", while the
 /// agent-activity sparkline (`Project::agent_activity`) wants "how many events fired this
-/// tick", which the fold alone discards.
+/// tick", which the fold alone discards. `waiting` is the third such tally (`MECH-5`) — see
+/// `WaitingDeltas`.
 pub fn read_and_compact(
     path: &Path,
     config: &Config,
     max_bytes: u64,
-) -> (HashMap<String, AgentSignal>, HashMap<String, u32>) {
+) -> (HashMap<String, AgentSignal>, HashMap<String, u32>, WaitingDeltas) {
     let content = match std::fs::read_to_string(path) {
         Ok(s) => s,
-        Err(_) => return (HashMap::new(), HashMap::new()),
+        Err(_) => return (HashMap::new(), HashMap::new(), HashMap::new()),
     };
 
     let mut signals: HashMap<String, AgentSignal> = HashMap::new();
     let mut counts: HashMap<String, u32> = HashMap::new();
+    let mut waiting: WaitingDeltas = HashMap::new();
     let mut bytes_seen: u64 = 0;
 
     // Split on either line-ending character in one pass. The previous form --
@@ -214,6 +235,24 @@ pub fn read_and_compact(
 
         let key = signal.root.clone();
         *counts.entry(key.clone()).or_insert(0) += 1;
+
+        // `MECH-5`: last-relevant-line-wins, in **file order**, deliberately not by
+        // comparing `at`. `format_at` writes whole seconds, so a `Notification` and the
+        // `PreToolUse` that answers it can and do land in the same second; `O_APPEND` order
+        // is then the only truthful chronology we have. (Note also that the signal fold
+        // above uses a keep-the-earlier tie rule — the opposite convention, correct there
+        // and wrong here, which is why this does not reuse it.)
+        match signal.event.as_deref() {
+            Some(e) if WAITING_SET_EVENTS.contains(&e) => {
+                waiting.insert(key.clone(), true);
+            }
+            Some(e) if WAITING_CLEAR_EVENTS.contains(&e) => {
+                waiting.insert(key.clone(), false);
+            }
+            // Any other event name says nothing about waiting — leave whatever the previous
+            // line decided in place, rather than treating "not a clear event" as a clear.
+            _ => {}
+        }
         match signals.get(&key) {
             Some(existing) if existing.at >= at => {
                 // Keep the newer one — the Python `if at > existing.at` check is
@@ -230,7 +269,7 @@ pub fn read_and_compact(
     // "write() with empty body" after reading, which simply opens `w` and closes it.
     let _ = std::fs::write(path, "");
 
-    (signals, counts)
+    (signals, counts, waiting)
 }
 
 #[cfg(test)]
@@ -352,7 +391,7 @@ mod tests {
     fn read_and_compact_missing_path_returns_empty() {
         let path = PathBuf::from("/tmp/does_not_exist_swab_test_xyzzy99_100/events.ndjson");
         let cfg = test_config(vec![]);
-        let (signals, counts) = read_and_compact(&path, &cfg, 5_000_000);
+        let (signals, counts, _waiting) = read_and_compact(&path, &cfg, 5_000_000);
         assert!(signals.is_empty(), "missing file -> empty map, got: {:?}", signals);
         assert!(counts.is_empty(), "missing file -> empty counts, got: {:?}", counts);
     }
@@ -367,7 +406,7 @@ not valid json
 "#;
         let path = with_tmp("read_skips_malformed.ndjson", content);
         let cfg = test_config(vec![PathBuf::from("/tmp")]);
-        let (result, _counts) = read_and_compact(&path, &cfg, 10_000_000);
+        let (result, _counts, _waiting) = read_and_compact(&path, &cfg, 10_000_000);
 
         // Valid lines have cwd-as-is (no .git found, so resolve_root returns input).
         // Both entries should be in the map with their respective session_id (None here).
@@ -390,7 +429,7 @@ not valid json
 "#;
         let path = with_tmp("read_folds_same_root.ndjson", content);
         let cfg = test_config(vec![PathBuf::from("/tmp")]);
-        let (result, counts) = read_and_compact(&path, &cfg, 10_000_000);
+        let (result, counts, _waiting) = read_and_compact(&path, &cfg, 10_000_000);
 
         assert_eq!(result.len(), 1, "two lines same root -> one entry");
         let entry = result.values().next().unwrap();
@@ -417,7 +456,7 @@ not valid json
         let path = with_tmp("read_truncates.ndjson", content);
 
         let cfg = test_config(vec![PathBuf::from("/tmp")]);
-        let (first, first_counts) = read_and_compact(&path, &cfg, 10_000_000);
+        let (first, first_counts, _waiting) = read_and_compact(&path, &cfg, 10_000_000);
         assert_eq!(first.len(), 1, "first read should pick up one signal");
         assert_eq!(first_counts.values().sum::<u32>(), 1, "first read should count one event");
 
@@ -425,7 +464,7 @@ not valid json
         let size = std::fs::metadata(&path).expect("meta").len();
         assert_eq!(size, 0, "file size must be 0 after truncation, got {size}");
 
-        let (second, second_counts) = read_and_compact(&path, &cfg, 10_000_000);
+        let (second, second_counts, _waiting) = read_and_compact(&path, &cfg, 10_000_000);
         assert!(
             second.is_empty(),
             "second read of truncated file must be empty, got {:?}",
@@ -444,7 +483,7 @@ not valid json
 "#;
         let path = with_tmp("read_skips_missing_cwd.ndjson", content);
         let cfg = test_config(vec![PathBuf::from("/tmp")]);
-        let (result, _counts) = read_and_compact(&path, &cfg, 10_000_000);
+        let (result, _counts, _waiting) = read_and_compact(&path, &cfg, 10_000_000);
 
         let keys: Vec<&String> = result.keys().collect();
         assert_eq!(
@@ -472,7 +511,7 @@ not valid json
         let path = with_tmp("read_max_bytes.ndjson", &content);
 
         let cfg = test_config(vec![PathBuf::from("/tmp")]);
-        let (result, _counts) = read_and_compact(&path, &cfg, 10);
+        let (result, _counts, _waiting) = read_and_compact(&path, &cfg, 10);
 
         // With max_bytes=10, the first line (let's see how many bytes it is) is ~46;
         // that exceeds 10 on its own, so... actually let me rethink. bytes_seen=0 at start
@@ -504,7 +543,7 @@ not valid json
         let path = with_tmp("read_truncated.ndjson", content);
 
         let cfg = test_config(vec![PathBuf::from("/tmp")]);
-        let (result, _counts) = read_and_compact(&path, &cfg, 10_000_000);
+        let (result, _counts, _waiting) = read_and_compact(&path, &cfg, 10_000_000);
 
         let keys: Vec<&String> = result.keys().collect();
         assert_eq!(
@@ -514,5 +553,115 @@ not valid json
         // File still truncated to empty after read.
         let size = std::fs::metadata(&path).expect("meta").len();
         assert_eq!(size, 0);
+    }
+
+    // ═══ MECH-5 — the waiting-on-you deltas ═══════════════════════════════════════════
+    //
+    // These assert the *third* return value only. The signal fold and the count tally are
+    // untouched by this feature, and asserting them here again would only couple these
+    // tests to behavior their own name doesn't claim.
+
+    /// Helper: the delta for the root whose path ends with `suffix`. Keys are
+    /// `resolve_root`-canonicalized, and on macOS `/tmp` is a symlink to `/private/tmp`, so
+    /// looking a fixture root up by the literal string written into the fixture silently
+    /// misses — and `Option::None` is a *meaningful* value here, so the miss would read as
+    /// a real assertion about the feature rather than as a broken lookup.
+    fn delta_for<'a>(waiting: &'a WaitingDeltas, suffix: &str) -> Option<&'a bool> {
+        waiting
+            .iter()
+            .find(|(root, _)| root.ends_with(suffix))
+            .map(|(_, v)| v)
+    }
+
+    /// Helper: run one pass and return just the waiting deltas.
+    fn waiting_for(name: &str, content: &str) -> WaitingDeltas {
+        let path = with_tmp(name, content);
+        let cfg = test_config(vec![PathBuf::from("/tmp")]);
+        let (_signals, _counts, waiting) = read_and_compact(&path, &cfg, 10_000_000);
+        waiting
+    }
+
+    #[test]
+    fn notification_event_sets_waiting() {
+        let waiting = waiting_for(
+            "waiting_notification.ndjson",
+            "{\"cwd\":\"/tmp/w1\",\"at\":\"2024-01-01T00:00:01Z\",\"event\":\"Notification\"}\n",
+        );
+        assert_eq!(delta_for(&waiting, "/w1"), Some(&true), "got {waiting:?}");
+    }
+
+    #[test]
+    fn permission_request_event_sets_waiting() {
+        let waiting = waiting_for(
+            "waiting_permreq.ndjson",
+            "{\"cwd\":\"/tmp/w2\",\"at\":\"2024-01-01T00:00:01Z\",\"event\":\"PermissionRequest\"}\n",
+        );
+        assert_eq!(delta_for(&waiting, "/w2"), Some(&true), "got {waiting:?}");
+    }
+
+    #[test]
+    fn pre_tool_use_after_notification_clears_waiting() {
+        // The whole point of the file-order rule: both lines carry the SAME `at`, because
+        // `format_at` writes whole seconds and a human answering a prompt within the same
+        // second is entirely ordinary. A timestamp comparison cannot order these; append
+        // order can, and it says the human answered.
+        let waiting = waiting_for(
+            "waiting_cleared_same_second.ndjson",
+            "{\"cwd\":\"/tmp/w3\",\"at\":\"2024-01-01T00:00:01Z\",\"event\":\"Notification\"}\n\
+             {\"cwd\":\"/tmp/w3\",\"at\":\"2024-01-01T00:00:01Z\",\"event\":\"PreToolUse\"}\n",
+        );
+        assert_eq!(delta_for(&waiting, "/w3"), Some(&false), "got {waiting:?}");
+    }
+
+    #[test]
+    fn stop_then_notification_leaves_waiting_set() {
+        // The real end-of-turn sequence: `Stop` fires, then Claude Code notifies that it is
+        // idle waiting for input. Order matters in both directions, not just the clearing one.
+        let waiting = waiting_for(
+            "waiting_set_after_stop.ndjson",
+            "{\"cwd\":\"/tmp/w4\",\"at\":\"2024-01-01T00:00:01Z\",\"event\":\"Stop\"}\n\
+             {\"cwd\":\"/tmp/w4\",\"at\":\"2024-01-01T00:00:02Z\",\"event\":\"Notification\"}\n",
+        );
+        assert_eq!(delta_for(&waiting, "/w4"), Some(&true), "got {waiting:?}");
+    }
+
+    #[test]
+    fn unrecognized_event_does_not_clear_waiting() {
+        // "Not a clear event" must not be read as a clear. Only the two names in
+        // `WAITING_CLEAR_EVENTS` mean the human answered; anything else — an event we never
+        // registered, or one Claude Code adds later — says nothing about it.
+        let waiting = waiting_for(
+            "waiting_unknown_event.ndjson",
+            "{\"cwd\":\"/tmp/w5\",\"at\":\"2024-01-01T00:00:01Z\",\"event\":\"Notification\"}\n\
+             {\"cwd\":\"/tmp/w5\",\"at\":\"2024-01-01T00:00:02Z\",\"event\":\"PostToolUse\"}\n",
+        );
+        assert_eq!(delta_for(&waiting, "/w5"), Some(&true), "got {waiting:?}");
+    }
+
+    #[test]
+    fn root_with_no_relevant_events_is_absent_not_false() {
+        // Absent and `false` are different answers: absent means "no news, keep whatever
+        // the previous tick decided", `false` means "the human answered, release it". A
+        // liveness-only event (or none at all) must produce the former, or every tick with
+        // ordinary traffic would silently release a live latch.
+        let waiting = waiting_for(
+            "waiting_absent.ndjson",
+            "{\"cwd\":\"/tmp/w6\",\"at\":\"2024-01-01T00:00:01Z\",\"event\":null}\n",
+        );
+        assert!(
+            delta_for(&waiting, "/w6").is_none(),
+            "a root with no waiting-relevant event must not appear at all, got {waiting:?}"
+        );
+    }
+
+    #[test]
+    fn waiting_deltas_are_per_root() {
+        let waiting = waiting_for(
+            "waiting_per_root.ndjson",
+            "{\"cwd\":\"/tmp/w7a\",\"at\":\"2024-01-01T00:00:01Z\",\"event\":\"Notification\"}\n\
+             {\"cwd\":\"/tmp/w7b\",\"at\":\"2024-01-01T00:00:01Z\",\"event\":\"Stop\"}\n",
+        );
+        assert_eq!(delta_for(&waiting, "/w7a"), Some(&true), "got {waiting:?}");
+        assert_eq!(delta_for(&waiting, "/w7b"), Some(&false), "got {waiting:?}");
     }
 }

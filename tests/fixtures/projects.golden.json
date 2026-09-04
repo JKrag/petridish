@@ -24,7 +24,8 @@
         "active_agent": "claude-code",
         "last_event": "PreToolUse",
         "last_event_at": "2026-08-05T22:44:12Z",
-        "session_id": "6f4a8f6e-ae3c-4bf6-846b-d1fecb5742a6"
+        "session_id": "6f4a8f6e-ae3c-4bf6-846b-d1fecb5742a6",
+        "waiting_since": null
       },
       "last_activity_at": "2026-08-05T22:44:12Z",
       "status_bucket": "active"

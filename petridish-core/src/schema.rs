@@ -73,6 +73,22 @@ pub const AGENT_RECENT_MAX_S: i64 = 1800;
 /// machine's `~/.petridish/events.ndjson` before this field was added.
 pub const AGENT_ACTIVITY_WINDOW: usize = 60;
 
+/// How long a `AgentState::waiting_since` latch survives without a clearing hook event
+/// (`PreToolUse`/`Stop`) before the scanner releases it (`MECH-5`).
+///
+/// The latch exists because "the agent is blocked on you" is set by a rare hook event and
+/// cleared by another one — and the clearing event can simply never arrive: you close the
+/// terminal, the session is killed, the machine sleeps. A waiting indicator that latches on
+/// and never releases is worse than none at all (`petri/IDEAS.md` MECH-5: "the cleared-by
+/// rule matters more than the set-by rule"), and this flag also pins its project into
+/// `StatusBucket::Active`, so a stuck latch would permanently hold the top of the Dashboard's
+/// RUNNING section.
+///
+/// Three hours deliberately matches `petri`'s `RUNNING_ATTENTION_CEILING_S`, on the same
+/// reasoning: past that point, an unanswered prompt has stopped meaning "you are about to
+/// come back to this" and started meaning "you forgot this tab".
+pub const WAITING_MAX_LATCH_S: i64 = 3 * 60 * 60;
+
 /// Trailing days of daily commit counts kept in `GitState::daily_commits`. Unlike agent
 /// activity, this needs no cross-tick carry-forward -- git already retains its own commit
 /// history, so it's recomputed fresh from real history every tick.
@@ -138,6 +154,21 @@ pub struct AgentState {
     #[serde(with = "iso_second_opt")]
     pub last_event_at: Option<DateTime<Utc>>,
     pub session_id: Option<String>,
+    /// When this project's agent last told us it is blocked on a human (`MECH-5`) — set from
+    /// Claude Code's `Notification`/`PermissionRequest` hooks, cleared by the `PreToolUse`/
+    /// `Stop` that means the human answered, and released after `WAITING_MAX_LATCH_S` if no
+    /// clearing event ever arrives.
+    ///
+    /// **A new optional field, deliberately not a new `AgentActivity` variant.** The enum is
+    /// serialized into `projects.json`, which `petripy`, the menubar and any not-yet-rebuilt
+    /// `swab`/`petri` also parse; an unknown *variant* is a hard parse failure where an
+    /// unknown *field* is skipped. `petri/SPEC.md` §4.6 requires a readable file never to
+    /// hard-fail a reader, and a variant would have violated that for every reader on disk.
+    ///
+    /// `#[serde(default)]` is load-bearing for the same rule in the other direction: a
+    /// `projects.json` written before this field existed must still deserialize.
+    #[serde(default, with = "iso_second_opt")]
+    pub waiting_since: Option<DateTime<Utc>>,
 }
 
 impl AgentState {
@@ -149,6 +180,7 @@ impl AgentState {
             last_event: None,
             last_event_at: None,
             session_id: None,
+            waiting_since: None,
         }
     }
 }
@@ -230,6 +262,27 @@ pub fn agent_state_for_silence(silence_seconds: i64) -> AgentActivity {
     }
 }
 
+/// Is a `waiting_since` latch still live at `now`? (`MECH-5`.)
+///
+/// The single definition of when the "waiting on you" flag has expired, shared by the two
+/// clocks that read it for the same reason `agent_state_for_silence` is shared: `swab scan`
+/// applies it at *scan* time to decide whether to carry the latch forward, and a frontend
+/// applies it at *render* time because a `projects.json` that is a few minutes old (or hours
+/// old, if the daemon died) can still carry a latch this rule has already expired. With the
+/// number duplicated, the indicator and the scanner would eventually disagree.
+///
+/// A latch from the future (clock skew between writer and reader) counts as live rather than
+/// panicking, mirroring `agent_state_for_silence`'s negative-input clamp.
+pub fn waiting_latch_live(
+    waiting_since: Option<DateTime<Utc>>,
+    now: DateTime<Utc>,
+) -> bool {
+    match waiting_since {
+        None => false,
+        Some(since) => (now - since).num_seconds() < WAITING_MAX_LATCH_S,
+    }
+}
+
 /// Serialize `radar` to `<path>.tmp` (same dir as `path`) then atomically rename onto
 /// `path` (invariant #1: daemon is the sole writer, temp-file + rename). On any failure
 /// the tmp file must be removed; the parent dir is created if missing.
@@ -305,6 +358,30 @@ mod tests {
     fn agent_state_for_silence_negative_clamps_to_zero() {
         // Negative input must clamp to 0 -> Working, never panic.
         assert_eq!(agent_state_for_silence(-50), AgentActivity::Working);
+    }
+
+    // ── MECH-5: the waiting latch's expiry rule ────────────────────────────────────
+
+    #[test]
+    fn waiting_latch_live_none_is_never_live() {
+        assert!(!waiting_latch_live(None, Utc::now()));
+    }
+
+    #[test]
+    fn waiting_latch_live_boundary_is_exclusive() {
+        let now = Utc::now();
+        let just_inside = now - chrono::Duration::seconds(WAITING_MAX_LATCH_S - 1);
+        let exactly_at = now - chrono::Duration::seconds(WAITING_MAX_LATCH_S);
+        assert!(waiting_latch_live(Some(just_inside), now), "one second short of the cap is live");
+        assert!(!waiting_latch_live(Some(exactly_at), now), "the cap itself has expired");
+    }
+
+    #[test]
+    fn waiting_latch_from_the_future_is_live_not_a_panic() {
+        // Clock skew between the writer and the reader, same case
+        // `agent_state_for_silence` clamps rather than panicking on.
+        let now = Utc::now();
+        assert!(waiting_latch_live(Some(now + chrono::Duration::hours(1)), now));
     }
 
     #[test]

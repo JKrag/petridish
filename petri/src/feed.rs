@@ -51,6 +51,10 @@ pub enum FeedKind {
     Bucket,
     /// The project was not in the previous snapshot at all.
     Appeared,
+    /// `agent.waiting_since` started a new latch — the agent is blocked on a human
+    /// (`MECH-5`). Appended last so the existing `Ord`-derived tie-break between kinds keeps
+    /// the order it had.
+    Waiting,
 }
 
 /// One row of the feed.
@@ -291,6 +295,22 @@ impl FeedState {
                 });
             }
 
+            // `MECH-5`: a *new* waiting latch. Keyed on the timestamp changing rather than
+            // on `is_some()`, because the latch is carried forward unchanged across every
+            // tick it stays live — an `is_some()` test would re-emit the same row on every
+            // scan for as long as the human took to answer, which is precisely the period
+            // the feed is most likely to be read.
+            if let Some(since) = p.agent.waiting_since
+                && prev_p.agent.waiting_since != Some(since)
+            {
+                rows.push(FeedEvent {
+                    at: since,
+                    project: project_name.clone(),
+                    kind: FeedKind::Waiting,
+                    detail: "▲ waiting on you".to_string(),
+                });
+            }
+
             // Bucket: a section move.
             if p.status_bucket != prev_p.status_bucket {
                 rows.push(FeedEvent {
@@ -363,6 +383,7 @@ fn kind_color(kind: FeedKind) -> Color {
         FeedKind::Commit => theme::ACCENT,
         FeedKind::Bucket => theme::AGING,
         FeedKind::Appeared => crate::theme::DIMMER,
+        FeedKind::Waiting => theme::DANGER,
     }
 }
 

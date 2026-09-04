@@ -6,7 +6,8 @@
 //! these formatting functions without depending on `swab` (the writer). `petridish-core`
 //! depends on none of the writers, so this crate cannot reach them.
 
-use crate::schema::{AgentActivity, AgentState, GitState, StatusBucket};
+use crate::schema::{waiting_latch_live, AgentActivity, AgentState, GitState, StatusBucket};
+use chrono::{DateTime, Utc};
 
 /// `StatusBucket` -> lowercase snake_case string (`"active"`, `"in_flight"`, ...).
 ///
@@ -36,12 +37,29 @@ pub fn agent_activity_str(a: &AgentActivity) -> &'static str {
 /// Format the agent column for a project: `"{name} ({state})"` if an agent is active,
 /// otherwise just the activity state string.
 ///
-/// Mirrors `cli.rs`'s inline logic in `_print_table`.
-pub fn agent_label(agent: &AgentState) -> String {
+/// A live `waiting_since` latch (`MECH-5`) displaces the silence-derived state entirely
+/// rather than appending to it: `"claude-code (waiting)"`, never
+/// `"claude-code (idle, waiting)"`. The three silence states are all *inferences* from the
+/// absence of events, and "waiting" is an observation that the inference is wrong — showing
+/// both would be showing the reader a fact and its own contradiction side by side.
+///
+/// Takes `now` because the latch expires (`waiting_latch_live`); a caller rendering a stale
+/// `projects.json` must not be shown a latch the scanner would already have released.
+pub fn agent_label_at(agent: &AgentState, now: DateTime<Utc>) -> String {
+    let state = if waiting_latch_live(agent.waiting_since, now) {
+        "waiting"
+    } else {
+        agent_activity_str(&agent.state)
+    };
     match &agent.active_agent {
-        Some(a) => format!("{a} ({})", agent_activity_str(&agent.state)),
-        None => agent_activity_str(&agent.state).to_string(),
+        Some(a) => format!("{a} ({state})"),
+        None => state.to_string(),
     }
+}
+
+/// `agent_label_at` against the current wall clock — the form every live frontend wants.
+pub fn agent_label(agent: &AgentState) -> String {
+    agent_label_at(agent, Utc::now())
 }
 
 /// Dirty marker for the "dirty" column: `"*"` when repo + dirty, else `" "`.
@@ -102,8 +120,47 @@ mod tests {
             last_event: None,
             last_event_at: None,
             session_id: None,
+            waiting_since: None,
         };
         assert_eq!(agent_label(&agent), "claude (working)");
+    }
+
+    #[test]
+    fn agent_label_at_waiting_displaces_the_silence_state() {
+        // The latch is what the reader needs; the silence-derived `Idle` beside it is the
+        // inference the latch contradicts. Only one of them belongs in a one-line label.
+        let now = Utc::now();
+        let agent = AgentState {
+            state: AgentActivity::Idle,
+            active_agent: Some("claude-code".to_string()),
+            waiting_since: Some(now - chrono::Duration::minutes(5)),
+            ..AgentState::idle_unknown()
+        };
+        assert_eq!(agent_label_at(&agent, now), "claude-code (waiting)");
+    }
+
+    #[test]
+    fn agent_label_at_expired_latch_falls_back_to_the_silence_state() {
+        // A frontend reading a `projects.json` the daemon stopped updating must not be shown
+        // a latch the scanner would already have released.
+        let now = Utc::now();
+        let agent = AgentState {
+            state: AgentActivity::Idle,
+            active_agent: Some("claude-code".to_string()),
+            waiting_since: Some(now - chrono::Duration::seconds(crate::schema::WAITING_MAX_LATCH_S + 1)),
+            ..AgentState::idle_unknown()
+        };
+        assert_eq!(agent_label_at(&agent, now), "claude-code (idle)");
+    }
+
+    #[test]
+    fn agent_label_at_waiting_without_an_agent_name() {
+        let now = Utc::now();
+        let agent = AgentState {
+            waiting_since: Some(now),
+            ..AgentState::idle_unknown()
+        };
+        assert_eq!(agent_label_at(&agent, now), "waiting");
     }
 
     #[test]

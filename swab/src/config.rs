@@ -9,6 +9,17 @@ use std::path::PathBuf;
 /// shared with `swab doctor`'s hook-detection.
 pub const HOOK_MARKER: &str = "# petridish";
 
+/// The Claude Code hook events `swab-hook` is registered on. **`installer.py`'s
+/// `HOOK_EVENTS` is the writer and this is the checker** — the duplication is deliberate
+/// (the installer is Python, `swab doctor` is Rust, and neither can call the other), so
+/// they must be kept in step; `doctor` failing on a machine the installer just set up is
+/// how a drift here shows itself.
+///
+/// `Notification`/`PermissionRequest` are the `MECH-5` pair: without them registered,
+/// `agent.waiting_since` is never set and the "waiting on you" indicator is dead code on
+/// that machine — which is exactly what `doctor` exists to notice.
+pub const HOOK_EVENTS: [&str; 4] = ["PreToolUse", "Stop", "Notification", "PermissionRequest"];
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct Config {
     pub roots: Vec<PathBuf>,
