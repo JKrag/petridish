@@ -349,7 +349,9 @@ mod tests {
     ];
 
     fn make_tmp_dir(name: &str) -> PathBuf {
-        let tmp = std::env::temp_dir().join("swab_git_test").join(name);
+        let tmp = std::env::temp_dir()
+            .join(format!("swab_git_test_{}", std::process::id()))
+            .join(name);
         let _ = fs::remove_dir_all(&tmp);
         fs::create_dir_all(&tmp).expect("mktemp");
         tmp

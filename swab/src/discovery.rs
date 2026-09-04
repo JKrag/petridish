@@ -314,7 +314,7 @@ mod tests {
 
     impl Tmp {
         fn new(suffix: &str) -> Self {
-            let path = std::env::temp_dir().join(format!("swab_discovery_{suffix}"));
+            let path = std::env::temp_dir().join(format!("swab_discovery_{suffix}_{}", std::process::id()));
             let _ = fs::remove_dir_all(&path);
             fs::create_dir_all(&path).expect("mktemp");
             Self { path }

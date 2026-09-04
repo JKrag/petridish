@@ -310,7 +310,7 @@ mod tests {
     #[test]
     fn write_atomic_creates_missing_parent_dir_and_no_tmp_left_behind() {
         let tmp = std::env::temp_dir();
-        let dir = tmp.join("swab_write_atomic_test_dir");
+        let dir = tmp.join(format!("swab_write_atomic_test_dir_{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir); // start clean
 
         let path = dir.join("projects.json");
@@ -339,7 +339,7 @@ mod tests {
     #[test]
     fn write_atomic_overwrite_second_call_differs() {
         let tmp = std::env::temp_dir();
-        let dir = tmp.join("swab_write_atomic_overwrite_test");
+        let dir = tmp.join(format!("swab_write_atomic_overwrite_test_{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
 
         let path = dir.join("projects.json");

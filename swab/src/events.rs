@@ -245,7 +245,7 @@ mod tests {
         use std::sync::atomic::{AtomicU64, Ordering};
         static CTR: AtomicU64 = AtomicU64::new(0);
         let id = CTR.fetch_add(1, Ordering::Relaxed);
-        let dir = std::env::temp_dir().join(format!("swab_test_events_{id}"));
+        let dir = std::env::temp_dir().join(format!("swab_test_events_{id}_{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap_or_else(|_| {
             // Another thread may have created it first; that's fine.
         });
