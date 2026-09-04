@@ -2,6 +2,7 @@
 //! type-ahead filter. petri/SPEC.md §3.1 is the authoritative behavior
 //! contract — read it in full before touching this file.
 
+use crate::theme;
 use petridish_core::present as present;
 use petridish_core::schema::{AgentActivity, Project, Radar, StatusBucket};
 use ratatui::{
@@ -52,6 +53,15 @@ pub struct BrowserState {
     /// The current type-ahead filter query (petri/SPEC.md §3.1 "`/` opens a
     /// type-ahead filter"). Empty string = unfiltered.
     pub filter_query: String,
+    /// True while the `/` type-ahead input is open and taking keystrokes.
+    ///
+    /// This lives here, not in the event loop, because `render` needs it:
+    /// the header chip has to distinguish "you are typing a query" (cursor,
+    /// bright) from "a query is still applied" (no cursor, dim) — `ACT-10`.
+    /// Keeping the loop's own copy of the flag alongside it would be two
+    /// sources of truth for one mode, and the render would eventually
+    /// disagree with the keymap.
+    pub filter_input: bool,
 }
 
 impl BrowserState {
@@ -62,7 +72,7 @@ impl BrowserState {
     pub fn new(radar: &Radar) -> Self {
         let visible = grouped_visible_indices(radar, "");
         let selected = if visible.is_empty() { None } else { Some(0) };
-        Self { visible, selected, filter_query: String::new() }
+        Self { visible, selected, filter_query: String::new(), filter_input: false }
     }
 
     /// Move the selection by `delta` (negative = up, positive = down) within
@@ -208,24 +218,41 @@ pub fn render(frame: &mut Frame, radar: &Radar, state: &BrowserState) {
     .split(area);
 
     // Header: a badged "petri · browser" title — same inverted-color badge
-    // treatment as the Dashboard's title, not just colored text.
-    let header = Paragraph::new(Line::from(Span::styled(
+    // treatment as the Dashboard's title, not just colored text — followed by
+    // the filter chip when a filter is live (`ACT-10`).
+    let mut header_spans = vec![Span::styled(
         " petri · browser ",
-        Style::default().fg(Color::Black).bg(Color::Cyan).add_modifier(Modifier::BOLD),
-    )))
-    .wrap(Wrap { trim: false });
+        Style::default().fg(Color::Black).bg(theme::ACCENT).add_modifier(Modifier::BOLD),
+    )];
+    // The badge is 17 columns; the chip gets what is left of the header row.
+    header_spans.extend(filter_chip_spans(radar, state, area.width.saturating_sub(17)));
+    let header = Paragraph::new(Line::from(header_spans)).wrap(Wrap { trim: false });
     frame.render_widget(header, chunks[0]);
 
     let rule = Paragraph::new(Line::from(Span::styled(
         "═".repeat(area.width as usize),
-        Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD),
+        Style::default().fg(theme::ACCENT).add_modifier(Modifier::BOLD),
     )));
     frame.render_widget(rule, chunks[1]);
 
-    // Footer: bound keymap (spec §5 — advertise only keys actually bound).
+    // Footer: the keymap (SPEC.md §5). The bar is "would a new user be misled?"
+    // — don't advertise a key that does nothing — not a fixed list.
     let footer = Paragraph::new(Line::from(Span::styled(
-        " Tab Dashboard  j/k up-down  Shift+j/k ×10  PgUp/PgDn page  Home/End  / filter  q quit ",
-        Style::default().fg(Color::DarkGray),
+        // The three action keys are advertised unconditionally, and deliberately
+        // so — `g` always resolves thanks to ACT-3's git fallback, and `o`/`e`
+        // always respond, with a notice when this machine or this project can't
+        // satisfy them. Making the footer itself machine-dependent was
+        // considered and rejected: it would make every snapshot test depend on
+        // what happens to be installed on the machine running it.
+        //
+        // `o/O` is ACT-11's shifted re-pick variant, bound for every registry
+        // action rather than just `g`: `O`'s list is thin today (one candidate,
+        // `open`) but its `Other` row is exactly how a user pins a specific
+        // browser, and a rule that holds for every key stays true as the
+        // registry grows. PgUp/PgDn dropped from the advertisement to make
+        // room — still bound, but the least discoverable-by-need of the set.
+        " Tab Dashboard  j/k up-down  Shift+j/k ×10  / filter  o/O remote  g/G git log  e/E edit  q quit ",
+        Style::default().fg(theme::DIM),
     )))
     .wrap(Wrap { trim: false });
     frame.render_widget(footer, chunks[3]);
@@ -360,6 +387,91 @@ fn compute_scroll_offset(
     selected_line.saturating_sub(visible_rows - 1).min(max_scroll)
 }
 
+/// The header's filter chip (`ACT-10`): the spans that follow the title badge
+/// when a `/` filter is live, and nothing at all when it is not.
+///
+/// Two visually distinct states, because they mean different things:
+///
+/// - **Typing** (`filter_input`) — bright, with a block cursor after the
+///   query. The mode is taking your keystrokes right now.
+/// - **Applied but closed** (`Enter` pressed, query kept) — dim, no cursor.
+///   This is the state `ACT-10` was actually about: a user who filters, looks
+///   away, and looks back could not previously tell a filtered list from a
+///   fleet that had gone quiet.
+///
+/// The match count is `matches of total`, where `total` is the *unfiltered*
+/// visible row count — so `0 of 12` reads as "your query excluded everything",
+/// which is the case that otherwise looks exactly like an empty radar.
+///
+/// This is deliberately in the header rather than replacing the footer keymap:
+/// the footer stays useful *while* you filter, so swapping it for a filter
+/// prompt would trade a permanently-useful surface for a transient one. The
+/// header had the room.
+fn filter_chip_spans(radar: &Radar, state: &BrowserState, avail: u16) -> Vec<Span<'static>> {
+    if !state.filter_input && state.filter_query.is_empty() {
+        return Vec::new();
+    }
+
+    let total = grouped_visible_indices(radar, "").len();
+    let matched = state.visible.len();
+
+    let (query_style, count_style) = if state.filter_input {
+        (
+            Style::default().fg(theme::ACCENT).add_modifier(Modifier::BOLD),
+            Style::default().fg(theme::DIM),
+        )
+    } else {
+        (Style::default().fg(theme::DIM), Style::default().fg(theme::DIMMER))
+    };
+
+    let cursor = if state.filter_input { "\u{2588}" } else { "" };
+    let count = format!("  {matched} of {total}");
+
+    // The header row is `Constraint::Length(1)` — it cannot wrap, so anything
+    // past the right edge is simply lost. The COUNT is the part that must
+    // survive: `0 of 12` is the whole reason this chip exists (an empty
+    // filtered list vs. an empty radar), and the query is the part the user
+    // just typed and already knows. So the count gets its width first and the
+    // query is truncated into whatever is left.
+    let fixed = "  /".chars().count() + cursor.chars().count() + count.chars().count();
+    let budget = (avail as usize).saturating_sub(fixed);
+    let query = truncate_query(&state.filter_query, budget, state.filter_input);
+
+    vec![
+        Span::styled(format!("  /{query}{cursor}"), query_style),
+        Span::styled(count, count_style),
+    ]
+}
+
+/// Fit `query` into `budget` columns, marking the elision with `…`.
+///
+/// Which END is kept depends on the mode, and the difference is the point:
+/// while the input is open the cursor sits after the last character typed, so
+/// the TAIL is kept (`…rly-long-query`) and your keystrokes go on appearing.
+/// Once the input is closed there is no cursor and nothing is arriving, so the
+/// HEAD is kept (`a-fairly-lon…`), which is the half that identifies the query.
+fn truncate_query(query: &str, budget: usize, keep_tail: bool) -> String {
+    // Measured in COLUMNS, not characters. `budget` comes from the header's own width, and
+    // a query with a wide character in it would otherwise overrun the chip and clip the
+    // `<matched> of <total>` count — the one part of this chip the header is explicitly
+    // laid out to protect.
+    if crate::width::width(query) <= budget {
+        return query.to_string();
+    }
+    if budget <= 1 {
+        // No room for even one character plus the ellipsis. The count still
+        // renders — losing the query entirely is the correct trade here.
+        return "\u{2026}".chars().take(budget).collect();
+    }
+    if keep_tail {
+        let tail = crate::width::take_width_end(query, budget - 1);
+        format!("\u{2026}{tail}")
+    } else {
+        let head = crate::width::take_width(query, budget - 1);
+        format!("{head}\u{2026}")
+    }
+}
+
 /// Build the list's lines: section headers interleaved with project rows, in
 /// SECTION_ORDER. Sections with 0 visible projects are skipped entirely.
 /// Returns the lines plus the LINE index of the selected row (`None` if
@@ -375,7 +487,7 @@ fn render_list_lines(radar: &Radar, state: &BrowserState) -> (Vec<Line<'static>>
         // placeholder rather than an empty frame. Must not panic.
         lines.push(Line::from(Span::styled(
             "  (no projects)",
-            Style::default().fg(Color::DarkGray),
+            Style::default().fg(theme::DIM),
         )));
         return (lines, None);
     }
@@ -409,11 +521,15 @@ fn render_list_lines(radar: &Radar, state: &BrowserState) -> (Vec<Line<'static>>
             continue;
         }
 
-        // Header line: "RUNNING [5]" in yellow+bold.
+        // Header line: "RUNNING [5]", colored by `theme::bucket_color` — same
+        // silence-gradient-as-label-color convention as the Dashboard's
+        // section headers (dashboard.rs's `section_header_line`), so the two
+        // screens' headers read as one vocabulary rather than the Dashboard's
+        // gradient and a flat Browser yellow that happened to coexist.
         lines.push(Line::from(Span::styled(
             format!(" {} [{}] ", label, section_indices.len()),
             Style::default()
-                .fg(Color::Yellow)
+                .fg(theme::bucket_color(*section))
                 .add_modifier(Modifier::BOLD),
         )));
 
@@ -456,17 +572,29 @@ fn render_project_row(radar: &Radar, proj_idx: usize, is_selected: bool) -> Line
 
     let silence = silence_display(project.last_activity_at);
 
+    // Selection = reverse video (black on accent), bold — the same
+    // convention `dashboard.rs`'s `solid_selected_line` uses for its compact
+    // rows: "reverse video is the canonical current-selection signal"
+    // (`references/visual-patterns.md`), applied as a background fill rather
+    // than a text-color shift so it reads as a bar, not just a tint — the
+    // same reason `not-selected` uses `FG` (near-white) rather than a color
+    // close enough to `ACCENT` to blur the two states together.
     let style = if is_selected {
-        Style::default().fg(Color::Yellow)
+        Style::default().fg(Color::Black).bg(theme::ACCENT).add_modifier(Modifier::BOLD)
     } else {
-        Style::default().fg(Color::White)
+        Style::default().fg(theme::FG)
+    };
+    let meta_style = if is_selected {
+        style
+    } else {
+        Style::default().fg(theme::DIM)
     };
 
     Line::from(vec![
         Span::styled(format!(" {} ", glyph), style),
         Span::styled(format!("{}{}", name, dirty_marker), style),
-        Span::styled(format!("  {}", uncommitted), Style::default().fg(Color::DarkGray)),
-        Span::styled(format!(" {}", silence), Style::default().fg(Color::DarkGray)),
+        Span::styled(format!("  {}", uncommitted), meta_style),
+        Span::styled(format!(" {}", silence), meta_style),
     ])
 }
 
@@ -515,7 +643,7 @@ fn render_detail_pane(
             "",
             vec![Line::from(Span::styled(
                 "  No project selected",
-                Style::default().fg(Color::DarkGray),
+                Style::default().fg(theme::DIM),
             ))],
         ),
     };
@@ -534,14 +662,14 @@ fn render_detail_lines(project: &Project) -> Vec<Line<'static>> {
     let display_path = abbreviate_home(&project.path);
     lines.push(Line::from(Span::styled(
         format!("  Path: {}", display_path),
-        Style::default().fg(Color::White),
+        Style::default().fg(theme::FG),
     )));
 
     // Branch.
     let branch = project.git.branch.as_deref().unwrap_or("(none)");
     lines.push(Line::from(Span::styled(
         format!("  Branch: {}", branch),
-        Style::default().fg(Color::Cyan),
+        Style::default().fg(theme::BRANCH),
     )));
 
     // Dirty / uncommitted count.
@@ -551,12 +679,12 @@ fn render_detail_lines(project: &Project) -> Vec<Line<'static>> {
                 "  Dirty: {} uncommitted",
                 project.git.uncommitted_files
             ),
-            Style::default().fg(Color::Red),
+            Style::default().fg(theme::DANGER),
         ))
     } else {
         Line::from(Span::styled(
             "  Dirty: clean",
-            Style::default().fg(Color::Green),
+            Style::default().fg(theme::FRESH),
         ))
     };
     lines.push(dirty_line);
@@ -566,32 +694,34 @@ fn render_detail_lines(project: &Project) -> Vec<Line<'static>> {
         (Some(last), Some(mines)) if last != mines => {
             lines.push(Line::from(Span::styled(
                 format!("  Last commit: {}", format_commit(*last)),
-                Style::default().fg(Color::White),
+                Style::default().fg(theme::FG),
             )));
             lines.push(Line::from(Span::styled(
                 format!("  Mine      : {}", format_commit(*mines)),
-                Style::default().fg(Color::Green),
+                Style::default().fg(theme::FRESH),
             )));
         }
         (Some(last), _) => {
             lines.push(Line::from(Span::styled(
                 format!("  Last commit: {}", format_commit(*last)),
-                Style::default().fg(Color::White),
+                Style::default().fg(theme::FG),
             )));
         }
         (None, _) => {
             lines.push(Line::from(Span::styled(
                 "  Last commit: (none)",
-                Style::default().fg(Color::DarkGray),
+                Style::default().fg(theme::DIM),
             )));
         }
     }
 
-    // GitHub URL.
+    // GitHub URL — same accent as the Dashboard's `[gh]` marker
+    // (dashboard.rs's `compact_row_line`), so the same fact reads as the
+    // same color on both screens.
     if let Some(url) = &project.git.github_url {
         lines.push(Line::from(Span::styled(
             format!("  GitHub: {}", url),
-            Style::default().fg(Color::Green),
+            Style::default().fg(theme::ACCENT),
         )));
     }
 
@@ -600,9 +730,9 @@ fn render_detail_lines(project: &Project) -> Vec<Line<'static>> {
     lines.push(Line::from(Span::styled(
         format!("  Agent: {}", agent_label),
         Style::default().fg(if project.agent.state == AgentActivity::Working {
-            Color::Yellow
+            theme::FRESH
         } else {
-            Color::White
+            theme::FG
         }),
     )));
 
@@ -610,7 +740,7 @@ fn render_detail_lines(project: &Project) -> Vec<Line<'static>> {
     if let Some(session_id) = &project.agent.session_id {
         lines.push(Line::from(Span::styled(
             format!("  Session: {}", session_id),
-            Style::default().fg(Color::DarkGray),
+            Style::default().fg(theme::DIM),
         )));
     }
 
@@ -621,7 +751,7 @@ fn render_detail_lines(project: &Project) -> Vec<Line<'static>> {
     };
     lines.push(Line::from(Span::styled(
         format!("  Last activity: {}", last_activity),
-        Style::default().fg(Color::DarkGray),
+        Style::default().fg(theme::DIM),
     )));
 
     lines
@@ -665,6 +795,7 @@ mod tests {
             agent: AgentState::idle_unknown(),
             last_activity_at: None,
             status_bucket: bucket,
+            agent_activity: Vec::new(),
         }
     }
 
@@ -846,4 +977,37 @@ mod tests {
             );
         }
     }
+}
+
+/// A one-line transient message over the Browser — "nothing installed that can
+/// open in editor", "thing has no remote" (`ACT-9`).
+///
+/// Deliberately a thin bar rather than a dialog: it is informational, needs no
+/// answer, and is dismissed by the next keystroke. A modal would demand an
+/// acknowledgement the user has no decision to make about.
+pub fn render_notice(frame: &mut Frame, text: &str) {
+    use ratatui::widgets::Clear;
+
+    let area = frame.area();
+    if area.height < 3 {
+        return;
+    }
+    let width = (text.chars().count() as u16 + 4).min(area.width);
+    let bar = Rect {
+        x: area.width.saturating_sub(width) / 2,
+        y: area.height.saturating_sub(2),
+        width,
+        height: 1,
+    };
+    frame.render_widget(Clear, bar);
+    frame.render_widget(
+        Paragraph::new(Line::from(Span::styled(
+            format!("  {text}  "),
+            Style::default()
+                .fg(Color::Black)
+                .bg(crate::theme::AGING)
+                .add_modifier(Modifier::BOLD),
+        ))),
+        bar,
+    );
 }

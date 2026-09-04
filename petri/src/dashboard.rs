@@ -30,10 +30,77 @@
 use petridish_core::present;
 use petridish_core::schema::{AgentActivity, Project, Radar, StatusBucket};
 use ratatui::{
+    layout::{Constraint, Layout, Rect},
     style::{Color, Modifier, Style},
     text::{Line, Span},
-    widgets::Paragraph,
+    widgets::{Block, BorderType, Paragraph},
 };
+
+/// Below this many *content* rows (post chrome, see `render`'s
+/// `available_content`), RUNNING drops from roomy 4-line cards to the same
+/// single-line compact row IN FLIGHT/STALE/COLD already use. This is the
+/// "corner iTerm split" case worked out in the dashboard redesign discussion:
+/// a real 21-row split is wide enough for a roomy card's fields but too
+/// short to show more than a handful of them, so density is driven by row
+/// budget, not column width — width is spent widening the one line instead.
+const COMPACT_TIER_MAX_CONTENT_ROWS: usize = 16;
+
+/// Fewest rows worth spending on the SPACE-1 activity feed: one label and at least two
+/// event rows. Below that the block is chrome with nothing in it. (The feed draws no rule of
+/// its own — the section above it always ends in one; see `feed::feed_block_lines`.)
+const FEED_MIN_ROWS: usize = 3;
+
+
+/// Minimum roomy-card width before a second grid column is added. Below this a real branch
+/// name (`analysis/cross-registry-identity`) and its `git`/`agent` zone rows have no room to
+/// stay legible — chosen from the card's actual content budget (indent + `ZONE_LABEL_WIDTH` +
+/// a usable facts string + gap + a readable sparkline + tag), not a round number. Screen-fill
+/// review (dashboard redesign, wide-terminal follow-up): petri was leaving roughly half the
+/// terminal blank at real working widths because every section rendered as a single column
+/// regardless of how much width was available — this and `MIN_COMPACT_COL_WIDTH` are the fix.
+const MIN_ROOMY_CARD_WIDTH: usize = 60;
+/// Same idea for the single-line compact rows (STALE/COLD, and RUNNING once it drops into the
+/// compact tier) — narrower because these rows carry no sparkline to protect.
+const MIN_COMPACT_COL_WIDTH: usize = 45;
+/// IN FLIGHT rows carry their own git-activity sparkline (see `shows_git_sparkline`'s doc
+/// comment in `plan_layout`), so they need more width than `MIN_COMPACT_COL_WIDTH` before a
+/// second grid column is worth it — that constant was sized for the plain fields alone and
+/// isn't a safe base to build on here (an early version of this constant just added the
+/// sparkline's own width on top of it, which under-counted the plain fields themselves and
+/// silently clipped the sparkline off at the computed minimum — the exact bug this comment
+/// exists to prevent recurring). Computed from `compact_row_line`'s real field widths: leading
+/// space + name(26) + gap + branch(22) + gap + dirty(4) + gap + a worst-case commit-age string
+/// ("999d ago", 8) + gap + the `[gh]` marker (4), then the sparkline (`GIT_ACTIVITY_WINDOW_DAYS`
+/// samples) + its 2-space gap + `"14d"` tag, plus one more gap column so the two halves never
+/// touch.
+const MIN_INFLIGHT_COL_WIDTH: usize =
+    (1 + 26 + 1 + 22 + 1 + 4 + 1 + 8 + 1 + 4) + 1 + (petridish_core::schema::GIT_ACTIVITY_WINDOW_DAYS + 2 + 3);
+/// Column cap for either grid. Past this, cards get so narrow that branch names and paths
+/// truncate more than they inform — screen-fill should come from wider cards claiming the
+/// extra width, not an unbounded column count.
+const MAX_GRID_COLUMNS: usize = 4;
+/// Blank columns of separation between adjacent grid columns.
+const COLUMN_GUTTER: usize = 2;
+
+/// Physical rows a roomy card's bordered box occupies: 4 content lines (header, `git` zone,
+/// `agent` zone, path) + 1 top + 1 bottom border row. Grid-cell bounding + selection review:
+/// the earlier borderless card design left grid cells with no visual edge (nothing to tell the
+/// eye where one project's card ends and the next column's begins) and highlighted the
+/// selected card by painting background color under individual text spans, which left ragged
+/// gaps wherever a span didn't reach the card's full width. A real border fixes both: it's the
+/// cell boundary the grid was missing, and its color is the selection signal (`render_section`'s
+/// roomy branch) — the canonical "border color = focus" pattern (`references/visual-patterns.md`
+/// → *Typography in monospace* / *Borders*), so text inside the card no longer needs its own
+/// background fill to show selection.
+const ROOMY_CARD_BOX_ROWS: usize = 6;
+/// Indent for a roomy card's `git`/`agent`/path rows relative to its header — shorter than the
+/// pre-border design's 5 spaces since the border itself now provides the card's left edge.
+const ZONE_INDENT: &str = "  ";
+
+// The dashboard's truecolor palette lives in `crate::theme` — shared with
+// `browser.rs` so the two screens read as one app. See that module's doc
+// comment for the ANSI-16 → truecolor history.
+use crate::theme;
 
 /// Fixed section order, same as `browser::SECTION_ORDER`.
 pub const SECTION_ORDER: [StatusBucket; 4] = [
@@ -64,6 +131,30 @@ pub enum DashRow {
     Project(usize),
 }
 
+/// Where the cursor was pointing, in terms that survive a state-file reload.
+///
+/// `DashRow::Project` holds an index into `radar.projects`, and that index is
+/// **not** stable across scans — `swab` re-sorts on every tick, and projects
+/// appear and vanish — so anchoring on the raw index would silently move the
+/// cursor to a different project rather than keep it where the user put it.
+/// The anchor carries the project's `id` instead — the path-derived, stable key.
+///
+/// It carried the *name* first, which was wrong for a reason review caught and the
+/// author's own fleet proves: names are not unique. Two checkouts under different
+/// roots both called `smoke`, or a `git-katas` in two places, are ordinary — the
+/// live fleet this was developed against has `smoke` three times. Anchoring on a
+/// name therefore restores the cursor to *a* project with that name, not the one it
+/// was on, which is a subtler failure than losing the cursor outright: it looks like
+/// it worked. `Project::id` is derived from the path and is what the schema offers
+/// for exactly this.
+///
+/// A header anchors on its bucket, which never moves.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SelectionAnchor {
+    Header(StatusBucket),
+    Project(String),
+}
+
 /// Per-section collapse state, indexed by position in `SECTION_ORDER`.
 /// Defaults (petri/SPEC.md §3.2): `RUNNING`/`IN FLIGHT` (indices 0, 1)
 /// expanded, `STALE`/`COLD` (indices 2, 3) collapsed.
@@ -81,6 +172,29 @@ fn section_index(bucket: &StatusBucket) -> usize {
     SECTION_ORDER.iter().position(|b| b == bucket).expect("bucket not in SECTION_ORDER")
 }
 
+/// Ceiling on how far "quietest first" can promote a project up the RUNNING
+/// list (ADR-0001's original ordering, unbounded). Real-world use surfaced
+/// the failure mode: a project whose agent session has just sat open and
+/// unused for days will always be quieter than one you actively prompted a
+/// few minutes ago, so unbounded quietest-first let the days-old forgotten
+/// tab permanently bury the session someone was actually mid-run on — the
+/// opposite of "the stalled run is the one that needs you." Past this
+/// ceiling, silence has stopped meaning "might be stalled" and started
+/// meaning "probably forgotten," so those projects sort into one group
+/// *below* everything still under the ceiling, instead of competing with it
+/// on raw duration. They stay in RUNNING (per ADR-0001 — a live agent
+/// process in a forgotten tab still counts), just not at the top of it.
+const RUNNING_ATTENTION_CEILING_S: i64 = 3 * 60 * 60; // 3 hours
+
+/// Silence in seconds for sort purposes: `None` (never had any activity) is
+/// maximally silent, same convention the pre-ceiling sort used.
+fn silence_secs_for_sort(p: &Project) -> i64 {
+    match p.last_activity_at {
+        Some(dt) => chrono::Utc::now().signed_duration_since(dt).num_seconds().max(0),
+        None => i64::MAX,
+    }
+}
+
 impl DashboardState {
     /// Membership for the `RUNNING` (Active) section per ADR-0001: a project
     /// counts as running if its own `status_bucket` is `Active`, OR it has at
@@ -88,8 +202,10 @@ impl DashboardState {
     /// whose own `status_bucket` is `Active`. `is_foreign` projects are
     /// always excluded. Display-only — never mutates `status_bucket`.
     ///
-    /// Ordered quietest first: oldest `last_activity_at` first, `None`
-    /// treated as maximally silent (sorts before any `Some`).
+    /// Ordered quietest-first *within* `RUNNING_ATTENTION_CEILING_S`, then
+    /// everything past that ceiling as one group below it (also
+    /// quietest-first internally) — see the constant's doc comment for why
+    /// unbounded quietest-first got replaced.
     ///
     /// Associated function (no `self`) so `DashboardState::running_membership(&radar)`
     /// is directly callable — matches `petri/tests/s6_dashboard.rs`'s call sites.
@@ -116,14 +232,14 @@ impl DashboardState {
             .collect();
 
         members.sort_by(|&a, &b| {
-            let a_activity = radar.projects[a].last_activity_at;
-            let b_activity = radar.projects[b].last_activity_at;
-            match (a_activity, b_activity) {
-                (None, None) => std::cmp::Ordering::Equal,
-                (None, Some(_)) => std::cmp::Ordering::Less,
-                (Some(_), None) => std::cmp::Ordering::Greater,
-                (Some(at_a), Some(at_b)) => at_a.cmp(&at_b),
-            }
+            let a_secs = silence_secs_for_sort(&radar.projects[a]);
+            let b_secs = silence_secs_for_sort(&radar.projects[b]);
+            let a_forgotten = a_secs >= RUNNING_ATTENTION_CEILING_S;
+            let b_forgotten = b_secs >= RUNNING_ATTENTION_CEILING_S;
+            // Group first (fresh group before the forgotten group), then
+            // *longer* silence first within a group — silence in seconds
+            // grows with age, so this is `b` vs `a`, not `a` vs `b`.
+            a_forgotten.cmp(&b_forgotten).then(b_secs.cmp(&a_secs))
         });
 
         members
@@ -147,6 +263,65 @@ impl DashboardState {
         };
         state.rebuild(radar);
         state
+    }
+
+    /// The current selection expressed as a reload-stable `SelectionAnchor`.
+    /// Call this against the radar the cursor was placed under, *before*
+    /// swapping in a fresh one.
+    pub fn selection_anchor(&self, radar: &Radar) -> Option<SelectionAnchor> {
+        match self.visible.get(self.selected?)? {
+            DashRow::Header(b) => Some(SelectionAnchor::Header(*b)),
+            DashRow::Project(i) => radar
+                .projects
+                .get(*i)
+                .map(|p| SelectionAnchor::Project(p.id.clone())),
+        }
+    }
+
+    /// Re-derive the visible rows from a freshly-read `radar` while keeping the
+    /// state that belongs to the *user* rather than to the scan: which sections
+    /// they collapsed, and which row they had selected.
+    ///
+    /// This exists because the alternative — rebuilding with
+    /// `DashboardState::new` on every reload — silently discards both. The
+    /// Dashboard reloads whenever `swab` writes the state file, which on a busy
+    /// machine is every few seconds, so a section the user collapsed would pop
+    /// back open and the cursor would jump to the top of the list under their
+    /// hands. Collapse is described by petri/SPEC.md §3.2 as how real estate
+    /// gets allocated on this screen "deliberately by the user, not by a fixed
+    /// priority ladder"; a reload that overrides it makes that untrue.
+    ///
+    /// `anchor` is restored when the row it names still exists. When it does
+    /// not — the project dropped out of its section, or vanished entirely — the
+    /// cursor clamps to the nearest still-valid index rather than resetting to
+    /// the top, so a project leaving the list does not throw the cursor away
+    /// from where the user was working. This mirrors the Browser's documented
+    /// reload behaviour (`lib.rs`: selection follows the previously-selected
+    /// project when it survives), which had no counterpart here.
+    pub fn refresh(&mut self, radar: &Radar, anchor: Option<SelectionAnchor>) {
+        let previous_index = self.selected;
+        self.rebuild(radar); // resets `selected` to the first stop
+        if self.visible.is_empty() {
+            self.selected = None;
+            return;
+        }
+
+        let restored = anchor.and_then(|a| {
+            self.visible.iter().position(|row| match (row, &a) {
+                (DashRow::Header(b), SelectionAnchor::Header(want)) => b == want,
+                (DashRow::Project(i), SelectionAnchor::Project(id)) => {
+                    radar.projects.get(*i).is_some_and(|p| &p.id == id)
+                }
+                _ => false,
+            })
+        });
+
+        self.selected = Some(match restored {
+            Some(pos) => pos,
+            // The anchored row is gone: stay as close to it as the new list
+            // allows instead of snapping to row 0.
+            None => previous_index.unwrap_or(0).min(self.visible.len() - 1),
+        });
     }
 
     /// Membership list for a given section (RUNNING via `running_membership`,
@@ -258,39 +433,303 @@ impl DashboardState {
     }
 }
 
-/// Render the Dashboard into `frame`. Per petri/SPEC.md §3.2, and following
-/// petripy's actual chrome (`src/petridish/screens.py`'s `_header`/`_section`)
-/// since the first Rust pass under-used the real estate collapsible sections
-/// were meant to free up:
-/// - Header: a badged `petri · dashboard` title, project count/clock/scan
-///   duration on the right, then a HEAVY double rule (`═`) the full width —
-///   this is the thing that makes the header read as a header, not "a line
-///   of text that nearly disappears into the rest."
-/// - Each section is bracketed by light rules (`─`): one above (skipped for
-///   the very first section, which already sits under the header's heavy
-///   rule) and one below its label line, mirroring petripy's `_section`.
-/// - `RUNNING` section: roomy 3-line cards (name/dirty/uncommitted + silence
-///   & agent; branch + event-or-commit; `~`-abbreviated path + session id)
-///   plus a blank separator line — matching petripy's actual roomy density,
-///   not a single crammed line per project.
-/// - `IN FLIGHT`/`STALE`/`COLD`: compact single-line rows (name, branch,
-///   `✎N`, commit age, `gh` marker).
+/// Number of grid columns a section gets for a given content width. Shared by roomy RUNNING
+/// cards and the single-line compact sections — the only difference between them is
+/// `min_col_width` (see `MIN_ROOMY_CARD_WIDTH`/`MIN_COMPACT_COL_WIDTH`'s doc comments).
+fn grid_columns(min_col_width: usize, available_width: usize) -> usize {
+    if available_width == 0 || min_col_width == 0 {
+        return 1;
+    }
+    let mut columns = 1usize;
+    while columns < MAX_GRID_COLUMNS {
+        let candidate = columns + 1;
+        let usable = available_width.saturating_sub((candidate - 1) * COLUMN_GUTTER);
+        if usable / candidate < min_col_width {
+            break;
+        }
+        columns = candidate;
+    }
+    columns
+}
+
+/// The width one column gets once `grid_columns` has decided how many there are — the extra
+/// width past `min_col_width` (a wide terminal with only 2 columns' worth of content) is
+/// distributed evenly, which is what lets the agent sparkline grow past its old fixed 20-sample
+/// width (see `agent_sparkline_width_for`) instead of leaving the extra width blank.
+fn column_width(available_width: usize, columns: usize) -> usize {
+    if columns == 0 {
+        return available_width;
+    }
+    let usable = available_width.saturating_sub((columns - 1) * COLUMN_GUTTER);
+    usable / columns
+}
+
+/// One section's resolved geometry within a `DashPlan`. `render` turns this into real `Rect`s;
+/// `plan_layout` computes it from nothing but counts, so it's assertable without a `Frame`.
+pub struct SectionPlan {
+    pub bucket: StatusBucket,
+    pub member_count: usize,
+    /// Rows spent on chrome (rule-above [if not the first section] + label + rule-below): 2 or 3.
+    pub chrome_rows: usize,
+    pub columns: usize,
+    pub card_width: usize,
+    /// Physical rows one item occupies: 5 for a roomy RUNNING card, 1 for a compact row.
+    pub item_span: usize,
+    pub items_shown: usize,
+    /// Grid rows actually rendered (`items_shown` divided across `columns`, rounded up).
+    pub grid_rows: usize,
+    /// `Some(remaining)` when this section's own rows were truncated mid-render (its header
+    /// fit, but not every row) — distinct from `DashPlan::skipped`, which is sections that had
+    /// no room even for their header.
+    pub truncated_remaining: Option<usize>,
+}
+
+/// A fully resolved Dashboard layout — the pure function `render` builds before touching a
+/// `Frame`, so every breakpoint decision (columns per section, card width, which sections fit)
+/// is unit-testable at a pinned `Rect` + synthetic `Radar` with no `TestBackend` involved. See
+/// `references/ecosystem-rust.md`'s testing section: "extracting layout math into a pure
+/// `fn compute_layout(area) -> ...` makes per-size assertions cheap."
+///
+/// Two things this struct deliberately does NOT carry, both raised in the dashboard redesign
+/// discussion as "keep the door open, don't build it now": a quota-gauge rail (`Radar.quota:
+/// Option<QuotaState>` already exists in the schema; SPEC.md §7 already names it "the most
+/// likely first post-v1 addition") and a >200-col merged Dashboard+Browser pane. Both slot in
+/// the same way when someone actually builds them: carve their `Rect` from `fleet` before the
+/// per-section column math runs (rail from one edge, secondary pane as its own region), which
+/// only touches this function — `render`'s section-drawing loop and `DashboardState`'s cursor
+/// are unaffected either way. Not modeled as `Option<Rect>` fields here because nothing reads
+/// them yet; add them when the first real consumer exists.
+pub struct DashPlan {
+    pub compact_tier: bool,
+    pub fleet_rows: usize,
+    pub sections: Vec<SectionPlan>,
+    /// Sections that didn't fit even their own header+count — named in the "not shown" summary
+    /// row instead of silently disappearing (SPEC.md §3.2's "truncate, do not scroll").
+    pub skipped: Vec<(StatusBucket, usize)>,
+    /// Rows granted to the SPACE-1 activity feed, `0` when it is not drawn at all. See
+    /// `feed_rows_for` for the rule.
+    pub feed_rows: usize,
+}
+
+/// How many rows the SPACE-1 activity feed gets out of whatever height the sections left
+/// unspent — `0` when it must not be drawn at all.
+///
+/// **The feed only ever gets rows no section could have used**, which is why it needs no
+/// yield rule at all. An earlier version refused to draw whenever anything was truncated or
+/// skipped, on the reasoning that hidden projects outrank a feed. That reasoning was right
+/// and the guard was still redundant, because of how `plan_layout` spends its budget:
+///
+/// - A section that **truncated** stopped because the remainder is smaller than one more
+///   `item_span` — a roomy card is 7 rows, so at most 6 are left and no further card fits.
+/// - A section that was **skipped** was skipped because fewer than its 3 chrome rows
+///   remained, so under 3 are left and `FEED_MIN_ROWS` rejects that anyway.
+/// - Later sections in both cases already took whatever they could on their own pass.
+///
+/// So the leftover is unusable by the fleet by construction, and the guard was reserving
+/// blank rows rather than protecting project rows. Removing it strictly increases what is
+/// on screen. The same argument retires the old compact-tier suppression: leftover is
+/// leftover, and blank rows help nobody on a small terminal either.
+///
+/// Otherwise it **grows to fill the slack**, which is SPACE-1's entire purpose — bounded
+/// only by how much activity there is to show (`feed_events` rows plus the rule and label).
+/// Claiming surplus it would fill with blank rows would be worse than giving it back to the
+/// `Fill` catch-all, so a quiet fleet gets a small block and a busy one gets a tall one.
+///
+/// `0` rather than a stub block if fewer than `FEED_MIN_ROWS` remain.
+///
+/// There is deliberately **no fixed ceiling**. An earlier version capped this at 12 rows to
+/// reserve surplus for `SPACE-2`/`SPACE-3` to spend later; that reserved space for features
+/// that do not exist, against the one that does, and on a 30-row-surplus terminal it left
+/// two thirds of the slack blank — the exact complaint SPACE-1 was written to answer.
+pub fn feed_rows_for(
+    compact_tier: bool,
+    fleet_rows: usize,
+    used: usize,
+    sections: &[SectionPlan],
+    skipped: &[(StatusBucket, usize)],
+    feed_events: usize,
+) -> usize {
+    // `compact_tier`, `sections` and `skipped` are no longer consulted — see the doc comment
+    // for why each guard turned out to be redundant with the arithmetic below. They stay in
+    // the signature because the caller has them and a future rule may want them again;
+    // silently dropping the parameters would make that rule harder to write.
+    let _ = (compact_tier, sections, skipped);
+    let surplus = fleet_rows.saturating_sub(used);
+    if surplus < FEED_MIN_ROWS {
+        return 0;
+    }
+    // Take the slack, up to what there is to put in it. `+ 1` is the label row; the `max`
+    // keeps an empty feed big enough to say so rather than vanishing.
+    let wanted = FEED_MIN_ROWS.max(feed_events.saturating_add(1));
+    wanted.min(surplus)
+}
+
+/// Compute `DashPlan` from `area`, `radar`'s section membership, and which sections
+/// `collapsed` hides — pure, no `Frame`/`TestBackend` needed. Mirrors the pre-grid `render`'s
+/// budget accounting exactly for the `columns == 1` case (same `fleet_rows` formula, same
+/// per-section chrome/truncation rules) — the grid only changes how a section's *own* row
+/// budget gets spent, not the overall section-fits-or-not accounting.
+pub fn plan_layout(
+    area: Rect,
+    radar: &Radar,
+    collapsed: CollapsedState,
+    feed_events: usize,
+) -> DashPlan {
+    let width = area.width as usize;
+    let elapsed_secs = chrono::Utc::now().signed_duration_since(radar.updated_at).num_seconds().max(0);
+    let is_stale = elapsed_secs > 86400;
+
+    // 2 header rows (title + heavy rule) + 2 footer rows (light rule + keymap) + 1 reserved row
+    // for the cross-section "not shown" summary — see the pre-grid version's comment (now
+    // folded in here) for why that reservation is unconditional rather than added only when
+    // needed: a real 80-project fleet in a 16-row corner split showed STALE/COLD can fail to
+    // fit even their own header, and without an always-reserved row they vanished with zero
+    // indication, which is exactly the silent-truncation failure mode SPEC.md §3.2 rules out.
+    let fixed_rows = 2 + 2 + usize::from(is_stale);
+    let fleet_rows = (area.height as usize).saturating_sub(fixed_rows).saturating_sub(1);
+    let compact_tier = fleet_rows <= COMPACT_TIER_MAX_CONTENT_ROWS;
+
+    let mut sections: Vec<SectionPlan> = Vec::new();
+    let mut skipped: Vec<(StatusBucket, usize)> = Vec::new();
+    let mut used = 0usize;
+
+    'sections: for (si, bucket) in SECTION_ORDER.iter().enumerate() {
+        let members = DashboardState::section_members(radar, *bucket);
+        if members.is_empty() {
+            continue;
+        }
+
+        let is_first_section = sections.is_empty();
+        // Consecutive collapsed sections share one strip (`collapsed_strip_line`), so only
+        // the first of a run pays for chrome; the rest cost nothing at all. Three collapsed
+        // sections used to spend 9 rows saying almost nothing — the same 3 a single expanded
+        // section's header costs, times three.
+        let joins_open_strip = collapsed[si]
+            && sections
+                .last()
+                .is_some_and(|prev| collapsed[section_index(&prev.bucket)]);
+        let chrome_rows = if joins_open_strip {
+            0
+        } else if is_first_section {
+            2
+        } else {
+            3
+        };
+        if used + chrome_rows > fleet_rows {
+            skipped.push((*bucket, members.len()));
+            for later_bucket in SECTION_ORDER.iter().skip(si + 1) {
+                let later_members = DashboardState::section_members(radar, *later_bucket);
+                if !later_members.is_empty() {
+                    skipped.push((*later_bucket, later_members.len()));
+                }
+            }
+            break 'sections;
+        }
+        used += chrome_rows;
+
+        let roomy = *bucket == StatusBucket::Active && !compact_tier;
+        // Roomy card physical footprint: 4 content lines + a 2-row border (`ROOMY_CARD_BOX_ROWS`)
+        // + a 1-row gap before the next card in the same column. The border itself is now what
+        // separates one card from the next (and, via its color, signals selection) — see
+        // `render_section`'s roomy branch.
+        let item_span = if roomy { ROOMY_CARD_BOX_ROWS + 1 } else { 1 };
+        // IN FLIGHT rows carry their own git-activity sparkline (`compact_row_line`'s
+        // `show_git_sparkline`) — a deliberate alignment: IN FLIGHT's default upper bound is 14
+        // days (`swab`'s `in_flight` threshold), the same span `GIT_ACTIVITY_WINDOW_DAYS`
+        // covers, so "how alive is this branch over the window IN FLIGHT itself represents" is
+        // exactly what the section is already about. STALE/COLD spans (60 days, unbounded) are
+        // not aligned the same way, so they keep the plain compact row.
+        let shows_git_sparkline = *bucket == StatusBucket::InFlight;
+        let min_col_width = if roomy {
+            MIN_ROOMY_CARD_WIDTH
+        } else if shows_git_sparkline {
+            MIN_INFLIGHT_COL_WIDTH
+        } else {
+            MIN_COMPACT_COL_WIDTH
+        };
+        let max_columns_by_width = grid_columns(min_col_width, width);
+        let rows_budget = fleet_rows.saturating_sub(used);
+        // Column count: a roomy card's individual content genuinely improves with more width
+        // (the agent sparkline scales up to real additional history — see
+        // `agent_sparkline_width_for`), so RUNNING always claims what the width-driven ladder
+        // allows. A compact row's content does NOT scale with width (fixed fields; even the new
+        // IN FLIGHT git sparkline is capped at `GIT_ACTIVITY_WINDOW_DAYS` regardless of column
+        // width), so gridding one wider than necessary buys nothing but fragments a section that
+        // would otherwise read as one clean list — use the fewest columns (starting at 1) that
+        // still avoid truncating this section within its own row budget, and only reach for
+        // more when a single column genuinely would not fit.
+        let columns = if roomy {
+            max_columns_by_width
+        } else {
+            (1..=max_columns_by_width)
+                .find(|&c| members.len().div_ceil(c) * item_span <= rows_budget)
+                .unwrap_or(max_columns_by_width)
+        };
+        let card_width = column_width(width, columns);
+
+        let (items_shown, grid_rows, truncated_remaining) = if collapsed[si] {
+            (0, 0, None)
+        } else {
+            let grid_rows_needed = members.len().div_ceil(columns);
+            if grid_rows_needed * item_span > rows_budget {
+                let rows_that_fit = rows_budget / item_span;
+                let shown = (rows_that_fit * columns).min(members.len());
+                (shown, rows_that_fit, Some(members.len() - shown))
+            } else {
+                (members.len(), grid_rows_needed, None)
+            }
+        };
+
+        used += grid_rows * item_span;
+        if truncated_remaining.is_some() {
+            used += 1; // the "… +N more" marker row
+        }
+
+        sections.push(SectionPlan {
+            bucket: *bucket,
+            member_count: members.len(),
+            chrome_rows,
+            columns,
+            card_width,
+            item_span,
+            items_shown,
+            grid_rows,
+            truncated_remaining,
+        });
+    }
+
+    let feed_rows = feed_rows_for(compact_tier, fleet_rows, used, &sections, &skipped, feed_events);
+    DashPlan { compact_tier, fleet_rows, sections, skipped, feed_rows }
+}
+
+/// Render the Dashboard into `frame`. Per petri/SPEC.md §3.2, and following petripy's actual
+/// chrome (`src/petridish/screens.py`'s `_header`/`_section`):
+/// - Header: a badged `petri · dashboard` title, project count/clock/scan duration on the
+///   right, then a HEAVY double rule (`═`) the full width.
+/// - Each section is bracketed by light rules (`─`): one above (skipped for the very first
+///   section) and one below its label line.
+/// - **Sections lay their items out in a grid**, not a single always-narrow column: `plan_layout`
+///   decides how many columns fit at the current width (`grid_columns`), items are assigned
+///   row-major (left column, then right, then the next row down) so `j`/`k` still walks a flat
+///   sequence — see `DashboardState`'s module doc comment for why the cursor itself didn't need
+///   to change for this. `RUNNING` gets roomy cards (`roomy_card_lines`); `IN FLIGHT`/`STALE`/
+///   `COLD`, and `RUNNING` once it drops into the compact tier, get single-line rows.
 /// - Collapsed sections still render their header + count, but no rows.
-/// - **Overflow: truncate, never scroll.** If expanded sections exceed the
-///   available height, sections emit in priority order (`SECTION_ORDER`) and
-///   stop, with a required `… +N more` marker at the cut — accounting for
-///   each roomy card's real 4-line footprint (3 content + 1 blank), not
-///   1 line per item.
+/// - **Overflow: truncate, never scroll.** If a section's own rows exceed its share of the
+///   height, it stops with a required `… +N more` marker; sections with no room even for their
+///   header are named in one summary row instead of disappearing.
 /// - Staleness banner when `radar.updated_at` is older than 24h.
 /// - Must not panic on an empty `radar.projects`, nor at 0×0 or 1×1.
 ///
-/// Worktree nesting/rollup (indented children, `name · N worktrees` rollup
-/// counts in compact sections) is deliberately NOT attempted here — the
-/// acceptance gate (`s6_dashboard.rs`'s module doc comment) documents this as
-/// ambiguous against the only fixture that exercises it, and does not assert
-/// it. Left as a follow-up once the spec's ambiguity for a parent whose own
-/// section differs from its worktree child's section is resolved.
-pub fn render(frame: &mut ratatui::Frame, radar: &Radar, state: &DashboardState) {
+/// Worktree nesting/rollup (indented children, `name · N worktrees` rollup counts in compact
+/// sections) is deliberately NOT attempted here — the acceptance gate (`s6_dashboard.rs`'s
+/// module doc comment) documents this as ambiguous against the only fixture that exercises it.
+pub fn render(
+    frame: &mut ratatui::Frame,
+    radar: &Radar,
+    state: &DashboardState,
+    feed: &crate::feed::FeedState,
+) {
     let area = frame.area();
     if area.width == 0 || area.height == 0 {
         return;
@@ -307,89 +746,267 @@ pub fn render(frame: &mut ratatui::Frame, radar: &Radar, state: &DashboardState)
     let now = chrono::Utc::now();
     let scan_secs = radar.scan_duration_ms as f64 / 1000.0;
 
-    let stale_banner: Option<Line<'static>> = if is_stale {
-        Some(Line::from(Span::styled(
-            format!(" ⚠ Data stale (updated {} ago)", humanize_secs(elapsed_secs as u64)),
-            Style::default().fg(Color::Black).bg(Color::Red).add_modifier(Modifier::BOLD),
-        )))
-    } else {
-        None
-    };
+    let plan = plan_layout(area, radar, state.collapsed, feed.events().len());
 
-    // 2 header lines (title + heavy rule) + 2 footer lines (light rule +
-    // keymap), same accounting discipline as before: every physical row this
-    // function will emit is counted here, so the "+N more" marker can never
-    // be pushed off the bottom of the terminal by a mis-budgeted item.
-    let available_content = (area.height as usize)
-        .saturating_sub(4)
-        .saturating_sub(usize::from(is_stale));
+    let [header_area, banner_area, fleet_area, footer_area] = Layout::vertical([
+        Constraint::Length(2),
+        Constraint::Length(u16::from(is_stale)),
+        Constraint::Min(0),
+        Constraint::Length(2),
+    ])
+    .areas(area);
 
-    let mut content_lines: Vec<Line<'static>> = Vec::new();
-    'sections: for (si, bucket) in SECTION_ORDER.iter().enumerate() {
-        let members = DashboardState::section_members(radar, *bucket);
-        if members.is_empty() {
-            continue;
-        }
+    frame.render_widget(Paragraph::new(header_lines(radar, &now, scan_secs, width)), header_area);
 
-        let is_first_section = content_lines.is_empty();
-        let chrome_lines = if is_first_section { 2 } else { 3 }; // [rule_above] + label + rule_below
-        if content_lines.len() + chrome_lines > available_content {
-            break;
+    if is_stale {
+        // `▲`, not `⚠` — the latter (U+26A0, Unicode 4.0) is the exact
+        // codepoint that rendered as a blank cell on the macOS 14 CI runner
+        // under ncurses/wcwidth (petri/SPEC.md §4.2's founding incident). This
+        // banner exists specifically so a stale scan can't fail silently;
+        // reusing the one glyph proven to do exactly that here would be
+        // ironic at best.
+        let banner = Line::from(Span::styled(
+            format!(" ▲ Data stale (updated {} ago)", humanize_secs(elapsed_secs as u64)),
+            Style::default().fg(Color::Black).bg(theme::DANGER).add_modifier(Modifier::BOLD),
+        ));
+        frame.render_widget(Paragraph::new(vec![banner]), banner_area);
+    }
+
+    frame.render_widget(
+        Paragraph::new(vec![rule_line(width, Color::DarkGray), footer_line()]),
+        footer_area,
+    );
+
+    // Carve `fleet_area` into one Rect per section (by its resolved row count) plus a trailing
+    // summary row (only sized >0 when something was skipped) and a final `Fill` catch-all for
+    // any genuinely-unused height — legitimate when every section's real content already fits
+    // (there is no more data to show, not a layout bug); this is also where a future widget
+    // rail or secondary pane would claim space, per `DashPlan`'s doc comment.
+    let mut section_constraints: Vec<Constraint> = plan
+        .sections
+        .iter()
+        .map(|s| Constraint::Length((s.chrome_rows + s.grid_rows * s.item_span + usize::from(s.truncated_remaining.is_some())) as u16))
+        .collect();
+    section_constraints.push(Constraint::Length(u16::from(!plan.skipped.is_empty())));
+    // The SPACE-1 feed claims the surplus `feed_rows_for` granted it, ahead of the `Fill`
+    // catch-all — which stays, because `feed_rows` is 0 whenever the feed must not draw.
+    section_constraints.push(Constraint::Length(plan.feed_rows as u16));
+    section_constraints.push(Constraint::Fill(1));
+    let section_rects = Layout::vertical(section_constraints).split(fleet_area);
+
+    // Group consecutive collapsed sections into strips. Derived here rather than stored on
+    // `DashPlan` because `state.collapsed` is the only input and `plan_layout` already
+    // encoded the consequence in `chrome_rows` — a second copy could disagree with it.
+    let mut strips: Vec<Option<Vec<StatusBucket>>> = vec![None; plan.sections.len()];
+    let mut i = 0;
+    while i < plan.sections.len() {
+        if state.collapsed[section_index(&plan.sections[i].bucket)] {
+            let mut run = Vec::new();
+            let mut j = i;
+            while j < plan.sections.len()
+                && state.collapsed[section_index(&plan.sections[j].bucket)]
+            {
+                run.push(plan.sections[j].bucket);
+                j += 1;
+            }
+            strips[i] = Some(run);
+            i = j;
+        } else {
+            i += 1;
         }
-        if !is_first_section {
-            content_lines.push(rule_line(width, Color::DarkGray));
-        }
-        let is_selected_header = matches!(
-            state.selected.and_then(|i| state.visible.get(i)),
-            Some(DashRow::Header(b)) if *b == *bucket
+    }
+
+    for (plan_idx, section) in plan.sections.iter().enumerate() {
+        render_section(
+            frame,
+            section_rects[plan_idx],
+            radar,
+            state,
+            section,
+            width,
+            plan_idx == 0,
+            strips[plan_idx].as_deref(),
         );
-        content_lines.push(section_header_line(radar, *bucket, members.len(), is_selected_header, width));
-        content_lines.push(rule_line(width, Color::DarkGray));
+    }
 
-        if !state.collapsed[si] {
-            let item_span = if *bucket == StatusBucket::Active { 4 } else { 1 };
-            for (member_pos, &proj_idx) in members.iter().enumerate() {
-                if content_lines.len() + item_span > available_content {
-                    let remaining = members.len() - member_pos;
-                    content_lines.push(Line::from(Span::styled(
-                        format!(" … +{remaining} more"),
-                        Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD),
-                    )));
-                    continue 'sections;
+    if !plan.skipped.is_empty() {
+        let summary = plan
+            .skipped
+            .iter()
+            .map(|(bucket, count)| {
+                let label = SECTION_LABELS.iter().find(|(b, _)| b == bucket).map(|(_, l)| *l).unwrap_or("?");
+                format!("{label} +{count}")
+            })
+            .collect::<Vec<_>>()
+            .join("  ·  ");
+        let summary_rect = section_rects[plan.sections.len()];
+        frame.render_widget(
+            Paragraph::new(vec![Line::from(Span::styled(
+                format!(" … not shown: {summary} — resize taller"),
+                Style::default().fg(theme::AGING).add_modifier(Modifier::BOLD),
+            ))]),
+            summary_rect,
+        );
+    }
+
+    if plan.feed_rows > 0 {
+        let feed_rect = section_rects[plan.sections.len() + 1];
+        frame.render_widget(
+            Paragraph::new(crate::feed::feed_block_lines(feed, now, width, plan.feed_rows)),
+            feed_rect,
+        );
+    }
+}
+
+/// Render one section's chrome + grid into `rect`, per `SectionPlan`'s resolved geometry.
+fn render_section(
+    frame: &mut ratatui::Frame,
+    rect: Rect,
+    radar: &Radar,
+    state: &DashboardState,
+    section: &SectionPlan,
+    fleet_width: usize,
+    is_first_section: bool,
+    strip: Option<&[StatusBucket]>,
+) {
+    // A collapsed section that merely joins a strip has no rows of its own: the lead of its
+    // run already drew every label, including this one. `plan_layout` gave it a zero-height
+    // rect to match.
+    if section.chrome_rows == 0 {
+        return;
+    }
+    let members = DashboardState::section_members(radar, section.bucket);
+
+    let [chrome_rect, grid_rect, marker_rect] = Layout::vertical([
+        Constraint::Length(section.chrome_rows as u16),
+        Constraint::Length((section.grid_rows * section.item_span) as u16),
+        Constraint::Length(u16::from(section.truncated_remaining.is_some())),
+    ])
+    .areas(rect);
+
+    let mut chrome_lines = Vec::with_capacity(3);
+    if !is_first_section {
+        chrome_lines.push(rule_line(fleet_width, Color::DarkGray));
+    }
+    let is_selected_header = matches!(
+        state.selected.and_then(|i| state.visible.get(i)),
+        Some(DashRow::Header(b)) if *b == section.bucket
+    );
+    chrome_lines.push(match strip {
+        Some(run) => collapsed_strip_line(radar, run, state, fleet_width),
+        None => section_header_line(radar, section.bucket, section.member_count, is_selected_header, fleet_width),
+    });
+    chrome_lines.push(rule_line(fleet_width, Color::DarkGray));
+    frame.render_widget(Paragraph::new(chrome_lines), chrome_rect);
+
+    if section.items_shown > 0 {
+        let columns = section.columns.max(1);
+        let roomy = section.item_span == ROOMY_CARD_BOX_ROWS + 1;
+
+        // Row-major assignment (column c gets items c, c+columns, c+2*columns, …) — this is
+        // what keeps `j`/`k` walking `DashboardState`'s flat `Vec<DashRow>` in plain reading
+        // order (left column, then right, then the next row down) even though the grid renders
+        // multiple columns; see this module's doc comment on why the cursor didn't need to
+        // become 2D for this. Stacking each column's own items top-down independently (below)
+        // still lines up row-for-row across columns because every card/row in a section has the
+        // same fixed height, regardless of how many total items landed in that column.
+        let mut column_members: Vec<Vec<usize>> = vec![Vec::new(); columns];
+        for (i, &proj_idx) in members.iter().take(section.items_shown).enumerate() {
+            column_members[i % columns].push(proj_idx);
+        }
+
+        let mut column_constraints: Vec<Constraint> = Vec::with_capacity(columns * 2);
+        for c in 0..columns {
+            column_constraints.push(Constraint::Length(section.card_width as u16));
+            if c + 1 < columns {
+                column_constraints.push(Constraint::Length(COLUMN_GUTTER as u16));
+            }
+        }
+        let column_rects = Layout::horizontal(column_constraints).split(grid_rect);
+
+        for (c, proj_indices) in column_members.into_iter().enumerate() {
+            let col_rect = column_rects[c * 2];
+            if roomy {
+                let inner_width = section.card_width.saturating_sub(2);
+                let mut card_constraints: Vec<Constraint> = Vec::with_capacity(proj_indices.len() * 2);
+                for i in 0..proj_indices.len() {
+                    card_constraints.push(Constraint::Length(ROOMY_CARD_BOX_ROWS as u16));
+                    if i + 1 < proj_indices.len() {
+                        card_constraints.push(Constraint::Length(1)); // gap before the next card
+                    }
                 }
-                let is_selected_row = matches!(
-                    state.selected.and_then(|i| state.visible.get(i)),
-                    Some(DashRow::Project(idx)) if *idx == proj_idx
-                );
-                if *bucket == StatusBucket::Active {
-                    content_lines.extend(roomy_card_lines(radar, proj_idx, is_selected_row, width));
-                } else {
-                    content_lines.push(compact_row_line(radar, proj_idx, is_selected_row));
+                let card_rects = Layout::vertical(card_constraints).split(col_rect);
+                for (i, &proj_idx) in proj_indices.iter().enumerate() {
+                    let is_selected = matches!(
+                        state.selected.and_then(|i| state.visible.get(i)),
+                        Some(DashRow::Project(idx)) if *idx == proj_idx
+                    );
+                    let border_style = if is_selected {
+                        Style::default().fg(theme::ACCENT).add_modifier(Modifier::BOLD)
+                    } else {
+                        Style::default().fg(theme::DIMMER)
+                    };
+                    let block = Block::bordered().border_type(BorderType::Rounded).border_style(border_style);
+                    let lines = roomy_card_lines(radar, proj_idx, inner_width);
+                    frame.render_widget(Paragraph::new(lines).block(block), card_rects[i * 2]);
                 }
+            } else {
+                let lines: Vec<Line<'static>> = proj_indices
+                    .iter()
+                    .map(|&proj_idx| {
+                        let is_selected = matches!(
+                            state.selected.and_then(|i| state.visible.get(i)),
+                            Some(DashRow::Project(idx)) if *idx == proj_idx
+                        );
+                        if section.bucket == StatusBucket::Active {
+                            compact_running_row_line(radar, proj_idx, is_selected, section.card_width)
+                        } else {
+                            compact_row_line(radar, proj_idx, is_selected, section.card_width, section.bucket == StatusBucket::InFlight)
+                        }
+                    })
+                    .collect();
+                frame.render_widget(Paragraph::new(lines), col_rect);
+            }
+        }
+
+        // A vertical rule between compact-row columns — the grid-cell-bounding fix for the
+        // one grid type that isn't already boxed. Roomy cards get their own border on all four
+        // sides (above), so a second boundary line here would be a redundant signal for real
+        // per the clutter-audit rule against stacking multiple cues for one fact.
+        if !roomy && columns > 1 {
+            for c in 0..columns - 1 {
+                let gutter_rect = column_rects[c * 2 + 1];
+                let bar: Vec<Line<'static>> = (0..gutter_rect.height)
+                    .map(|_| Line::from(Span::styled(" │", Style::default().fg(theme::DIMMER))))
+                    .collect();
+                frame.render_widget(Paragraph::new(bar), gutter_rect);
             }
         }
     }
 
-    let mut lines: Vec<Line<'static>> = Vec::with_capacity(4 + content_lines.len() + usize::from(is_stale));
-    lines.extend(header_lines(radar, &now, scan_secs, width));
-    if let Some(banner) = stale_banner {
-        lines.push(banner);
+    if let Some(remaining) = section.truncated_remaining {
+        frame.render_widget(
+            Paragraph::new(vec![Line::from(Span::styled(
+                format!(" … +{remaining} more"),
+                Style::default().fg(theme::AGING).add_modifier(Modifier::BOLD),
+            ))]),
+            marker_rect,
+        );
     }
-    lines.extend(content_lines);
-    lines.push(rule_line(width, Color::DarkGray));
-    lines.push(footer_line());
+}
 
-    // Deliberately NOT using `Wrap` here: every line pushed above is counted
-    // as exactly one physical row against `available_content` — if a long
-    // line were allowed to wrap to two physical rows, the "+N more"
-    // truncation marker could be pushed off the bottom of the terminal
-    // (clipped by the widget boundary) rather than actually shown, which is
-    // exactly the "silent truncation" failure mode the spec calls out as
-    // unacceptable. No wrapping means an overlong line is clipped at the
-    // right edge instead — visually lossy for that one row, but the
-    // truncation marker itself stays guaranteed-visible.
-    let para = Paragraph::new(lines);
-    frame.render_widget(para, area);
+/// Pad or truncate (with a trailing `…`) to exactly `w` display columns, so a
+/// variable-length field (branch names in particular: `master` vs
+/// `analysis/cross-registry-identity`) doesn't push every later column in a
+/// compact row out of alignment with the rows above and below it. Byte-safe
+/// truncation point via `char_indices` — branch names can contain non-ASCII.
+fn fixed_width(s: &str, w: usize) -> String {
+    // Delegates to the shared column arithmetic. This function counted characters and
+    // called them columns, which is the same defect review found in the filter chip and
+    // the feed — it was simply not flagged here. A wide character in a project or branch
+    // name made every column after this cell drift, which on a grid of cards is the
+    // ragged-row symptom rather than an obviously wrong string.
+    crate::width::fit_exact(s, w)
 }
 
 /// A full-width rule line in the given color — `─` for the light rules that
@@ -414,6 +1031,49 @@ fn split_line(left: String, right: String, width: usize, left_style: Style, righ
     ])
 }
 
+/// A card's `git` or `agent` zone row: a colored, fixed-width row label (`"git    "` /
+/// `"agent  "`, padded to `ZONE_LABEL_WIDTH` so both rows' facts start at the same column),
+/// then that zone's own facts, then — right-aligned, same column across every card in the
+/// section — that zone's own sparkline plus a scale tag (`"14d"`, `"20m"`). Exists so a
+/// card's two sparklines (agent-activity, ~one per minute; git daily-commits, one per day)
+/// never sit stacked with no visual anchor to the facts they summarize — the redesign this
+/// replaces (a single line with the git sparkline dropped into unused middle space) read as
+/// "two similar bars thrown at the wall," per the design review that prompted this file's
+/// rewrite. Label color carries the zone identity; the scale tag is the non-color fallback
+/// so the two rows stay distinguishable under `NO_COLOR` too.
+const ZONE_LABEL_WIDTH: usize = 7;
+
+/// Parameters for `zone_row` — bundled into a struct (rather than nine positional
+/// arguments) purely to keep the call sites in `roomy_card_lines` readable and to stay
+/// under clippy's too-many-arguments threshold.
+struct ZoneRowSpec {
+    indent: &'static str,
+    label: &'static str,
+    label_style: Style,
+    facts: String,
+    facts_style: Style,
+    sparkline: String,
+    spark_style: Style,
+    tag: String,
+}
+
+fn zone_row(spec: ZoneRowSpec, width: usize) -> Line<'static> {
+    let label_padded = format!("{:<ZONE_LABEL_WIDTH$}", spec.label);
+    let left_len = spec.indent.chars().count() + label_padded.chars().count() + spec.facts.chars().count();
+    let right_len = spec.sparkline.chars().count() + 2 + spec.tag.chars().count();
+    let pad = width.saturating_sub(left_len + right_len).max(1);
+
+    Line::from(vec![
+        Span::raw(spec.indent),
+        Span::styled(label_padded, spec.label_style),
+        Span::styled(spec.facts, spec.facts_style),
+        Span::raw(" ".repeat(pad)),
+        Span::styled(spec.sparkline, spec.spark_style),
+        Span::raw("  "),
+        Span::styled(spec.tag, Style::default().fg(theme::DIM)),
+    ])
+}
+
 /// Header: a badged title, project count/clock/scan duration on the right,
 /// then a heavy double rule spanning the full width. The badge (inverted
 /// colors on just the app name) plus the heavy rule is what makes this read
@@ -425,19 +1085,19 @@ fn header_lines(radar: &Radar, now: &chrono::DateTime<chrono::Utc>, scan_secs: f
         " petri · dashboard ".to_string(),
         format!("{right} "),
         width,
-        Style::default().fg(Color::Black).bg(Color::Cyan).add_modifier(Modifier::BOLD),
-        Style::default().fg(Color::White),
+        Style::default().fg(Color::Black).bg(theme::ACCENT).add_modifier(Modifier::BOLD),
+        Style::default().fg(theme::FG),
     );
-    vec![title, Line::from(Span::styled("═".repeat(width), Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)))]
+    vec![title, Line::from(Span::styled("═".repeat(width), Style::default().fg(theme::ACCENT).add_modifier(Modifier::BOLD)))]
 }
 
-/// Section header line: " RUNNING" left, "25" right, between the two light
-/// rules `render` pushes around it. RUNNING degrades to RECENT when no
-/// member project has an active agent (`agent.active_agent.is_some()`) —
-/// petri/SPEC.md §3.2's "because RUNNING would then overstate it", documented
-/// interpretation per `s6_snapshot.rs`'s module doc comment.
-fn section_header_line(radar: &Radar, bucket: StatusBucket, count: usize, is_selected: bool, width: usize) -> Line<'static> {
-    let label: &str = if bucket == StatusBucket::Active {
+/// The label a section shows. RUNNING degrades to RECENT when no member project has an
+/// active agent (`agent.active_agent.is_some()`) — petri/SPEC.md §3.2's "because RUNNING
+/// would then overstate it", documented interpretation per `s6_snapshot.rs`'s module doc
+/// comment. Shared with `collapsed_strip_line` so a collapsed RUNNING cannot say something
+/// different from an expanded one.
+fn section_label(radar: &Radar, bucket: StatusBucket) -> &'static str {
+    if bucket == StatusBucket::Active {
         let has_agent = DashboardState::running_membership(radar)
             .iter()
             .any(|&idx| radar.projects[idx].agent.active_agent.is_some());
@@ -448,20 +1108,156 @@ fn section_header_line(radar: &Radar, bucket: StatusBucket, count: usize, is_sel
             .find(|(b, _)| *b == bucket)
             .map(|(_, l)| *l)
             .expect("SECTION_LABELS covers all buckets in SECTION_ORDER")
+    }
+}
+
+/// One line standing in for a run of consecutive collapsed sections:
+/// `" IN FLIGHT 12  ·  STALE 32  ·  COLD 18 "`.
+///
+/// Three collapsed sections previously cost 9 rows — rule, label, rule, three times over —
+/// to say what fits comfortably in one. The rows that buys go to the fleet and the activity
+/// feed, which is what the screen is actually for.
+///
+/// Each label keeps its own bucket colour and its own count, so the strip reads as the same
+/// information in less space rather than as a different, vaguer thing. Every entry is still
+/// an independent selection stop (`DashRow::Header`), so `j`/`k` walks along the strip and
+/// the selected label carries the same highlight it would as a full-width header — which is
+/// what makes the collapsed state feel like tabs rather than a summary you cannot act on.
+///
+/// Truncates on a whole entry rather than mid-label when the width runs out, and appends `…`
+/// so a hidden section is never silently absent — the same rule the "not shown" summary row
+/// follows.
+fn collapsed_strip_line(
+    radar: &Radar,
+    run: &[StatusBucket],
+    state: &DashboardState,
+    width: usize,
+) -> Line<'static> {
+    let selected_bucket = match state.selected.and_then(|i| state.visible.get(i)) {
+        Some(DashRow::Header(b)) => Some(*b),
+        _ => None,
     };
+
+    let mut spans: Vec<Span<'static>> = vec![Span::raw(" ")];
+    let mut used = 1usize;
+    let mut dropped = 0usize;
+
+    for (i, bucket) in run.iter().enumerate() {
+        let count = DashboardState::section_members(radar, *bucket).len();
+        let entry = format!("{} {count}", section_label(radar, *bucket));
+        let sep = if i > 0 { "  ·  " } else { "" };
+        // Reserve a column for the `…` that would announce anything dropped after this.
+        if used + sep.chars().count() + entry.chars().count() + 2 > width {
+            dropped = run.len() - i;
+            break;
+        }
+        if !sep.is_empty() {
+            spans.push(Span::styled(sep.to_string(), Style::default().fg(theme::DIMMER)));
+            used += sep.chars().count();
+        }
+        let style = if Some(*bucket) == selected_bucket {
+            Style::default().fg(Color::Black).bg(theme::ACCENT).add_modifier(Modifier::BOLD)
+        } else {
+            Style::default().fg(crate::theme::bucket_color(*bucket)).add_modifier(Modifier::BOLD)
+        };
+        used += entry.chars().count();
+        spans.push(Span::styled(entry, style));
+    }
+
+    if dropped > 0 {
+        spans.push(Span::styled(
+            format!(" +{dropped}…"),
+            Style::default().fg(theme::AGING),
+        ));
+    }
+    Line::from(spans)
+}
+
+/// Section header line: " RUNNING" left, "25" right, between the two light
+/// rules `render` pushes around it.
+fn section_header_line(radar: &Radar, bucket: StatusBucket, count: usize, is_selected: bool, width: usize) -> Line<'static> {
+    let label = section_label(radar, bucket);
+    // Section label previews the state of what's inside it, reusing the same
+    // gradient `silence_tier_color` applies per-project: RUNNING reads
+    // fresh-green, IN FLIGHT amber, STALE grey, COLD dimmer-grey — one
+    // palette (`crate::theme::bucket_color`), not a flat yellow for every
+    // section regardless of what it actually holds.
+    let label_color = crate::theme::bucket_color(bucket);
     let style = if is_selected {
-        Style::default().fg(Color::Black).bg(Color::Yellow).add_modifier(Modifier::BOLD)
+        Style::default().fg(Color::Black).bg(theme::ACCENT).add_modifier(Modifier::BOLD)
     } else {
-        Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)
+        Style::default().fg(label_color).add_modifier(Modifier::BOLD)
     };
     split_line(format!(" {label}"), format!("{count} "), width, style, style)
 }
 
-/// Roomy card for a project in the RUNNING section: three lines (each a
-/// stable left value paired with the volatile right one) plus a blank
-/// separator — petripy's actual roomy density (`format_card`), not a single
-/// line crammed with every field.
-fn roomy_card_lines(radar: &Radar, proj_idx: usize, is_selected: bool, width: usize) -> Vec<Line<'static>> {
+/// Truecolor gradient on silence age: fresh (<1m, still likely mid-turn) →
+/// aging (<1h, worth a glance) → cold (≥1h, silent long enough to actually
+/// worry about). See `crate::theme` for the ANSI-16 → truecolor history. The
+/// glyph *allowlist* (petri/SPEC.md §4.2) is a separate concern — provenance
+/// is a real macOS `wcwidth` bug, not the planning-doc caution this color
+/// rule used to be — and this palette choice doesn't relax or affect it.
+fn silence_tier_color(secs: i64) -> Color {
+    // Reuses the canonical Working/Recent/Idle thresholds
+    // (`AGENT_WORKING_MAX_S` = 90s, `AGENT_RECENT_MAX_S` = 30m) rather than a
+    // separate set of cutoffs invented for color alone — one silence
+    // vocabulary for the whole app, not two that quietly disagree.
+    crate::theme::tier_color(petridish_core::schema::agent_state_for_silence(secs))
+}
+
+/// Compact single-line row for a RUNNING project once the Dashboard has
+/// dropped into the compact density tier (`COMPACT_TIER_MAX_CONTENT_ROWS`).
+/// Same fields a roomy card carries, on one line: glyph, name, dirty marker,
+/// branch, silence age — silence age still carries the gradient, since
+/// "which run is stalling" is exactly what this row exists to answer at a
+/// glance.
+fn compact_running_row_line(radar: &Radar, proj_idx: usize, is_selected: bool, card_width: usize) -> Line<'static> {
+    let p = &radar.projects[proj_idx];
+    let silence_secs = match p.last_activity_at {
+        Some(dt) => chrono::Utc::now().signed_duration_since(dt).num_seconds().max(0),
+        None => i64::MAX / 2,
+    };
+    let tier_color = silence_tier_color(silence_secs);
+    let glyph = match p.agent.state {
+        AgentActivity::Working => "●",
+        _ => "○",
+    };
+    let dirty_marker = present::dirty_marker(&p.git);
+    let branch = p.git.branch.as_deref().unwrap_or("-");
+    let silence_str = match p.last_activity_at {
+        Some(_) => format!("silent {}", humanize_secs(silence_secs as u64)),
+        None => "silent -".to_string(),
+    };
+    let agent = p.agent.active_agent.as_deref().unwrap_or("");
+
+    let name_field = format!("{} ", fixed_width(&format!("{}{dirty_marker}", p.name), 26));
+    let branch_field = format!("{} ", fixed_width(branch, 22));
+    let silence_field = format!("{} ", fixed_width(&silence_str, 12));
+
+    if is_selected {
+        return solid_selected_line(&format!(" {glyph} {name_field}{branch_field}{silence_field}{agent}"), card_width);
+    }
+
+    Line::from(vec![
+        Span::styled(format!(" {glyph} "), Style::default().fg(tier_color)),
+        Span::styled(name_field, Style::default().fg(theme::FG).add_modifier(Modifier::BOLD)),
+        Span::styled(branch_field, Style::default().fg(theme::BRANCH)),
+        Span::styled(silence_field, Style::default().fg(tier_color)),
+        Span::styled(agent.to_string(), Style::default().fg(theme::DIM)),
+    ])
+}
+
+/// Roomy card for a project in the RUNNING section: a header line (identity — glyph, name,
+/// dirty markers, overall silence), a `git` zone row (branch, commit age, git-activity
+/// sparkline), an `agent` zone row (agent name, session, agent-activity sparkline), and the
+/// path. Each sparkline sits directly beside the facts it summarizes rather than two look-alike
+/// bars stacked with nothing tying either to its own data — see `zone_row`'s doc comment for
+/// why. `card_width` is the card's *inner* content width (its allocated column width minus the
+/// 2 columns its border consumes — see `ROOMY_CARD_BOX_ROWS`'s doc comment) — `render_section`
+/// wraps these 4 lines in a `Block` whose border color carries the selection signal, so nothing
+/// in here needs to change when a card is selected; that's what fixed the ragged
+/// background-only-under-some-spans highlight the border replaced.
+fn roomy_card_lines(radar: &Radar, proj_idx: usize, card_width: usize) -> Vec<Line<'static>> {
     let p = &radar.projects[proj_idx];
     let glyph = match p.agent.state {
         AgentActivity::Working => "●",
@@ -474,48 +1270,157 @@ fn roomy_card_lines(radar: &Radar, proj_idx: usize, is_selected: bool, width: us
         Some(dt) => chrono::Utc::now().signed_duration_since(dt).num_seconds().max(0),
         None => 0,
     };
-    let right1 = if has_agent {
-        match p.agent.active_agent.as_deref() {
-            Some(agent) => format!("silent {} · {agent}", humanize_secs(silence_secs as u64)),
-            None => format!("silent {}", humanize_secs(silence_secs as u64)),
-        }
+    let header_right = if has_agent {
+        format!("silent {}", humanize_secs(silence_secs as u64))
     } else {
         "no agent".to_string()
     };
 
+    let tier_color = silence_tier_color(silence_secs);
+    let name_style = Style::default().fg(theme::FG).add_modifier(Modifier::BOLD);
+    let silence_style = Style::default().fg(tier_color).add_modifier(Modifier::BOLD);
+    let dim = Style::default().fg(theme::DIM);
+    let zone_label_style = |color: Color| Style::default().fg(color).add_modifier(Modifier::BOLD);
+
+    let header = split_line(
+        format!(" {glyph} {}{}{}", p.name, dirty_marker, uncommitted),
+        header_right,
+        card_width,
+        name_style,
+        silence_style,
+    );
+
+    // git zone: branch + commit age, paired with git's own daily-commits sparkline (one
+    // sample/day over GIT_ACTIVITY_WINDOW_DAYS — a real "how alive is this branch" signal,
+    // not the agent's per-minute activity).
     let branch = p.git.branch.as_deref().unwrap_or("-");
-    let dirty_suffix = if dirty_marker.trim().is_empty() { String::new() } else { format!("  {}", dirty_marker.trim()) };
-    let left2 = format!("     {branch}{dirty_suffix}");
-    let right2 = p.agent.last_event.clone().unwrap_or_else(|| match p.git.last_commit_at {
+    let dirty_suffix = if dirty_marker.trim().is_empty() { String::new() } else { format!(" {}", dirty_marker.trim()) };
+    let commit_fact = match p.git.last_commit_at {
         Some(dt) => format!("commit {}", commit_ago(dt)),
         None => "no commits".to_string(),
-    });
+    };
+    let git_facts = format!("{branch}{dirty_suffix} · {commit_fact}");
+    let git_sparkline = sparkline_glyphs(&p.git.daily_commits, petridish_core::schema::GIT_ACTIVITY_WINDOW_DAYS);
+    let git_row = zone_row(
+        ZoneRowSpec {
+            indent: ZONE_INDENT,
+            label: "git",
+            label_style: zone_label_style(theme::BRANCH),
+            facts: git_facts,
+            facts_style: dim,
+            sparkline: git_sparkline,
+            spark_style: Style::default().fg(theme::BRANCH),
+            tag: format!("{}d", petridish_core::schema::GIT_ACTIVITY_WINDOW_DAYS),
+        },
+        card_width,
+    );
+
+    // agent zone: agent name + session, paired with the agent-activity sparkline (one
+    // sample/tick — the silence-tier gradient, same color language the header's "silent Xm"
+    // already uses for this project). Width scales with the card's own allocated card_width
+    // (`agent_sparkline_width_for`) rather than a fixed sample count, so a wide card genuinely
+    // shows more history instead of leaving the extra card_width blank — real screen-fill, not
+    // stretched decoration, since every extra sample is a real additional minute of activity
+    // up to the ring's own `AGENT_ACTIVITY_WINDOW` ceiling. The git sparkline above does NOT
+    // scale the same way: `GIT_ACTIVITY_WINDOW_DAYS` days is all the daily-commit history that
+    // exists, so widening it further would only pad with the zero-level bar, not show more data.
+    let agent_facts = match p.agent.active_agent.as_deref() {
+        Some(agent) => match p.agent.session_id.as_deref() {
+            // Truncated by characters, not bytes: `session_id` is copied verbatim out of
+            // a transcript and the schema does not constrain it to ASCII, so a byte slice
+            // at 18 can land inside a code point and panic. Sensors degrade, never crash.
+            Some(session) => {
+                let short: String = session.chars().take(18).collect();
+                format!("{agent} · sess {short}")
+            }
+            None => agent.to_string(),
+        },
+        None => "idle".to_string(),
+    };
+    let agent_spark_width = agent_sparkline_width_for(card_width);
+    let agent_sparkline = sparkline_glyphs(&p.agent_activity, agent_spark_width);
+    let agent_row = zone_row(
+        ZoneRowSpec {
+            indent: ZONE_INDENT,
+            label: "agent",
+            label_style: zone_label_style(tier_color),
+            facts: agent_facts,
+            facts_style: dim,
+            sparkline: agent_sparkline,
+            spark_style: Style::default().fg(tier_color),
+            tag: format!("{agent_spark_width}m"),
+        },
+        card_width,
+    );
 
     let display_path = abbreviate_home(&p.path);
-    let left3 = format!("     {display_path}");
-    let right3 = match p.agent.session_id.as_deref() {
-        Some(session) => format!("sess {}", &session[..session.len().min(18)]),
-        None => String::new(),
-    };
+    let path_row = Line::from(Span::styled(format!("{ZONE_INDENT}{display_path}"), dim));
 
-    let name_style = if is_selected {
-        Style::default().fg(Color::Black).bg(Color::Yellow).add_modifier(Modifier::BOLD)
-    } else {
-        Style::default().fg(Color::White).add_modifier(Modifier::BOLD)
-    };
-    let value_style = Style::default().fg(Color::Cyan);
-    let dim = Style::default().fg(Color::DarkGray);
+    vec![header, git_row, agent_row, path_row]
+}
 
-    vec![
-        split_line(format!(" {glyph} {}{}{}", p.name, dirty_marker, uncommitted), right1, width, name_style, value_style),
-        split_line(left2, right2, width, dim, dim),
-        split_line(left3, right3, width, dim, dim),
-        Line::from(""),
-    ]
+/// Unicode block elements U+2581-2588 ("Block Elements") -- each a single narrow cell per
+/// `unicode-width`, on petri's glyph allowlist (petri/SPEC.md §4.2, `petri/tests/glyph_portability.rs`)
+/// with that reasoning checked, same rigor as every other glyph this module already renders.
+const SPARKLINE_GLYPHS: [char; 8] = ['▁', '▂', '▃', '▄', '▅', '▆', '▇', '█'];
+
+/// Floor for the roomy-card agent sparkline's on-screen width (in samples) — what a
+/// minimum-width card (`MIN_ROOMY_CARD_WIDTH`) still gets. `agent_sparkline_width_for` scales
+/// this up with the card's real allocated width, capped at `AGENT_ACTIVITY_WINDOW` (there is no
+/// more history than that to show).
+const SPARKLINE_WIDTH: usize = 20;
+
+/// How many agent-activity samples a roomy card's `agent` zone row should show, given its own
+/// allocated `card_width` — the fixed cost of everything else on that row (indent, the
+/// `ZONE_LABEL_WIDTH`-padded label, a usable facts string, the gap before the sparkline, and
+/// the trailing scale tag) is subtracted first, then clamped to `[SPARKLINE_WIDTH,
+/// AGENT_ACTIVITY_WINDOW]` so a narrow card still gets a legible sparkline and a very wide one
+/// doesn't ask for more samples than the ring actually keeps.
+fn agent_sparkline_width_for(card_width: usize) -> usize {
+    let overhead = ZONE_INDENT.len() + ZONE_LABEL_WIDTH + 20 /* minimal facts */ + 2 /* gap */ + 4 /* tag */;
+    card_width
+        .saturating_sub(overhead)
+        .clamp(SPARKLINE_WIDTH, petridish_core::schema::AGENT_ACTIVITY_WINDOW)
+}
+
+/// Renders the trailing `width` samples of `samples` (oldest first, most recent last) as a
+/// compact block-glyph string. Levels are normalized against the max count *within the
+/// visible window*, not the whole input, so one busy stretch that's since scrolled off
+/// doesn't permanently flatten the rest of the sparkline into the lowest bar. Fewer than
+/// `width` samples (a freshly-discovered project, the daemon just restarted, or -- for git --
+/// a repo younger than the activity window) are left-padded with the lowest bar rather than
+/// shortened, so every sparkline occupies the same on-screen width regardless of how much
+/// history exists yet. Shared by both the agent-activity sparkline (`p.agent_activity`,
+/// `width = SPARKLINE_WIDTH`) and the git daily-commits sparkline (`p.git.daily_commits`,
+/// `width = GIT_ACTIVITY_WINDOW_DAYS`) -- same visual language, deliberately different colors
+/// at the call site so the two timelines stay visually distinguishable.
+fn sparkline_glyphs(samples: &[u32], width: usize) -> String {
+    let start = samples.len().saturating_sub(width);
+    let window = &samples[start..];
+    let max = window.iter().copied().max().unwrap_or(0);
+    let pad = width.saturating_sub(window.len());
+
+    let mut out = String::with_capacity(width);
+    for _ in 0..pad {
+        out.push(SPARKLINE_GLYPHS[0]);
+    }
+    for &count in window {
+        let level = if count == 0 || max == 0 {
+            0
+        } else {
+            let scaled = (count as f64 / max as f64) * (SPARKLINE_GLYPHS.len() - 1) as f64;
+            (scaled.round() as usize).clamp(1, SPARKLINE_GLYPHS.len() - 1)
+        };
+        out.push(SPARKLINE_GLYPHS[level]);
+    }
+    out
 }
 
 /// Compact row for a project in IN FLIGHT / STALE / COLD.
-fn compact_row_line(radar: &Radar, proj_idx: usize, is_selected: bool) -> Line<'static> {
+/// `show_git_sparkline` is true only for IN FLIGHT (see `plan_layout`'s `shows_git_sparkline`
+/// doc comment for the 14-day alignment reasoning) — STALE/COLD rows omit it and keep the
+/// original plain fields.
+fn compact_row_line(radar: &Radar, proj_idx: usize, is_selected: bool, card_width: usize, show_git_sparkline: bool) -> Line<'static> {
     let p = &radar.projects[proj_idx];
     let branch = p.git.branch.as_deref().unwrap_or("(none)");
     let uncommitted = if p.git.uncommitted_files > 0 { format!("✎{}", p.git.uncommitted_files) } else { String::new() };
@@ -525,26 +1430,74 @@ fn compact_row_line(radar: &Radar, proj_idx: usize, is_selected: bool) -> Line<'
     };
     let gh = if p.git.github_url.is_some() { "[gh]" } else { "" };
 
-    let style = if is_selected {
-        Style::default().fg(Color::Black).bg(Color::Yellow)
+    let name_field = format!(" {} ", fixed_width(&p.name, 26));
+    let branch_field = format!("{} ", fixed_width(branch, 22));
+    let uncommitted_field = format!("{} ", fixed_width(&uncommitted, 4));
+    let commit_field = format!("{commit_age} ");
+
+    let (sparkline, tag) = if show_git_sparkline {
+        (
+            sparkline_glyphs(&p.git.daily_commits, petridish_core::schema::GIT_ACTIVITY_WINDOW_DAYS),
+            format!("{}d", petridish_core::schema::GIT_ACTIVITY_WINDOW_DAYS),
+        )
     } else {
-        Style::default().fg(Color::White)
+        (String::new(), String::new())
     };
 
-    Line::from(vec![
-        Span::styled(format!(" {} ", p.name), style),
-        Span::styled(format!("{branch} "), Style::default().fg(Color::Cyan)),
-        Span::styled(format!("{uncommitted} "), Style::default().fg(Color::DarkGray)),
-        Span::styled(format!("{commit_age} "), Style::default().fg(Color::DarkGray)),
-        Span::styled(gh, Style::default().fg(Color::Green)),
-    ])
+    let left = format!("{name_field}{branch_field}{uncommitted_field}{commit_field}{gh}");
+
+    if is_selected {
+        let content = if show_git_sparkline {
+            let pad = card_width
+                .saturating_sub(left.chars().count() + sparkline.chars().count() + 2 + tag.chars().count())
+                .max(1);
+            format!("{left}{}{sparkline}  {tag}", " ".repeat(pad))
+        } else {
+            left
+        };
+        return solid_selected_line(&content, card_width);
+    }
+
+    let mut spans = vec![
+        Span::styled(name_field, Style::default().fg(theme::FG)),
+        Span::styled(branch_field, Style::default().fg(theme::BRANCH)),
+        Span::styled(uncommitted_field, Style::default().fg(theme::DIM)),
+        Span::styled(commit_field, Style::default().fg(theme::DIM)),
+        Span::styled(gh, Style::default().fg(theme::ACCENT)),
+    ];
+
+    if show_git_sparkline {
+        let pad = card_width
+            .saturating_sub(left.chars().count() + sparkline.chars().count() + 2 + tag.chars().count())
+            .max(1);
+        spans.push(Span::raw(" ".repeat(pad)));
+        spans.push(Span::styled(sparkline, Style::default().fg(theme::BRANCH)));
+        spans.push(Span::raw("  "));
+        spans.push(Span::styled(tag, Style::default().fg(theme::DIM)));
+    }
+
+    Line::from(spans)
 }
 
-/// Footer: the keymap advertising only keys actually bound (petri/SPEC.md §5).
+/// A selected compact row's highlight: one solid, continuously-colored bar across the row's
+/// full `card_width`, instead of per-field background fills that leave unstyled gaps wherever a
+/// field's own text doesn't reach its column width (that ragged-highlight bug is what this
+/// replaces — see `ROOMY_CARD_BOX_ROWS`'s doc comment for the equivalent fix on roomy cards).
+/// This is the reverse-video convention applied literally: field-level color is deliberately
+/// dropped in favor of one unambiguous highlighted bar, matching "reverse video is the canonical
+/// current-selection signal" (`references/visual-patterns.md` → *Typography in monospace*).
+fn solid_selected_line(content: &str, card_width: usize) -> Line<'static> {
+    Line::from(Span::styled(
+        fixed_width(content, card_width),
+        Style::default().fg(Color::Black).bg(theme::ACCENT).add_modifier(Modifier::BOLD),
+    ))
+}
+
+/// Footer: the keymap (petri/SPEC.md §5 — honest and useful, not a fixed list).
 fn footer_line() -> Line<'static> {
     Line::from(Span::styled(
         " j/k move  Space toggle  Enter open/browser  Tab Browser  q quit ",
-        Style::default().fg(Color::DarkGray),
+        Style::default().fg(theme::DIM),
     ))
 }
 
@@ -583,4 +1536,263 @@ fn abbreviate_home(path: &str) -> String {
         }
     }
     path.to_string()
+}
+
+#[cfg(test)]
+mod layout_tests {
+    use super::*;
+    use petridish_core::schema::{AgentState, GitState};
+
+    fn project(id: &str, bucket: StatusBucket) -> Project {
+        Project {
+            id: id.to_string(),
+            name: id.to_string(),
+            path: format!("/repos/{id}"),
+            category: "default".to_string(),
+            parent_path: None,
+            is_foreign: false,
+            git: GitState::not_a_repo(),
+            agent: AgentState::idle_unknown(),
+            last_activity_at: None,
+            status_bucket: bucket,
+            agent_activity: Vec::new(),
+        }
+    }
+
+    fn radar_with(n_active: usize) -> Radar {
+        radar_with_bucket(n_active, StatusBucket::Active)
+    }
+
+    fn radar_with_bucket(n: usize, bucket: StatusBucket) -> Radar {
+        let projects = (0..n).map(|i| project(&format!("p{i}"), bucket)).collect();
+        Radar {
+            schema_version: 1,
+            updated_at: chrono::Utc::now(),
+            scan_duration_ms: 0,
+            projects,
+            quota: None,
+        }
+    }
+
+    const EXPANDED: CollapsedState = [false, false, true, true];
+
+    #[test]
+    fn narrow_terminal_stays_single_column() {
+        let radar = radar_with(6);
+        let plan = plan_layout(Rect::new(0, 0, 80, 40), &radar, EXPANDED, 0);
+        assert_eq!(plan.sections[0].columns, 1, "80 cols is below 2×MIN_ROOMY_CARD_WIDTH, so no second column");
+    }
+
+    #[test]
+    fn wide_terminal_grows_columns_up_to_the_cap() {
+        let radar = radar_with(20);
+        let plan = plan_layout(Rect::new(0, 0, 200, 60), &radar, EXPANDED, 0);
+        assert_eq!(plan.sections[0].columns, 3, "200 cols fits 3× MIN_ROOMY_CARD_WIDTH+gutter but not 4");
+
+        let plan = plan_layout(Rect::new(0, 0, 400, 60), &radar, EXPANDED, 0);
+        assert_eq!(plan.sections[0].columns, MAX_GRID_COLUMNS, "an very wide terminal must still respect the column cap");
+    }
+
+    #[test]
+    fn grid_rows_account_for_multiple_columns_not_one_row_per_item() {
+        let radar = radar_with(6);
+        // 3 columns, 6 items -> 2 grid rows, not 6.
+        let plan = plan_layout(Rect::new(0, 0, 200, 60), &radar, EXPANDED, 0);
+        let section = &plan.sections[0];
+        assert_eq!(section.columns, 3);
+        assert_eq!(section.items_shown, 6);
+        assert_eq!(section.grid_rows, 2, "6 items across 3 columns must take 2 grid rows");
+    }
+
+    #[test]
+    fn compact_section_stays_single_column_when_it_already_fits_a_wide_terminal() {
+        // Feedback (dashboard redesign follow-up): compact rows (IN FLIGHT/STALE/COLD) don't
+        // get richer with a wider column the way a roomy card does, so gridding one wider than
+        // necessary just fragments a section that would otherwise read as one clean list —
+        // especially wasteful when there's a full page of blank space below it regardless. 5
+        // IN FLIGHT rows in a very tall, very wide terminal must stay 1 column even though the
+        // width alone would allow several.
+        let radar = radar_with_bucket(5, StatusBucket::InFlight);
+        let plan = plan_layout(Rect::new(0, 0, 300, 200), &radar, EXPANDED, 0);
+        let section = &plan.sections[0];
+        assert_eq!(section.bucket, StatusBucket::InFlight);
+        assert_eq!(section.columns, 1, "5 rows already fit in 1 column with room to spare, so no grid is needed");
+        assert_eq!(section.items_shown, 5);
+        assert!(section.truncated_remaining.is_none());
+    }
+
+    #[test]
+    fn compact_section_still_grids_when_a_single_column_would_truncate() {
+        // The needs-driven column count must still reach for more columns when 1 genuinely
+        // isn't enough to show everything in the available height.
+        let radar = radar_with_bucket(60, StatusBucket::InFlight);
+        let plan = plan_layout(Rect::new(0, 0, 300, 20), &radar, EXPANDED, 0);
+        let section = &plan.sections[0];
+        assert!(section.columns > 1, "60 rows cannot fit in 1 column within a 20-row terminal, so it must grid");
+    }
+
+    #[test]
+    fn roomy_section_grids_even_when_a_single_column_would_already_fit() {
+        // Contrast with the compact-row case above: RUNNING's roomy cards get real extra
+        // information from a wider column (the agent sparkline scales up), so they always claim
+        // the width-driven column count — unlike compact rows, going wider isn't wasted here.
+        let radar = radar_with(3);
+        let plan = plan_layout(Rect::new(0, 0, 200, 200), &radar, EXPANDED, 0);
+        let section = &plan.sections[0];
+        assert!(section.columns > 1, "3 roomy cards easily fit in 1 column at this height, but width should still be used");
+    }
+
+    #[test]
+    fn truncation_still_fires_in_a_grid_and_names_the_remaining_count() {
+        // A short terminal with many projects: even a multi-column grid must truncate rather
+        // than overflow, and say how many were cut.
+        let radar = radar_with(200);
+        let plan = plan_layout(Rect::new(0, 0, 200, 12), &radar, EXPANDED, 0);
+        let section = &plan.sections[0];
+        assert!(section.items_shown < 200, "must truncate rather than render all 200 projects into 12 rows");
+        assert_eq!(
+            section.truncated_remaining,
+            Some(200 - section.items_shown),
+            "the marker's remaining count must match what was actually cut"
+        );
+    }
+
+    #[test]
+    fn does_not_panic_at_degenerate_and_pinned_sizes() {
+        let radar = radar_with(10);
+        for (w, h) in [(0, 0), (1, 1), (80, 24), (200, 50), (400, 100)] {
+            let _ = plan_layout(Rect::new(0, 0, w, h), &radar, EXPANDED, 0);
+        }
+    }
+}
+
+#[cfg(test)]
+mod sparkline_tests {
+    use super::*;
+
+    #[test]
+    fn empty_ring_renders_all_lowest_bars() {
+        let out = sparkline_glyphs(&[], SPARKLINE_WIDTH);
+        assert_eq!(out.chars().count(), SPARKLINE_WIDTH);
+        assert!(out.chars().all(|c| c == SPARKLINE_GLYPHS[0]));
+    }
+
+    #[test]
+    fn all_zero_ring_renders_all_lowest_bars_not_a_flat_high_bar() {
+        let ring = vec![0u32; SPARKLINE_WIDTH];
+        let out = sparkline_glyphs(&ring, SPARKLINE_WIDTH);
+        assert!(
+            out.chars().all(|c| c == SPARKLINE_GLYPHS[0]),
+            "an all-zero window must render as the lowest bar throughout, got {out:?}"
+        );
+    }
+
+    #[test]
+    fn fewer_than_width_samples_are_left_padded_with_the_lowest_bar() {
+        // Three real samples, all with the same nonzero count -> the rightmost three
+        // chars are the max-level bar, everything to their left is left-pad.
+        let ring = vec![5u32, 5, 5];
+        let out: Vec<char> = sparkline_glyphs(&ring, SPARKLINE_WIDTH).chars().collect();
+        assert_eq!(out.len(), SPARKLINE_WIDTH);
+        let pad = SPARKLINE_WIDTH - 3;
+        assert!(
+            out[..pad].iter().all(|&c| c == SPARKLINE_GLYPHS[0]),
+            "left pad must be the lowest bar: {out:?}"
+        );
+        assert!(
+            out[pad..].iter().all(|&c| c == SPARKLINE_GLYPHS[SPARKLINE_GLYPHS.len() - 1]),
+            "the three equal, nonzero, max-of-window samples must render at the top bar: {out:?}"
+        );
+    }
+
+    #[test]
+    fn only_the_trailing_width_samples_are_shown() {
+        // A ring longer than SPARKLINE_WIDTH: the sparkline must reflect only the last
+        // SPARKLINE_WIDTH samples, not the whole ring (older samples fall off the left).
+        let mut ring = vec![0u32; SPARKLINE_WIDTH * 2];
+        // Put a lone spike just before the visible window -- must NOT show up.
+        ring[SPARKLINE_WIDTH - 1] = 999;
+        // And a spike inside the visible window -- must show up as the max bar.
+        let visible_spike_idx = ring.len() - 1;
+        ring[visible_spike_idx] = 5;
+
+        let out: Vec<char> = sparkline_glyphs(&ring, SPARKLINE_WIDTH).chars().collect();
+        assert_eq!(out.len(), SPARKLINE_WIDTH);
+        assert_eq!(
+            *out.last().unwrap(), SPARKLINE_GLYPHS[SPARKLINE_GLYPHS.len() - 1],
+            "the in-window spike must render as the top bar (it's the window's own max): {out:?}"
+        );
+        // Nothing else in the visible window is nonzero, so everything but the last char
+        // must be the lowest bar -- the off-window spike must have no visible effect.
+        assert!(
+            out[..out.len() - 1].iter().all(|&c| c == SPARKLINE_GLYPHS[0]),
+            "an off-window spike must not influence the visible normalization: {out:?}"
+        );
+    }
+
+    #[test]
+    fn normalizes_relative_to_the_windows_own_max_not_a_fixed_scale() {
+        // Two samples: half of max should land roughly mid-scale, not pinned to a fixed
+        // absolute-count threshold.
+        let mut ring = vec![0u32; SPARKLINE_WIDTH - 2];
+        ring.push(2); // half of the window's max
+        ring.push(4); // the window's max -> must render as the top bar
+        let out: Vec<char> = sparkline_glyphs(&ring, SPARKLINE_WIDTH).chars().collect();
+        assert_eq!(*out.last().unwrap(), SPARKLINE_GLYPHS[SPARKLINE_GLYPHS.len() - 1]);
+        let half_level = out[out.len() - 2];
+        assert_ne!(
+            half_level, SPARKLINE_GLYPHS[0],
+            "a nonzero count must never render as the zero-count bar: {out:?}"
+        );
+        assert_ne!(
+            half_level, SPARKLINE_GLYPHS[SPARKLINE_GLYPHS.len() - 1],
+            "half of the window's max should not render identically to the max itself: {out:?}"
+        );
+    }
+
+    #[test]
+    fn zone_row_places_label_facts_and_sparkline_in_order_with_the_tag_last() {
+        let line = zone_row(
+            ZoneRowSpec {
+                indent: "  ",
+                label: "git",
+                label_style: Style::default(),
+                facts: "FACTS".to_string(),
+                facts_style: Style::default(),
+                sparkline: "SPARK".to_string(),
+                spark_style: Style::default(),
+                tag: "14d".to_string(),
+            },
+            60,
+        );
+        let rendered: String = line.spans.iter().map(|s| s.content.as_ref()).collect();
+        let label_pos = rendered.find("git").unwrap();
+        let facts_pos = rendered.find("FACTS").unwrap();
+        let spark_pos = rendered.find("SPARK").unwrap();
+        let tag_pos = rendered.find("14d").unwrap();
+        assert!(label_pos < facts_pos, "label must precede facts: {rendered:?}");
+        assert!(facts_pos < spark_pos, "facts must precede the sparkline: {rendered:?}");
+        assert!(spark_pos < tag_pos, "the sparkline must precede its scale tag: {rendered:?}");
+    }
+
+    #[test]
+    fn zone_row_never_panics_when_content_overflows_width() {
+        // facts+sparkline longer than width -- must degrade to a wider-than-terminal line
+        // (ratatui clips at render time), never panic on an underflowing subtraction.
+        let line = zone_row(
+            ZoneRowSpec {
+                indent: "  ",
+                label: "agent",
+                label_style: Style::default(),
+                facts: "x".repeat(30),
+                facts_style: Style::default(),
+                sparkline: "y".repeat(30),
+                spark_style: Style::default(),
+                tag: "z".repeat(30),
+            },
+            10,
+        );
+        let rendered: String = line.spans.iter().map(|s| s.content.as_ref()).collect();
+        assert!(rendered.contains('x') && rendered.contains('y') && rendered.contains('z'));
+    }
 }

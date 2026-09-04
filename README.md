@@ -10,27 +10,42 @@ Two separate pieces, two separate toolchains:
 **`swab` / `swab-hook`** (the scanner) are Rust, built from `swab/`:
 
 ```sh
-cargo install --path swab
+cargo install --path swab --locked
 ```
 
-This puts `swab` and `swab-hook` on `~/.cargo/bin` (verify it's on `PATH`). Verify:
+This puts `swab` and `swab-hook` on `~/.cargo/bin` (verify it's on `PATH`). **`--locked`
+is required, not optional:** `cargo install` ignores `Cargo.lock` by default and
+re-resolves from scratch, and a transitive `gix` dependency (`bisync`) has had its
+matching versions yanked from crates.io, so the default resolution fails outright. The
+lockfile pins a working set. Same flag for `petri` below, for the same reason.
 
 ```sh
 swab --help
 ```
 
-**`petri`** (the TUI dashboard) is being reimplemented in Rust/ratatui (`petri/`, see
-`petri/SPEC.md`) and is not yet built. Until it lands, the Python original — renamed
-`petripy` to free up the `petri` name, deprecated but still working, see `CONTEXT.md`'s
-`petripy` entry — is what reads `~/.petridish/projects.json` (via `petridish.schema`); it
-never scans:
+**`petri`** (the TUI dashboard) is Rust/ratatui and is built — both screens, filtering,
+collapsible sections, worktree nesting and the activity feed. `petri/SPEC.md` is
+authoritative for its behaviour:
+
+```sh
+cargo install --path petri --locked
+```
+
+This puts `petri` on `~/.cargo/bin` alongside `swab`. It only ever reads
+`~/.petridish/projects.json`; `swab scan` remains its sole writer.
+
+**`petripy`** is the Python original, renamed to free up the `petri` name. It is
+deprecated and frozen — kept installed as a fallback while the Rust build earns trust,
+not developed further (see `CONTEXT.md`'s `petripy` entry for its deletion trigger). The
+same `uv` install also provides `petridish-installer`, which is used below, so this step
+is still needed even if you never run `petripy`:
 
 ```sh
 uv tool install --editable .
 ```
 
-This puts a `petripy` shim (plus `petridish-installer`, used below) on `~/.local/bin`
-(already first on `PATH` for most `uv` setups).
+This puts `petripy` and `petridish-installer` on `~/.local/bin` (already first on `PATH`
+for most `uv` setups).
 
 ## Wire up the launchd job + Claude Code hook
 
@@ -144,10 +159,12 @@ pj() {
 
 ## Docs
 
-- `ARCHITECTURE.md` — language-agnostic architecture, empirical findings, and the
-  `projects.json` schema; the current authoritative reference
-- `DESIGN.md` — original system design document (superseded by `ARCHITECTURE.md` where the
-  two disagree, kept as historical context)
+- `ARCHITECTURE.md` — language-agnostic architecture, empirical findings, the
+  `projects.json` schema, and the distribution/installer requirements (§8); the current
+  authoritative reference
+- `petri/SPEC.md` — the Rust TUI's spec, authoritative for its screens/behavior
+- `docs/archive/DESIGN.md` — original pre-implementation pitch doc (Python `Textual`, a
+  FastAPI web UI, neither built); kept as historical context, superseded by `ARCHITECTURE.md`
 - `docs/archive/IMPLEMENTATION_PLAN.md` — the original all-Python build spec, archived once
   the scanner was ported to Rust
 - `CLAUDE.md` — non-negotiable invariants for anyone changing this code

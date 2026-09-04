@@ -10,14 +10,16 @@ don't repeat them.
 make check
 ```
 
-That is the whole gate: tests, the type ratchet, and the Python-version floor
-check. CI runs the identical command, so a green `make check` locally means a
-green CI run. Run it before proposing any change.
+That is the whole gate: Python tests, the Rust workspace tests, the type ratchet, and
+the Python-version floor check. CI runs the identical command, so a green `make check`
+locally means a green CI run. Run it before proposing any change, in either language.
 
 ```
 make install    # uv sync --extra dev
 make test       # pytest
-make typecheck  # pyright, ratcheted (see below)
+make rust-test  # cargo test --workspace -- --test-threads=1
+make typecheck  # pyright, ratcheted (see below) — Python only, no Rust equivalent yet
+make pyver      # fail if src/ uses stdlib APIs newer than requires-python
 make check      # all of the above — this is the gate
 ```
 
@@ -49,33 +51,21 @@ block in `pyproject.toml`.
 
 ## Non-negotiable invariants
 
-These are in `CLAUDE.md` in full. The ones that have actually been violated in
-practice:
-
-1. **Single writer.** Only the daemon writes `projects.json`, via temp file +
-   `os.replace()`. `swab-hook` appends one line to `events.ndjson` and nothing
-   else — three other hook consumers share those events.
-2. **Never parse a path out of a `~/.claude/projects/` dirname.** The slug
-   encodes `/` and `-` identically and is not reversible. Read `cwd` from the
-   JSONL contents.
-3. **`cwd` varies within one transcript.** Take the *last* parseable line, then
-   run it through `resolve_root()` so monorepo subdirs collapse to one project.
-4. **Truncated trailing JSONL lines are normal**, not errors — live sessions are
-   being appended to as you read.
-5. **Degrade, never abort.** A failing sensor yields `null` fields and the tick
-   still writes a complete file. This one is subtle: a bad *config value* used
-   to raise inside `load_config()`, get swallowed by the broad `except` in
-   `cli.py`, and take out the entire tick — `projects.json` silently froze with
-   only a daemon-log line. Config values now fall back per-key and warn on
-   stderr.
-6. **`git` calls** use `subprocess.run(check=False)` with a 5s timeout. A git
-   failure is `GitState(is_repo=False)`, never an exception.
+Full list, and which crate/module each one currently binds: `CLAUDE.md`. Not
+restated here — the two drifted out of sync once before (this file still described
+`subprocess.run(check=False)` git calls after `swab/src/git.rs` moved to in-process
+`gix`, with no "superseded" note), which is exactly the failure mode a single
+source of truth avoids. If you're fixing an invariant violation, read it there.
 
 ## Zero runtime dependencies
 
 `src/petridish/` is **stdlib only**. No `watchdog`, no `pydantic`, no `click`,
 no `rich`. This is deliberate: it makes every module verifiable with no
 environment setup, and it's why the daemon needs nothing but a Python 3.12.
+(This never bound the Rust crates — `swab`/`petridish-core`/`petri` take
+dependencies freely, pinned in their own `Cargo.toml`s. It's also a distribution
+asset for this stdlib-only side specifically, not just a testability one —
+`ARCHITECTURE.md` §8.2.)
 
 `pytest` and `pyright` are dev-only and don't violate this. GUI clients
 (`raycast/`, and any future menu-bar host) are separate projects that only ever
@@ -88,8 +78,12 @@ Real fixtures, not mocks. `git init` actual repos in tmpdirs with pinned author
 and date env vars; write actual fixture transcript files. Mocked subprocess
 output would have hidden most of the findings this project is built on.
 
-**Tests must be hermetic.** `tests/test_scan.py` has an autouse `_hermetic_home`
-fixture that redirects `HOME`; never read the real `~/.claude`.
+**Tests must be hermetic.** Nothing here should read the real `~/.claude` or
+`~/.petridish`. `installer.py` is the one module that legitimately touches real
+`$HOME`-rooted paths (`~/.claude/settings.json`, `~/Library/LaunchAgents`), so
+`tests/test_installer.py` fakes `HOME` per-test rather than relying on a shared
+autouse fixture — see its own fixtures for the pattern. The Rust side does the
+equivalent with real `git init` repos under `tempdir()`, never the real filesystem.
 
 ### Write tests that can fail
 
@@ -137,26 +131,11 @@ minutes.
 find . -name __pycache__ -type d -not -path "./.venv/*" -exec rm -rf {} +
 ```
 
-## The pty test
+## The pty test (petripy)
 
-`tests/test_tui_pty.py` spawns the real `petri` in a pseudo-terminal and sends
-keystrokes. It is the only coverage of `curses.wrapper`, the key dispatch, the
-blitter, and whether `q` gives you your shell back — and it costs ~30s of the
-suite's runtime. Worth it; don't delete it.
-
-Three things it will teach you the hard way if you extend it:
-
-- **Keep draining the pty while waiting for the child to exit.** The TUI
-  repaints every 2s; stop reading and the buffer fills, the child blocks in
-  `write()`, and it never reads the `q` you sent. That looks exactly like a TUI
-  bug and is not.
-- **Set the window size.** A forked pty starts at 0x0, where the renderers
-  correctly emit nothing.
-- **Never assert on an arbitrary literal string.** curses repaints only changed
-  cells, so `compact` really is on screen while the byte stream reads
-  `...quietest first · compacmain   ✎3...`. Assert on whole rows that are new to
-  the frame. Exact output belongs in `test_screens.py`, where the renderer is
-  called directly.
+Moved to `src/petridish/CLAUDE.md` — `tests/test_tui_pty.py` is `petripy`-specific
+(the Rust `petri`'s own PTY-test lessons, a different set found the hard way a second
+time, live in `petri/SPEC.md` §8 layer 3 instead).
 
 ## Things that look like bugs and aren't
 
@@ -172,67 +151,30 @@ Three things it will teach you the hard way if you extend it:
 ## Layout
 
 ```
-src/petridish/          core daemon — stdlib only
-  schema.py             the wire contract for projects.json (start here)
-  scan.py               discovery + sensor fusion -> Radar
-  config.py             TOML loading with per-key fallback
-  sensors/              claude.py, copilot.py, quota.py
-  tui_state.py          pure logic for petri — testable without a terminal
-  screens.py            the two petri screens (Radar -> list[str])
-  tui.py                curses blitter + key handling — keep it thin
-  menubar.py            pure xbar/SwiftBar renderer (str in, str out)
+src/petridish/          Python read-side — stdlib only (see src/petridish/CLAUDE.md
+                         for the full file-by-file breakdown and petripy specifics)
+swab/, petridish-core/, petri/   Rust — scanner, shared schema/present helpers, TUI
 scripts/                check_pyver.py, typecheck_ratchet.py
 raycast/                separate MIT-licensed extension (core stays GPL)
 ```
 
-The `tui_state.py` / `screens.py` / `tui.py` split and `menubar.py` follow the
-same rule: **push logic into a pure function so it can be tested without a
-display.** If you add a frontend, do the same.
+The `tui_state.py` / `screens.py` / `tui.py` split (petripy) and `menubar.py` follow
+the rule **push logic into a pure function so it can be tested without a display**;
+`petri` (Rust) keeps the same split (`petri/SPEC.md` §1). If you add a frontend, do
+the same.
 
-`screens.py` returns `list[str]` already clipped to width and height, so
-`tui.py` owns no layout arithmetic at all. That is what makes `swab dash` — the
-same dashboard, printed once, non-interactively — a three-line function rather
-than a second renderer.
+## Two things about the petri screens that look wrong and aren't (petripy)
 
-## Two things about the petri screens that look wrong and aren't
-
-- **`glyph_for()` ignores `project.agent.state`.** It re-derives the state from
-  `last_event_at` at render time instead. The stored field was stamped when the
-  daemon last scanned; the glyph sits next to a live silence counter, so reading
-  the stale field would let the two disagree on screen. The thresholds that
-  define both live in `schema.py` (`agent_state_for_silence`) precisely so they
-  cannot drift apart.
-- **The dashboard sorts by *longest* silence first.** Not most-recent-first.
-  It is a triage order: the run that has stopped moving is the one you need, and
-  freshest-first would bury it under the healthy ones.
+Moved to `src/petridish/CLAUDE.md` — this is about `glyph_for()`/sort order in the
+Python `petripy` specifically. The Rust `petri`'s equivalent decisions
+(`RUNNING_ATTENTION_CEILING_S`, `silence_tier_color`'s render-time derivation) are
+documented in-place in `petri/src/dashboard.rs`'s own doc comments instead.
 
 ### The quota sensor reads someone else's file
 
-`sensors/quota.py` parses `~/.claude/last-status.json`, which Claude Code
-writes as it runs. It is where the header's 5h/7d usage bars come from, and it
-is the only sensor whose **source is an undocumented internal of another
-program**. Anthropic never promised its shape.
-
-So the rules there are stricter than elsewhere: every field is optional, every
-function returns `None` rather than raising, and a payload with *some*
-recognisable fields yields a partial `QuotaState` rather than nothing. Most of
-`tests/test_sensor_quota.py` is not the happy path — it is the ways an upgrade
-could change the file.
-
-Two things it deliberately guards that look paranoid and aren't:
-
-- **`bool` is rejected before `int`.** `bool` is an `int` subclass, so
-  `"used_percentage": true` would otherwise render as 1%.
-- **Timestamps more than 30 days out are dropped.** The classic failure is
-  milliseconds where seconds were expected; "resets in 20000d" is worse than
-  showing nothing.
-
-Note that the numbers are **account-global**. They belong in a header. A
-project row claiming 87% would be a lie.
-
-Also worth knowing: `agent.state` is a pure recency clock, not a liveness
-signal. `working` means "emitted an event in the last 90 seconds", so a local
-model mid-inference for four minutes reads `recent` — indistinguishable from a
-run that wedged four minutes ago. Telling *finished* from *wedged* needs a
-sensor this project does not have yet; the `⚠` glyph means "hasn't moved", not
-"broken".
+The Python `sensors/quota.py` this section used to describe was deleted when the
+scanner moved to Rust (`CLAUDE.md`). Its lessons (reject `bool` before `int` —
+`bool` is an `int` subclass, so a truthy percentage would otherwise render as 1% —
+and drop timestamps more than 30 days out, the classic seconds/milliseconds
+mixup) live on, restated for the actual current code, in
+`swab/src/sensors/quota.rs`'s own module doc comment. Read there, not here.

@@ -6,13 +6,13 @@ consumers — pixtuoid, statusbar, notchbar) and ``~/Library/LaunchAgents``.
 Every edit to ``settings.json`` is *structural*: it only ever adds or removes
 dict entries that carry :data:`petridish.schema.HOOK_MARKER` somewhere in
 their subtree. Nothing here ever reserialises or touches an entry it did not
-add itself — see DESIGN.md D4.
+add itself — see ARCHITECTURE.md §8.3 D4.
 
 A backup of the pre-install ``settings.json`` is written once, but it is a
 safety artifact for the human, never read back automatically. Restoring from
 it on uninstall would silently discard any unrelated edits made to the file
 between install and uninstall (other hook consumers reinstalling, `/model`
-writes, manual edits) — see DESIGN.md D4's "removes only marked entries".
+writes, manual edits) — see ARCHITECTURE.md §8.3 D4's "removes only marked entries".
 """
 
 from __future__ import annotations
@@ -81,9 +81,14 @@ def resolve_binary(name: str) -> str:
     """Resolve `name` to an absolute path via PATH. Never hardcode (D1)."""
     path = shutil.which(name)
     if not path:
+        # The Rust binaries (`swab`, `swab-hook`) are the ones this resolves in
+        # practice, and they come from cargo — the old message here said
+        # `uv tool install`, which installs the Python read-side and would leave
+        # the user with exactly the same missing binary they started with.
         raise InstallError(
             f"{name!r} not found on PATH. Install it first: "
-            "uv tool install --editable . (see DESIGN.md §7.1)."
+            "cargo install --path swab --locked "
+            "(--locked is required; see README.md and ARCHITECTURE.md §8.1)."
         )
     return os.path.abspath(path)
 

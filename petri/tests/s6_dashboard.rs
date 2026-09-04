@@ -30,7 +30,7 @@
 //! the delegate to make a documented best-effort call.
 
 use chrono::{Duration as ChronoDuration, Utc};
-use petri::dashboard::{DashRow, DashboardState, SECTION_ORDER};
+use petri::dashboard::{DashRow, DashboardState, SelectionAnchor, SECTION_ORDER};
 use petridish_core::schema::{AgentState, GitState, Project, Radar, StatusBucket};
 use std::path::PathBuf;
 
@@ -63,6 +63,7 @@ fn project(id: &str, name: &str, bucket: StatusBucket) -> Project {
         agent: AgentState::idle_unknown(),
         last_activity_at: None,
         status_bucket: bucket,
+        agent_activity: Vec::new(),
     }
 }
 
@@ -278,22 +279,233 @@ fn running_membership_does_not_pull_in_a_parent_whose_worktree_child_is_not_acti
 }
 
 #[test]
-fn running_membership_orders_quietest_first_with_none_treated_as_maximally_silent() {
+fn running_membership_orders_quietest_first_within_the_attention_ceiling_then_the_forgotten_group() {
+    // Superseded by real-world use (see `RUNNING_ATTENTION_CEILING_S`'s doc
+    // comment in dashboard.rs): unbounded quietest-first let a project idle
+    // for days permanently outrank one actively prompted minutes ago. Now
+    // "quietest first" only competes within `RUNNING_ATTENTION_CEILING_S`
+    // (3h); everything past it — silence that means "probably forgotten,"
+    // not "might be stalled" — sorts as one group below, quietest-first
+    // internally too, but never above the still-fresh group.
     let now = Utc::now();
-    let mut recently_active = project("r1", "recently-active", StatusBucket::Active);
-    recently_active.last_activity_at = Some(now - ChronoDuration::hours(1));
+    let mut fresh_active = project("f1", "fresh-active", StatusBucket::Active);
+    fresh_active.last_activity_at = Some(now - ChronoDuration::minutes(5));
     let mut long_silent = project("s1", "long-silent", StatusBucket::Active);
     long_silent.last_activity_at = Some(now - ChronoDuration::hours(10));
     let never_seen = project("n1", "never-seen", StatusBucket::Active); // last_activity_at: None
+    let mut recently_active = project("r1", "recently-active", StatusBucket::Active);
+    recently_active.last_activity_at = Some(now - ChronoDuration::hours(1));
 
-    // Deliberately inserted out of quiet-order to prove `running_membership`
-    // sorts rather than preserving input order.
-    let radar = radar_of(vec![recently_active, long_silent, never_seen]);
+    // Deliberately inserted out of order to prove `running_membership` sorts
+    // rather than preserving input order.
+    let radar = radar_of(vec![fresh_active, long_silent, never_seen, recently_active]);
     let membership = DashboardState::running_membership(&radar);
 
     assert_eq!(
         membership,
-        vec![2, 1, 0],
-        "quietest first: None (never-seen, index 2) is maximally silent, then 10h-silent (index 1), then 1h-silent (index 0) last — petri/SPEC.md §3.2: \"the stalled run is the one that needs you\""
+        vec![3, 0, 2, 1],
+        "within the 3h ceiling, quietest first: 1h-silent (index 3) before 5m-silent (index 0); \
+         past the ceiling, quietest first but demoted as a group: never-seen/None (index 2, \
+         maximally silent) before 10h-silent (index 1) — the forgotten group never outranks the \
+         fresh one, but keeps quietest-first ordering internally"
     );
+}
+
+// --- Reload preserves user state (regression) ------------------------------
+//
+// The Dashboard re-derives itself every time `swab` rewrites the state file,
+// which on an active machine is every few seconds. It used to do that with
+// `DashboardState::new`, which hardcodes the spec defaults — so a section the
+// user had collapsed reopened itself, and the cursor jumped back to the top,
+// with no input from the user. These pin the two halves of that fix.
+//
+// Collapse is the load-bearing half: petri/SPEC.md §3.2 calls collapse the way
+// real estate is allocated on this screen "deliberately by the user, not by a
+// fixed priority ladder", which a reload that overrides it makes false.
+
+#[test]
+fn refresh_preserves_a_collapsed_section_across_a_reload() {
+    let radar = load("loaded.json");
+
+    // Collapse IN FLIGHT, the case actually reported.
+    let in_flight = section_index(StatusBucket::InFlight);
+    let mut collapsed = [false, false, true, true];
+    collapsed[in_flight] = true;
+    let mut state = DashboardState::with_collapsed(&radar, collapsed);
+    let rows_while_collapsed = state.visible.len();
+
+    // A fresh scan lands: same shape, new Radar value.
+    let reloaded = load("loaded.json");
+    state.refresh(&reloaded, None);
+
+    assert!(
+        state.collapsed[in_flight],
+        "a reload must not reopen a section the user collapsed"
+    );
+    assert_eq!(
+        state.visible.len(),
+        rows_while_collapsed,
+        "row count must not change across a reload that changed nothing else"
+    );
+}
+
+#[test]
+fn refresh_keeps_every_section_collapse_flag_not_just_one() {
+    let radar = load("loaded.json");
+    // The inverse of the defaults, so a reset to defaults cannot pass by accident.
+    let mut state = DashboardState::with_collapsed(&radar, [true, true, false, false]);
+
+    state.refresh(&load("loaded.json"), None);
+
+    assert_eq!(state.collapsed, [true, true, false, false]);
+}
+
+#[test]
+fn refresh_restores_the_cursor_to_the_same_project() {
+    let radar = load("loaded.json");
+    let mut state = DashboardState::new(&radar);
+
+    // Walk onto a project row (not a header) and record what it points at.
+    let mut steps = 0;
+    while !matches!(state.visible[state.selected.unwrap()], DashRow::Project(_)) {
+        state.move_selection(1);
+        steps += 1;
+        assert!(steps < 50, "fixture must contain a selectable project row");
+    }
+    let anchor = state.selection_anchor(&radar).expect("a row is selected");
+    let name_before = match state.visible[state.selected.unwrap()] {
+        DashRow::Project(i) => radar.projects[i].name.clone(),
+        DashRow::Header(_) => unreachable!(),
+    };
+
+    state.refresh(&load("loaded.json"), Some(anchor));
+
+    let name_after = match state.visible[state.selected.unwrap()] {
+        DashRow::Project(i) => radar.projects[i].name.clone(),
+        DashRow::Header(_) => panic!("cursor moved off the project row onto a header"),
+    };
+    assert_eq!(
+        name_after, name_before,
+        "the cursor must land on the same project, not the same index"
+    );
+}
+
+#[test]
+fn refresh_restores_the_cursor_to_the_same_header() {
+    let radar = load("loaded.json");
+    let mut state = DashboardState::new(&radar);
+    state.move_selection(0); // sits on the first header
+    let anchor = state.selection_anchor(&radar).expect("a header is selected");
+    assert!(matches!(anchor, SelectionAnchor::Header(_)));
+
+    state.refresh(&load("loaded.json"), Some(anchor.clone()));
+
+    assert_eq!(state.selection_anchor(&radar), Some(anchor));
+}
+
+#[test]
+fn refresh_follows_the_project_when_the_scan_reorders_it() {
+    // The whole reason the anchor carries an identity and not an index: `swab`
+    // re-sorts on every tick, so the same index is a different project.
+    let before = radar_of(vec![
+        project("a", "alpha", StatusBucket::Active),
+        project("b", "bravo", StatusBucket::Active),
+    ]);
+    let mut state = DashboardState::new(&before);
+    state.move_selection(2); // header, alpha, bravo -> lands on bravo
+    let anchor = state.selection_anchor(&before);
+    assert_eq!(anchor, Some(SelectionAnchor::Project("b".into())));
+
+    // Same two projects, opposite order.
+    let after = radar_of(vec![
+        project("b", "bravo", StatusBucket::Active),
+        project("a", "alpha", StatusBucket::Active),
+    ]);
+    state.refresh(&after, anchor);
+
+    assert_eq!(
+        state.selection_anchor(&after),
+        Some(SelectionAnchor::Project("b".into())),
+        "the cursor must follow the project, not stay on the index it used to occupy"
+    );
+}
+
+// Names are not unique — two checkouts under different roots are routinely called the
+// same thing (the fleet this was built against has `smoke` three times). The anchor
+// carried the display name first, which meant a reload restored the cursor to *a*
+// project with that name rather than the one it was on: a silent wrong-target, which is
+// worse than losing the cursor because it looks like it worked. Found in review.
+#[test]
+fn refresh_distinguishes_two_projects_that_share_a_name() {
+    let before = radar_of(vec![
+        project("work-smoke", "smoke", StatusBucket::Active),
+        project("play-smoke", "smoke", StatusBucket::Active),
+    ]);
+    let mut state = DashboardState::new(&before);
+    state.move_selection(2); // header, first smoke, second smoke -> the second
+    let anchor = state.selection_anchor(&before);
+    assert_eq!(
+        anchor,
+        Some(SelectionAnchor::Project("play-smoke".into())),
+        "the anchor must carry the stable id, not the shared display name"
+    );
+
+    // Next scan puts the other one first — under a name anchor, the cursor would
+    // "restore" onto work-smoke and nothing would look wrong.
+    let after = radar_of(vec![
+        project("play-smoke", "smoke", StatusBucket::Active),
+        project("work-smoke", "smoke", StatusBucket::Active),
+    ]);
+    state.refresh(&after, anchor);
+
+    let selected = state.selected.expect("something must stay selected");
+    match state.visible[selected] {
+        DashRow::Project(i) => assert_eq!(
+            after.projects[i].id, "play-smoke",
+            "the cursor must land on the same project, not the first one sharing its name"
+        ),
+        DashRow::Header(_) => panic!("cursor moved off the project row"),
+    }
+}
+
+#[test]
+fn refresh_clamps_rather_than_resetting_when_the_anchored_project_vanishes() {
+    let before = radar_of(vec![
+        project("a", "alpha", StatusBucket::Active),
+        project("b", "bravo", StatusBucket::Active),
+        project("c", "charlie", StatusBucket::Active),
+    ]);
+    let mut state = DashboardState::new(&before);
+    state.move_selection(3); // header + 3 rows -> the last one, charlie
+    let anchor = state.selection_anchor(&before);
+    assert_eq!(anchor, Some(SelectionAnchor::Project("c".into())));
+
+    // charlie is gone from the next scan.
+    let after = radar_of(vec![
+        project("a", "alpha", StatusBucket::Active),
+        project("b", "bravo", StatusBucket::Active),
+    ]);
+    state.refresh(&after, anchor);
+
+    let selected = state.selected.expect("something must stay selected");
+    assert!(
+        selected < state.visible.len(),
+        "selection must stay in bounds after the list shrank"
+    );
+    assert_ne!(
+        selected, 0,
+        "a vanished project must clamp the cursor near where it was, not reset it to the top"
+    );
+}
+
+#[test]
+fn refresh_on_an_empty_radar_clears_the_selection_without_panicking() {
+    let before = radar_of(vec![project("a", "alpha", StatusBucket::Active)]);
+    let mut state = DashboardState::new(&before);
+    let anchor = state.selection_anchor(&before);
+
+    state.refresh(&radar_of(vec![]), anchor);
+
+    assert!(state.visible.is_empty());
+    assert_eq!(state.selected, None, "the empty selection must be representable");
 }

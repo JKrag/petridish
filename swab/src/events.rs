@@ -131,21 +131,35 @@ pub fn append_event(path: &Path, event: &RawHookEvent) -> std::io::Result<()> {
 /// `max_bytes` is a soft cap — once cumulative bytes read exceed it, further lines are
 /// dropped on this pass (the file is still truncated at the end, so those events don't
 /// come back).
+///
+/// Returns `(signals, counts)`: `signals` is the existing newest-`at`-wins fold, one entry
+/// per resolved root. `counts` is a second, independent tally -- how many raw valid lines
+/// resolved to each root *this pass* -- kept alongside the fold rather than replacing it,
+/// since bucketing/agent-state derivation still wants "the latest signal", while the
+/// agent-activity sparkline (`Project::agent_activity`) wants "how many events fired this
+/// tick", which the fold alone discards.
 pub fn read_and_compact(
     path: &Path,
     config: &Config,
     max_bytes: u64,
-) -> HashMap<String, AgentSignal> {
+) -> (HashMap<String, AgentSignal>, HashMap<String, u32>) {
     let content = match std::fs::read_to_string(path) {
         Ok(s) => s,
-        Err(_) => return HashMap::new(),
+        Err(_) => return (HashMap::new(), HashMap::new()),
     };
 
     let mut signals: HashMap<String, AgentSignal> = HashMap::new();
+    let mut counts: HashMap<String, u32> = HashMap::new();
     let mut bytes_seen: u64 = 0;
 
-    for raw_line in content.split('\n').chain(content.split('\r')) {
-        // Both `\n` and `\r\n` survive into the split output; de-dupe empty entries.
+    // Split on either line-ending character in one pass. The previous form --
+    // `content.split('\n').chain(content.split('\r'))` -- silently double-processed every
+    // line whenever the file had zero `\r` bytes (always true here; `append_event` only ever
+    // writes `\n`): `content.split('\r')` on a string with no `\r` yields the WHOLE file as
+    // one element, which for a single-line file happens to still parse as valid JSON,
+    // double-counting that line. The signal fold (newest-`at`-wins overwrite) silently
+    // masked this; it surfaced once a genuine per-line counter was added alongside the fold.
+    for raw_line in content.split(['\n', '\r']) {
         let line = raw_line.trim();
         if line.is_empty() {
             continue;
@@ -199,6 +213,7 @@ pub fn read_and_compact(
         };
 
         let key = signal.root.clone();
+        *counts.entry(key.clone()).or_insert(0) += 1;
         match signals.get(&key) {
             Some(existing) if existing.at >= at => {
                 // Keep the newer one — the Python `if at > existing.at` check is
@@ -215,7 +230,7 @@ pub fn read_and_compact(
     // "write() with empty body" after reading, which simply opens `w` and closes it.
     let _ = std::fs::write(path, "");
 
-    signals
+    (signals, counts)
 }
 
 #[cfg(test)]
@@ -230,7 +245,7 @@ mod tests {
         use std::sync::atomic::{AtomicU64, Ordering};
         static CTR: AtomicU64 = AtomicU64::new(0);
         let id = CTR.fetch_add(1, Ordering::Relaxed);
-        let dir = std::env::temp_dir().join(format!("swab_test_events_{id}"));
+        let dir = std::env::temp_dir().join(format!("swab_test_events_{id}_{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap_or_else(|_| {
             // Another thread may have created it first; that's fine.
         });
@@ -337,8 +352,9 @@ mod tests {
     fn read_and_compact_missing_path_returns_empty() {
         let path = PathBuf::from("/tmp/does_not_exist_swab_test_xyzzy99_100/events.ndjson");
         let cfg = test_config(vec![]);
-        let result = read_and_compact(&path, &cfg, 5_000_000);
-        assert!(result.is_empty(), "missing file -> empty map, got: {:?}", result);
+        let (signals, counts) = read_and_compact(&path, &cfg, 5_000_000);
+        assert!(signals.is_empty(), "missing file -> empty map, got: {:?}", signals);
+        assert!(counts.is_empty(), "missing file -> empty counts, got: {:?}", counts);
     }
 
     /// Test 4: read_and_compact skips a malformed line (invalid JSON) but keeps a valid
@@ -351,7 +367,7 @@ not valid json
 "#;
         let path = with_tmp("read_skips_malformed.ndjson", content);
         let cfg = test_config(vec![PathBuf::from("/tmp")]);
-        let result = read_and_compact(&path, &cfg, 10_000_000);
+        let (result, _counts) = read_and_compact(&path, &cfg, 10_000_000);
 
         // Valid lines have cwd-as-is (no .git found, so resolve_root returns input).
         // Both entries should be in the map with their respective session_id (None here).
@@ -374,7 +390,7 @@ not valid json
 "#;
         let path = with_tmp("read_folds_same_root.ndjson", content);
         let cfg = test_config(vec![PathBuf::from("/tmp")]);
-        let result = read_and_compact(&path, &cfg, 10_000_000);
+        let (result, counts) = read_and_compact(&path, &cfg, 10_000_000);
 
         assert_eq!(result.len(), 1, "two lines same root -> one entry");
         let entry = result.values().next().unwrap();
@@ -385,6 +401,11 @@ not valid json
             "2024-01-01T00:00:05Z"
         );
         assert_eq!(entry.session_id.as_deref(), Some("s2"));
+        // The fold collapses to one signal, but the count tally still sees both lines.
+        assert_eq!(
+            counts.values().next().copied(), Some(2),
+            "two raw lines for the same root -> count of 2, got {:?}", counts
+        );
     }
 
     /// Test 6: read_and_compact TRUNCATES the file after reading — assert the file is
@@ -396,19 +417,21 @@ not valid json
         let path = with_tmp("read_truncates.ndjson", content);
 
         let cfg = test_config(vec![PathBuf::from("/tmp")]);
-        let first = read_and_compact(&path, &cfg, 10_000_000);
+        let (first, first_counts) = read_and_compact(&path, &cfg, 10_000_000);
         assert_eq!(first.len(), 1, "first read should pick up one signal");
+        assert_eq!(first_counts.values().sum::<u32>(), 1, "first read should count one event");
 
         // File must be empty after truncation.
         let size = std::fs::metadata(&path).expect("meta").len();
         assert_eq!(size, 0, "file size must be 0 after truncation, got {size}");
 
-        let second = read_and_compact(&path, &cfg, 10_000_000);
+        let (second, second_counts) = read_and_compact(&path, &cfg, 10_000_000);
         assert!(
             second.is_empty(),
             "second read of truncated file must be empty, got {:?}",
             second
         );
+        assert!(second_counts.is_empty(), "second read must see no counts either");
     }
 
     /// Test 7: read_and_compact on a line missing `cwd` -> that line is dropped
@@ -421,7 +444,7 @@ not valid json
 "#;
         let path = with_tmp("read_skips_missing_cwd.ndjson", content);
         let cfg = test_config(vec![PathBuf::from("/tmp")]);
-        let result = read_and_compact(&path, &cfg, 10_000_000);
+        let (result, _counts) = read_and_compact(&path, &cfg, 10_000_000);
 
         let keys: Vec<&String> = result.keys().collect();
         assert_eq!(
@@ -449,7 +472,7 @@ not valid json
         let path = with_tmp("read_max_bytes.ndjson", &content);
 
         let cfg = test_config(vec![PathBuf::from("/tmp")]);
-        let result = read_and_compact(&path, &cfg, 10);
+        let (result, _counts) = read_and_compact(&path, &cfg, 10);
 
         // With max_bytes=10, the first line (let's see how many bytes it is) is ~46;
         // that exceeds 10 on its own, so... actually let me rethink. bytes_seen=0 at start
@@ -481,7 +504,7 @@ not valid json
         let path = with_tmp("read_truncated.ndjson", content);
 
         let cfg = test_config(vec![PathBuf::from("/tmp")]);
-        let result = read_and_compact(&path, &cfg, 10_000_000);
+        let (result, _counts) = read_and_compact(&path, &cfg, 10_000_000);
 
         let keys: Vec<&String> = result.keys().collect();
         assert_eq!(

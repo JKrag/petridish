@@ -62,6 +62,7 @@ fn roundtrip_save_then_load_preserves_non_default_values() {
     let written = Prefs {
         last_screen: LastScreen::Browser,
         collapsed: [true, true, false, false],
+        tools: std::collections::BTreeMap::new(),
     };
     prefs::save(&path, &written).expect("save must succeed");
     let read_back = prefs::load(&path);
@@ -95,9 +96,9 @@ fn save_leaves_no_tmp_file_behind() {
 #[test]
 fn save_overwrite_second_call_replaces_the_first() {
     let path = scratch_path("save_overwrite_second_call_replaces_the_first");
-    prefs::save(&path, &Prefs { last_screen: LastScreen::Dashboard, collapsed: [false, false, true, true] })
+    prefs::save(&path, &Prefs { last_screen: LastScreen::Dashboard, collapsed: [false, false, true, true], tools: std::collections::BTreeMap::new() })
         .expect("first save must succeed");
-    prefs::save(&path, &Prefs { last_screen: LastScreen::Browser, collapsed: [true, false, true, false] })
+    prefs::save(&path, &Prefs { last_screen: LastScreen::Browser, collapsed: [true, false, true, false], tools: std::collections::BTreeMap::new() })
         .expect("second save must succeed");
     let read_back = prefs::load(&path);
     assert_eq!(read_back.last_screen, LastScreen::Browser);
@@ -120,6 +121,6 @@ fn default_prefs_path_is_under_petridish_home_dir() {
 #[test]
 fn collapsed_state_type_matches_dashboard_state() {
     let c: CollapsedState = [true, false, true, false];
-    let p = Prefs { last_screen: LastScreen::Dashboard, collapsed: c };
+    let p = Prefs { last_screen: LastScreen::Dashboard, collapsed: c, tools: std::collections::BTreeMap::new() };
     assert_eq!(p.collapsed, c);
 }

@@ -210,9 +210,15 @@ aggregator merges across sensors by the same rule.
 Raycast extension is built (`raycast/`, TypeScript, unaffected by any of the Python→Rust
 work — see its own `README.md`). Still deferred: FastAPI/web UI · `ps`/`lsof` process
 sensing for non-Claude CLIs (F8) · standalone Copilot CLI support if `~/.copilot/` ever
-appears for real (F5) · multi-root VS Code workspaces · resume-session / open-in-editor /
-open-GitHub actions from `petri` specifically (Raycast already has these; `petri` v1 stays
-read-only intentionally, see `petri/SPEC.md`).
+appears for real (F5) · multi-root VS Code workspaces · resume-session from `petri`
+(Raycast has it; `petri` does not — see `SURF-3` in `petri/IDEAS.md`).
+
+**No longer deferred:** open-in-editor and open-GitHub actions from `petri` landed in
+slice 1 (`petri/SPEC.md` §5.1), along with a git-history action and a tool picker. An
+earlier version of this line said `petri` "v1 stays read-only intentionally" — that
+claim is retired as written, though the invariant underneath it is untouched: `petri`
+still never writes `projects.json`, and handing the terminal to another program is not
+the same thing as becoming a writer.
 
 **Superseded:** the archived plan's D6 ("`petri` uses stdlib `curses`, not Textual", chosen
 to keep the Python build's zero-runtime-deps constraint) is moot now that `petri` itself is
@@ -253,3 +259,125 @@ by the `petri` reimplementation either.
 project directly, no list view). Store publishing (`ray publish`) — blocked on the
 GPL-3.0-or-later vs Raycast Store's MIT requirement (a real decision, not a placeholder,
 the moment Store publishing is on the table) and real icon artwork.
+
+---
+
+## 8. Distribution & installer requirements
+
+Extracted verbatim from `docs/archive/DESIGN.md` §7 when that doc was archived — this
+section, unlike the rest of that doc, was and is live: `src/petridish/installer.py`
+cites `D1`–`D6` and `§8.1` by number in real docstrings/comments. Treat the `D`-numbers as
+frozen identifiers, not prose to rephrase — renumbering them silently breaks those
+citations. `installer.py` is now built (this described it before it existed); the
+requirements still describe why it's built the way it is.
+
+### 8.1 Install model
+
+**This section described a single-language install and no longer does.** `swab` and
+`swab-hook` were Python console scripts when it was written; they are Rust binaries now,
+and the Python package ships only the read-side (`petripy`, `petridish-installer`). The
+`D`-numbers and the reasoning below survive the change — what moved is *which* toolchain
+places which binary. Leaving the old text would have pointed a reader at an install that
+cannot produce the scanner at all.
+
+The tool ships as **two halves, installed by their own toolchains, both landing on the
+user's `PATH`**:
+
+```sh
+cargo install --path swab --locked    # swab, swab-hook   -> ~/.cargo/bin
+cargo install --path petri --locked   # petri (the TUI)   -> ~/.cargo/bin
+uv tool install --editable .          # petripy, petridish-installer -> ~/.local/bin
+```
+
+`--locked` is load-bearing, not decoration: `cargo install` otherwise ignores
+`Cargo.lock` and re-resolves, and a yanked transitive `gix` dependency makes that
+resolution fail outright. See `README.md`, which carries the same warning where a new
+reader will actually meet it.
+
+Neither half is a `pip install` into system or user site-packages, and that part of the
+original reasoning is unchanged: this is an application, not a library, so `uv tool` /
+`pipx` semantics are the right ones for the Python side, and `cargo install`'s own
+per-binary model for the Rust side.
+
+**Development installs use the same mechanism as end-user installs** — the commands above
+are what a developer runs too. This is not just convenience: it means the launchd plist,
+the Claude hook entry, and `swab doctor` are all exercised against the **real production
+layout** during development, rather than a dev-only arrangement that would need
+re-testing after release. It also means `installer.py` resolving `swab-hook` through
+`shutil.which` is exercising the same lookup an end user gets.
+
+Rejected alternatives:
+
+| Approach | Why rejected |
+| --- | --- |
+| Symlink into `/opt/homebrew/bin` | Homebrew-managed directory; `brew doctor` flags foreign files and brew operations can clobber them. |
+| Shell alias in `.zshrc` | **Actively broken.** `launchd` jobs and Claude Code hooks run non-interactively and never source shell rc files — the daemon and hook would silently fail while working in an interactive terminal. |
+| `pip install --user` | PEP 668 friction on managed Pythons; pollutes user site-packages; no isolation. |
+
+### 8.2 Release channels
+
+1. **PyPI — primary, source of truth.** Enables `uv tool install` / `pipx install`
+   immediately and is what any other channel wraps.
+2. **Homebrew tap — secondary, optional.** Because the tool is macOS-only by nature
+   (launchd, `~/Library` paths), brew is a natural fit for discoverability. Start
+   with a personal tap (`brew install <user>/tap/<name>`) rather than
+   `homebrew-core`, which imposes notability requirements (stars/forks, release
+   history) and ongoing maintenance obligations.
+
+**The zero-dependency rule is a distribution asset, not just a build constraint.**
+Homebrew Python formulae normally require a vendored `resource` block per
+transitive dependency — often dozens, each needing bumps. A stdlib-only package
+needs none, making the formula roughly fifteen lines. This is a strong reason to
+keep `src/petridish/`'s runtime dependencies at zero permanently, beyond the
+original testability rationale (CLAUDE.md).
+
+### 8.3 Design requirements this imposes
+
+- **D1 — Discover the binary path at install time; never hardcode it.** The
+  installer must resolve `command -v swab-hook` and write the **absolute** result
+  into both the launchd plist and `~/.claude/settings.json`. A `uv tool` user has
+  `~/.local/bin/swab-hook`; a Homebrew user has `/opt/homebrew/bin/swab-hook`.
+  Assuming either breaks the other.
+- **D2 — Assume no `PATH` in non-interactive contexts.** `launchd` does not inherit
+  the user's shell environment, and neither do Claude Code hooks. Every command
+  string written to disk must be absolute.
+- **D3 — Runtime dependencies stay at zero** for `src/petridish/`. See §8.2. Adding
+  one there is a distribution decision, not just an implementation one. (Does not
+  apply to the Rust crates — CLAUDE.md.)
+- **D4 — The installer is idempotent, reversible, and marks its own work.** It must
+  back up `~/.claude/settings.json` before editing, *append* to existing hook arrays
+  (never replace them — real users have other hook consumers), tag every entry it
+  adds with a literal marker comment, and ship an `--uninstall` that removes only
+  marked entries.
+- **D5 — Declare macOS-only.** Add the appropriate classifier and fail early with a
+  clear message on other platforms rather than half-installing. **Implemented:**
+  `Operating System :: MacOS :: MacOS X` classifier in `pyproject.toml`, plus
+  `installer.py`'s `check_platform()` (`sys.platform != "darwin"` raises before touching
+  anything) — that's where "half-installing" would actually happen, since launchd is the
+  macOS-only surface. The CLI itself (`swab scan`/`list`) is deliberately *not*
+  platform-gated: its sensors already degrade to `null`/empty per CLAUDE.md invariant 5
+  (e.g. the Copilot sensor finding no `workspaceStorage/` on Linux is that invariant
+  working, not a bug), so gating the whole CLI would reject strictly more than necessary.
+- **D6 — Respect user-data separation.** Code lives in the tool's venv; user state
+  (`config.toml`, `projects.json`, `events.ndjson`) lives in `~/.petridish/` and
+  must survive uninstall/reinstall untouched.
+
+### 8.4 Naming — resolved
+
+`project-radar` was a working title, replaced (2026-08-06) with **`petridish`** —
+the filesystem-as-Petri-dish metaphor for dozens of small AI-assisted experiments
+growing (or sitting dormant) across the machine. The bare name `petri` was already
+taken on PyPI at the time; `petridish` was checked and free, so it is the
+distribution name. `petri` was kept in reserve for the dashboard frontend and is
+now that frontend's actual name (`petri/SPEC.md`), not used for anything published
+to PyPI. Final mapping:
+
+- PyPI distribution / import package: `petridish`
+- CLI console script (scan/list/path/doctor): `swab` — "swabbing" the filesystem
+  to see what's alive. Replaces the working name `radar`.
+- Hook console script: `swab-hook`. Replaces the working name `radar-hook`.
+- Interactive dashboard: `petri` (Rust/ratatui; `petri/SPEC.md`).
+- User-data directory: `~/.petridish/`
+- launchd label: `com.petridish.daemon`
+- Hook marker string written into `settings.json`: `# petridish` — load-bearing,
+  since `swab doctor` and `--uninstall` identify their own entries by matching it.

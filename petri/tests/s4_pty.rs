@@ -30,7 +30,7 @@ fn missing_state_file_exits_one_with_message() {
     // context, so rather than accept a nonzero flake rate, retry the whole
     // spawn+settle cycle up to 3 times and only fail if it's consistently
     // empty — which would mean a real regression, not this race.
-    let missing = std::env::temp_dir().join("petri_s4_pty_test_does_not_exist.json");
+    let missing = std::env::temp_dir().join(format!("petri_s4_pty_missing_{}.json", std::process::id()));
     let _ = std::fs::remove_file(&missing);
 
     let mut output = String::new();

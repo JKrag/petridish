@@ -49,6 +49,7 @@ fn project(id: &str, name: &str, bucket: StatusBucket) -> Project {
         agent: AgentState::idle_unknown(),
         last_activity_at: None,
         status_bucket: bucket,
+        agent_activity: Vec::new(),
     }
 }
 
@@ -66,7 +67,13 @@ fn rendered_lines(radar: &Radar, state: &DashboardState, width: u16, height: u16
     let backend = TestBackend::new(width, height);
     let mut terminal = Terminal::new(backend).expect("TestBackend terminal must construct");
     terminal
-        .draw(|frame| petri::dashboard::render(frame, radar, state))
+        .draw(|frame| {
+            // SPACE-1 added a feed parameter. These S6 tests are about section layout, so
+            // they pass an empty feed: `feed_rows_for` still grants rows on a tall enough
+            // terminal, and `feed_block_lines` draws its "nothing yet" body — neither of
+            // which any assertion here looks at.
+            petri::dashboard::render(frame, radar, state, &petri::feed::FeedState::default())
+        })
         .expect("draw must not error");
     let buffer = terminal.backend().buffer();
     (0..height)
@@ -183,4 +190,86 @@ fn does_not_panic_at_tiny_geometry() {
     let radar = load("minimal.json");
     let state = DashboardState::new(&radar);
     let _ = rendered_lines(&radar, &state, 1, 1);
+}
+
+#[test]
+fn roomy_running_card_renders_a_sparkline_from_agent_activity() {
+    let mut p = project("p1", "spark-project", StatusBucket::Active);
+    p.agent.active_agent = Some("claude-code".to_string());
+    p.agent_activity = vec![0, 0, 5, 0, 3];
+    let radar = radar_of(vec![p]);
+    let state = DashboardState::new(&radar);
+    // Tall enough that RUNNING renders in the roomy tier, not the compact one
+    // (`COMPACT_TIER_MAX_CONTENT_ROWS` — see `dashboard.rs`).
+    let lines = rendered_lines(&radar, &state, 100, 40);
+    let whole = lines.join("\n");
+    assert!(
+        whole.contains('▁'),
+        "the sparkline's zero/pad-level bar (U+2581) must render, got:\n{whole}"
+    );
+    assert!(
+        whole.chars().any(|c| ('\u{2582}'..='\u{2588}').contains(&c)),
+        "at least one non-zero-level bar must render for the nonzero samples, got:\n{whole}"
+    );
+}
+
+#[test]
+fn compact_running_row_does_not_render_a_sparkline() {
+    // Per the handoff's design: the sparkline is a roomy-tier-only enrichment. Force the
+    // compact tier via a short terminal (below COMPACT_TIER_MAX_CONTENT_ROWS worth of
+    // content rows) and confirm no sparkline glyph appears.
+    let mut p = project("p1", "spark-project", StatusBucket::Active);
+    p.agent.active_agent = Some("claude-code".to_string());
+    p.agent_activity = vec![9; 20]; // would otherwise definitely render non-lowest bars
+    let radar = radar_of(vec![p]);
+    let state = DashboardState::new(&radar);
+    let lines = rendered_lines(&radar, &state, 100, 12);
+    let whole = lines.join("\n");
+    assert!(
+        !whole.chars().any(|c| ('\u{2581}'..='\u{2588}').contains(&c)),
+        "the compact tier must not render any sparkline glyph, got:\n{whole}"
+    );
+}
+
+#[test]
+fn roomy_running_card_renders_a_git_zone_row_with_its_own_sparkline() {
+    // Redesign (dashboard card layout review): the git and agent sparklines each get their
+    // own labeled zone row instead of sharing line 1, so a card's facts and the sparkline
+    // that summarizes them are never split across unrelated lines.
+    let mut p = project("p1", "spark-project", StatusBucket::Active);
+    p.agent.active_agent = Some("claude-code".to_string());
+    p.agent_activity = vec![0]; // flat -- isolates the git sparkline from the agent one below
+    p.git.branch = Some("main".to_string());
+    p.git.daily_commits = vec![0, 0, 5, 0, 3, 0, 0, 0, 0, 0, 0, 0, 0, 2];
+    let radar = radar_of(vec![p]);
+    let state = DashboardState::new(&radar);
+    let lines = rendered_lines(&radar, &state, 100, 40);
+
+    // Find the card's header (name) line by content rather than a pinned index — the card is
+    // now wrapped in a bordered `Block`, which shifts every line below it by one row, and a
+    // future chrome tweak shouldn't need this test rewritten a third time.
+    let header_idx = lines
+        .iter()
+        .position(|l| l.contains("spark-project"))
+        .expect("the card header must show the project name somewhere on screen");
+    let header_line = &lines[header_idx];
+    let git_row = &lines[header_idx + 1];
+    let agent_row = &lines[header_idx + 2];
+
+    assert!(
+        header_line.contains("spark-project"),
+        "the card header must show the project name, got:\n{header_line:?}"
+    );
+    assert!(
+        git_row.contains("git") && git_row.contains("main"),
+        "the git zone row must show its own label and branch, got:\n{git_row:?}"
+    );
+    assert!(
+        git_row.chars().any(|c| ('\u{2582}'..='\u{2588}').contains(&c)),
+        "the git zone row must contain at least one non-zero-level git sparkline bar, got:\n{git_row:?}"
+    );
+    assert!(
+        agent_row.contains("agent") && agent_row.contains("claude-code"),
+        "the agent zone row must show its own label and the active agent, got:\n{agent_row:?}"
+    );
 }

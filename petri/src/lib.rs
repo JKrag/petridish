@@ -6,7 +6,13 @@
 pub mod app;
 pub mod browser;
 pub mod dashboard;
+pub mod exec;
+pub mod feed;
+pub mod picker;
 pub mod prefs;
+pub mod width;
+pub mod tools;
+pub mod theme;
 use crate::prefs::{LastScreen, Prefs};
 
 /// Row count for the Browser's `Shift`-style fast-jump keys (`J`/`K`). 10 is
@@ -149,6 +155,14 @@ fn poll_loop(
         .ok()
         .and_then(|m| m.modified().ok());
 
+    // The loaded preferences are kept for the lifetime of the loop and mutated
+    // in place, rather than rebuilt from scratch at each save site. Rebuilding
+    // was a real bug, not a style question: every `Prefs { .. }` literal had to
+    // name the new `tools` field, and each one named it as an empty map — so
+    // every Tab switch silently wiped the user's stored tool choices (ACT-8's
+    // whole point being that it asks once). Mutate-and-save cannot drift that
+    // way when the next field is added.
+    let mut prefs = prefs;
     let (mut screen, mut browser_state) = match prefs.last_screen {
         LastScreen::Dashboard => {
             (Screen::Dashboard, None)
@@ -163,10 +177,28 @@ fn poll_loop(
         None => None,
     };
 
-    let mut in_filter_input = false;
+    // The SPACE-1 activity feed. Deliberately NOT a field on `DashboardState`: that struct
+    // is rebuilt wholesale by `DashboardState::new` on every reload below, so a feed living
+    // there would be wiped on every scan tick — slice 1's finding 3 in a new costume.
+    let mut feed = match last_good.as_ref() {
+        Some(radar) => crate::feed::FeedState::seeded(radar),
+        None => crate::feed::FeedState::default(),
+    };
+
+    // The ACT-8 tool picker, `Some` while it is open. It takes every keystroke
+    // while it is up — a modal that let keys leak through to the list behind
+    // it would be worse than no modal.
+    let mut picker: Option<crate::picker::PickerState> = None;
+    // A one-line message shown over the Browser: "no tool for that", "this
+    // project has no remote". Cleared by the next keystroke, so it never
+    // becomes stale chrome.
+    let mut notice: Option<String> = None;
+    // Which action the open picker is configuring, kept alongside it so the
+    // chosen program can be launched immediately rather than only stored.
+    let mut picker_action: Option<crate::tools::Action> = None;
 
     // Initial draw — unconditional so we always paint something on startup.
-    render_current(terminal, &last_good, screen, &dashboard_state, &browser_state);
+    render_current(terminal, &last_good, screen, &dashboard_state, &browser_state, &picker, &notice, &feed);
 
     loop {
         // crossterm's `poll` returns true when *any* event is queued (Key,
@@ -176,7 +208,56 @@ fn poll_loop(
         let event_ready = crossterm::event::poll(std::time::Duration::from_secs(1)).unwrap_or(false);
         if event_ready {
             if let Ok(crossterm::event::Event::Key(key)) = crossterm::event::read() {
-                let handled = if key.code == crossterm::event::KeyCode::Char('q') {
+                // Any keystroke dismisses a transient notice, so it can never
+                // linger as stale chrome over a screen it no longer describes.
+                notice = None;
+
+                let handled = if let Some(ref mut p) = picker {
+                    // The picker is modal: it consumes EVERY key while open,
+                    // including `q`. Letting `q` quit out from under an open
+                    // dialog would be a surprising way to lose the answer the
+                    // user was in the middle of giving — and `Esc` is right
+                    // there, advertised in the popup's own footer.
+                    match p.on_key(key.code) {
+                        crate::picker::Outcome::Pending => {}
+                        crate::picker::Outcome::Cancelled => {
+                            picker = None;
+                            picker_action = None;
+                        }
+                        crate::picker::Outcome::Chosen { program, persist } => {
+                            let action = picker_action.take();
+                            picker = None;
+                            if let Some(action) = action {
+                                // `persist` is ACT-11's verb. A one-off launch
+                                // (`Enter` in re-pick mode) deliberately leaves
+                                // the stored default alone — writing it here
+                                // would cost the user the very default they
+                                // pressed the shifted key to bypass.
+                                if persist {
+                                    // Store first, then act. If the launch
+                                    // fails the user has still been asked once
+                                    // and only once (ACT-8).
+                                    prefs.tools.insert(action.id.to_string(), program.clone());
+                                    if let Err(e) =
+                                        prefs::save(&prefs::default_prefs_path(), &prefs)
+                                    {
+                                        eprintln!(
+                                            "petri: persisting the tool choice failed: {e}"
+                                        );
+                                    }
+                                }
+                                notice = run_action(
+                                    terminal,
+                                    &action,
+                                    &program,
+                                    &last_good,
+                                    &browser_state,
+                                );
+                            }
+                        }
+                    }
+                    true
+                } else if key.code == crossterm::event::KeyCode::Char('q') {
                     // `q` always quits, even in filter input mode.
                     return Ok(0);
                 } else if screen == Screen::Dashboard {
@@ -190,10 +271,12 @@ fn poll_loop(
                             .map(crate::browser::BrowserState::new);
                         screen = Screen::Browser;
                         browser_state = bstate;
-                        if let Err(e) = prefs::save(&prefs::default_prefs_path(), &Prefs {
-                            last_screen: LastScreen::Browser,
-                            collapsed: dashboard_state.as_ref().map(|d| d.collapsed).unwrap_or([false, false, true, true]),
-                        }) {
+                        prefs.last_screen = LastScreen::Browser;
+                        prefs.collapsed = dashboard_state
+                            .as_ref()
+                            .map(|d| d.collapsed)
+                            .unwrap_or([false, false, true, true]);
+                        if let Err(e) = prefs::save(&prefs::default_prefs_path(), &prefs) {
                             eprintln!("petri S7: persist Tab switch failed: {e}");
                         }
                         true
@@ -229,10 +312,11 @@ fn poll_loop(
                                         }
                                         Some(crate::dashboard::DashRow::Project(proj_idx)) => {
                                             // Persist Dashboard → Browser transition (same as Tab).
-                                            if let Err(e) = prefs::save(&prefs::default_prefs_path(), &Prefs {
-                                                last_screen: LastScreen::Browser,
-                                                collapsed: dstate.collapsed,
-                                            }) {
+                                            prefs.last_screen = LastScreen::Browser;
+                                            prefs.collapsed = dstate.collapsed;
+                                            if let Err(e) =
+                                                prefs::save(&prefs::default_prefs_path(), &prefs)
+                                            {
                                                 eprintln!("petri S7: persist Enter→Browser failed: {e}");
                                             }
                                             let mut bstate = crate::browser::BrowserState::new(radar);
@@ -253,16 +337,18 @@ fn poll_loop(
                     }
                 } else if key.code == crossterm::event::KeyCode::Char('/') {
                     // Enter filter input mode. The query starts empty and
-                    // subsequent character keys append to it.
-                    in_filter_input = true;
+                    // subsequent character keys append to it. The flag lives on
+                    // `BrowserState` because `browser::render` needs it too — the
+                    // ACT-10 header chip draws differently while you are typing.
                     if let Some(ref mut state) = browser_state {
+                        state.filter_input = true;
                         state.filter_query = String::new();
                         if let Some(ref radar) = last_good {
                             state.apply_filter(radar, "");
                         }
                     }
                     true
-                } else if in_filter_input {
+                } else if browser_state.as_ref().is_some_and(|s| s.filter_input) {
                     match key.code {
                         // Navigation arrows and j/k still move selection while
                         // in filter mode (the user may want to test moves without
@@ -318,8 +404,8 @@ fn poll_loop(
                         // `Esc` closes the filter input mode *and* clears the
                         // query (petri/SPEC.md §5).
                         crossterm::event::KeyCode::Esc => {
-                            in_filter_input = false;
                             if let Some(ref mut state) = browser_state {
+                                state.filter_input = false;
                                 state.filter_query = String::new();
                                 if let Some(ref radar) = last_good {
                                     state.apply_filter(radar, "");
@@ -327,10 +413,35 @@ fn poll_loop(
                             }
                             true
                         }
+                        // `Backspace` drops the last character of the query and
+                        // re-filters. Not a "printable characters only" input:
+                        // without this the only way out of a typo is `Esc` and
+                        // retyping the whole query, which the ACT-10 chip made
+                        // impossible to ignore once the query was on screen.
+                        //
+                        // `pop()` is char-wise, not byte-wise, so a multi-byte
+                        // character deletes as one keypress rather than leaving
+                        // a broken UTF-8 tail.
+                        crossterm::event::KeyCode::Backspace => {
+                            if let Some(ref mut state) = browser_state {
+                                let mut q = std::mem::take(&mut state.filter_query);
+                                q.pop();
+                                if let Some(ref radar) = last_good {
+                                    state.apply_filter(radar, &q);
+                                } else {
+                                    state.filter_query = q;
+                                }
+                                true
+                            } else {
+                                false
+                            }
+                        }
                         // `Enter` closes the filter input mode but keeps the
                         // query, so the filtered selection persists.
                         crossterm::event::KeyCode::Enter => {
-                            in_filter_input = false;
+                            if let Some(ref mut state) = browser_state {
+                                state.filter_input = false;
+                            }
                             true
                         }
                         // Character keys: append to the query (filter input
@@ -358,10 +469,12 @@ fn poll_loop(
                     // it must also trigger a save (the Dashboard branch
                     // doesn't fire when screen is Browser).
                     if key.code == crossterm::event::KeyCode::Tab {
-                        if let Err(e) = prefs::save(&prefs::default_prefs_path(), &Prefs {
-                            last_screen: LastScreen::Dashboard,
-                            collapsed: dashboard_state.as_ref().map(|d| d.collapsed).unwrap_or([false, false, true, true]),
-                        }) {
+                        prefs.last_screen = LastScreen::Dashboard;
+                        prefs.collapsed = dashboard_state
+                            .as_ref()
+                            .map(|d| d.collapsed)
+                            .unwrap_or([false, false, true, true]);
+                        if let Err(e) = prefs::save(&prefs::default_prefs_path(), &prefs) {
                             eprintln!("petri S7: persist Tab switch (Browser→Dashboard) failed: {e}");
                         }
                         screen = Screen::Dashboard;
@@ -435,12 +548,64 @@ fn poll_loop(
                             // `Esc` in normal mode: no-op (only meaningful to
                             // close the filter; if filter isn't open, do nothing).
                             crossterm::event::KeyCode::Esc => true,
+                            // Action keys (IDEAS.md `ACT-2`). Last arm, so every
+                            // navigation binding above keeps priority over the
+                            // registry — a future action must never be able to
+                            // silently steal `j`/`k`/`J`/`K`.
+                            //
+                            // Note where this sits: inside the NORMAL-mode match,
+                            // never the `in_filter_input` one above. If it were in
+                            // both, typing `g` into the `/` filter would launch a
+                            // git browser instead of filtering. The two branches
+                            // being structurally separate is what makes that safe;
+                            // `s8_pty_actions.rs` gates it regardless.
+                            crossterm::event::KeyCode::Char(c) => {
+                                let registry = crate::tools::registry();
+                                // The lowercase key runs the action; the SHIFTED
+                                // variant of the same key re-picks it (ACT-11).
+                                // Derived from `action.key` rather than
+                                // hard-coded, so a future registry entry gets
+                                // its shifted key for free. Note this sits
+                                // after the J/K ×10 navigation arms, which keep
+                                // priority — an action must never be able to
+                                // steal a movement key.
+                                let lower = registry.iter().find(|a| a.key == c).cloned();
+                                let shifted = registry
+                                    .iter()
+                                    .find(|a| a.key.to_ascii_uppercase() == c && a.key != c)
+                                    .cloned();
+                                match (lower, shifted) {
+                                    (Some(action), _) => {
+                                        notice = begin_action(
+                                            terminal,
+                                            &action,
+                                            &last_good,
+                                            &browser_state,
+                                            &prefs,
+                                            &mut picker,
+                                            &mut picker_action,
+                                        );
+                                        true
+                                    }
+                                    (None, Some(action)) => {
+                                        notice = begin_repick(
+                                            &action,
+                                            &last_good,
+                                            &browser_state,
+                                            &mut picker,
+                                            &mut picker_action,
+                                        );
+                                        true
+                                    }
+                                    (None, None) => false,
+                                }
+                            }
                             _ => false,
                         }
                     }
                 };
                 if handled {
-                    render_current(terminal, &last_good, screen, &dashboard_state, &browser_state);
+                    render_current(terminal, &last_good, screen, &dashboard_state, &browser_state, &picker, &notice, &feed);
                 }
             }
         }
@@ -460,7 +625,19 @@ fn poll_loop(
         if mtime_changed {
             match read_state_file(state_path) {
                 Ok(r) => {
-                    last_good = Some(r);
+                    // The Dashboard's selection anchor has to be read here, against the
+                    // OUTGOING radar, because `DashRow::Project` holds an index into
+                    // `radar.projects` and `absorb_snapshot` is about to replace that list.
+                    // Resolving the index afterwards would name whichever project happens to
+                    // occupy that slot in the new scan — the exact silent cursor-drift the
+                    // anchor exists to prevent.
+                    let dash_anchor = match (&dashboard_state, &last_good) {
+                        (Some(d), Some(previous)) => d.selection_anchor(previous),
+                        _ => None,
+                    };
+                    // Feed first, by construction: `absorb_snapshot` owns both snapshots, so
+                    // the previous one cannot be dropped before it has been diffed.
+                    last_good = absorb_snapshot(&mut feed, last_good.take(), r);
                     // Re-derive browser state from the new Radar, preserving the
                     // current filter query. Selection follows the previously-
                     // selected project when it survives, else resets to first row
@@ -477,13 +654,28 @@ fn poll_loop(
                     }
                     // Re-derive DashboardState too, regardless of which screen
                     // is currently active, so a reload while viewing the
-                    // Browser still leaves a fresh Dashboard behind it. Collapse
-                    // state resets to spec defaults on reload rather than being
-                    // preserved — not gated by any acceptance test, and `rebuild`
-                    // is private to `dashboard.rs`, so this is the simplest
-                    // correct behavior rather than a deliberate UX call.
+                    // Browser still leaves a fresh Dashboard behind it.
+                    //
+                    // `refresh`, not `DashboardState::new`: the latter rebuilt
+                    // with the hardcoded spec defaults, so every reload reopened
+                    // sections the user had collapsed and threw the cursor back
+                    // to the top. On a machine `swab` is actively scanning that
+                    // is every few seconds, i.e. the screen rearranging itself
+                    // under the user's hands with no input from them. The
+                    // `dash_anchor` was captured above, against the outgoing
+                    // radar, for the reason given there.
                     if let Some(ref radar) = last_good {
-                        dashboard_state = Some(crate::dashboard::DashboardState::new(radar));
+                        match dashboard_state {
+                            Some(ref mut d) => d.refresh(radar, dash_anchor),
+                            None => {
+                                dashboard_state = Some(
+                                    crate::dashboard::DashboardState::with_collapsed(
+                                        radar,
+                                        prefs.collapsed,
+                                    ),
+                                )
+                            }
+                        }
                     }
                 }
                 Err(e) => eprintln!("petri S5 mid-loop state read failed: {e}"),
@@ -495,11 +687,40 @@ fn poll_loop(
         // ticks we skip draw so the output stream goes still — this keeps PTY
         // harnesses happy and the user's terminal clean when petri is idle.
         if event_ready || mtime_changed {
-            render_current(terminal, &last_good, screen, &dashboard_state, &browser_state);
+            render_current(terminal, &last_good, screen, &dashboard_state, &browser_state, &picker, &notice, &feed);
         }
 
         last_mtime = new_mtime;
     }
+}
+
+/// Fold a freshly-read snapshot into the activity feed and hand back the new `last_good`.
+///
+/// **This function exists to make the ordering unrepresentable rather than merely tested.**
+/// The bug it forecloses is a one-liner: `last_good = Some(r)` destroys the previous
+/// snapshot, and `FeedState::ingest` needs it — so a reload that assigns first silently
+/// produces a feed that never grows a row, on a code path no unit test naturally covers.
+/// Taking ownership of both halves means the caller *cannot* express that order. Same move
+/// as slice 2's `run_action`, where removing a parameter beat adding a test.
+///
+/// - `last_good` is `None` (nothing parsed yet, first successful read): seed the feed from
+///   `fresh` so a freshly-started `petri` has rows immediately.
+/// - `last_good` is `Some(prev)`: ingest the `prev` -> `fresh` difference.
+///
+/// Returns `Some(fresh)`, which the caller stores as the new `last_good`.
+pub fn absorb_snapshot(
+    feed: &mut crate::feed::FeedState,
+    last_good: Option<petridish_core::schema::Radar>,
+    fresh: petridish_core::schema::Radar,
+) -> Option<petridish_core::schema::Radar> {
+    match last_good {
+        // `prev` is consumed here and cannot outlive this arm, which is the point: there is
+        // no way to write the replace-then-diff ordering that this function exists to
+        // prevent.
+        Some(prev) => feed.ingest(&prev, &fresh),
+        None => *feed = crate::feed::FeedState::seeded(&fresh),
+    }
+    Some(fresh)
 }
 
 /// Helper: redraw `terminal` from the last good radar and whichever screen's
@@ -511,19 +732,214 @@ fn render_current(
     screen: Screen,
     dashboard_state: &Option<crate::dashboard::DashboardState>,
     browser_state: &Option<crate::browser::BrowserState>,
+    picker: &Option<crate::picker::PickerState>,
+    notice: &Option<String>,
+    feed: &crate::feed::FeedState,
 ) {
     let Some(r) = radar else { return };
     match screen {
         Screen::Dashboard => {
             if let Some(s) = dashboard_state {
-                let _ = terminal.draw(|frame| crate::dashboard::render(frame, r, s));
+                let _ = terminal.draw(|frame| crate::dashboard::render(frame, r, s, feed));
             }
         }
         Screen::Browser => {
             if let Some(s) = browser_state {
-                let _ = terminal.draw(|frame| crate::browser::render(frame, r, s));
+                let _ = terminal.draw(|frame| {
+                    crate::browser::render(frame, r, s);
+                    // The overlay is drawn last, after the screen beneath it —
+                    // `Clear` only blanks what is already in the buffer, so
+                    // ordering is the whole mechanism (MECH-1).
+                    if let Some(p) = picker {
+                        crate::picker::render(frame, p);
+                    } else if let Some(text) = notice {
+                        crate::browser::render_notice(frame, text);
+                    }
+                });
             }
         }
     }
 }
 
+
+/// The currently-selected project's path and remote URL, or `None` when
+/// nothing is selected (an empty filtered list is a representable state —
+/// `browser::BrowserState::selected` is deliberately an `Option`).
+fn selected_project<'a>(
+    radar: &'a Option<petridish_core::schema::Radar>,
+    browser_state: &Option<crate::browser::BrowserState>,
+) -> Option<&'a petridish_core::schema::Project> {
+    let radar = radar.as_ref()?;
+    let state = browser_state.as_ref()?;
+    let pos = state.selected?;
+    let idx = *state.visible.get(pos)?;
+    radar.projects.get(idx)
+}
+
+/// Press an action key: resolve it against this machine and this project, then
+/// either run it, open the picker, or explain why neither happened.
+///
+/// Returns the notice to display, if any. `Ok`-shaped outcomes return `None` —
+/// a successful launch needs no commentary.
+#[allow(clippy::too_many_arguments)]
+fn begin_action(
+    terminal: &mut ratatui::Terminal<ratatui::backend::CrosstermBackend<std::io::Stdout>>,
+    action: &crate::tools::Action,
+    radar: &Option<petridish_core::schema::Radar>,
+    browser_state: &Option<crate::browser::BrowserState>,
+    prefs: &Prefs,
+    picker: &mut Option<crate::picker::PickerState>,
+    picker_action: &mut Option<crate::tools::Action>,
+) -> Option<String> {
+    let Some(project) = selected_project(radar, browser_state) else {
+        return Some("nothing selected".to_string());
+    };
+    let facts = crate::tools::Facts {
+        path: &project.path,
+        url: project.git.github_url.as_deref(),
+    };
+    // `ACT-4`'s resolution order for the editor: the stored answer first, then
+    // `$VISUAL`, then `$EDITOR`, then the registry probe. Reading the environment here
+    // rather than in `tools::resolve` is what keeps that function pure and hermetically
+    // testable. Measured on a real machine: both variables are frequently unset while
+    // `code` sits on PATH, so this chain often yields nothing at all and the probe does
+    // the real work.
+    //
+    // Each source is filtered by *executability*, not merely by being set — the fix for a
+    // bug review caught. Taking the first source that was merely present collapsed a
+    // four-step order into one guess: with `$VISUAL` naming an editor no longer on this
+    // machine, `resolve` would find it uninstalled and skip straight to probing, so a
+    // perfectly good `$EDITOR` was never consulted. "Present" and "usable" are different
+    // questions and only the second one orders this chain.
+    let usable = |name: String| crate::exec::is_installed(&name).then_some(name);
+    let stored = prefs
+        .tools
+        .get(action.id)
+        .cloned()
+        .and_then(usable)
+        .or_else(|| {
+            (action.id == "edit")
+                .then(|| {
+                    std::env::var("VISUAL")
+                        .ok()
+                        .and_then(usable)
+                        .or_else(|| std::env::var("EDITOR").ok().and_then(usable))
+                })
+                .flatten()
+        });
+
+    match crate::tools::resolve(action, &facts, stored.as_deref(), &|p| {
+        crate::exec::is_installed(p)
+    }) {
+        crate::tools::Resolution::Ready(launch) => {
+            launch_now(terminal, &launch, std::path::Path::new(&project.path))
+        }
+        crate::tools::Resolution::Ambiguous(installed) => {
+            *picker = Some(crate::picker::PickerState::new(action, installed));
+            *picker_action = Some(action.clone());
+            None
+        }
+        crate::tools::Resolution::NoTool => Some(format!(
+            "nothing installed that can {} — tried: {}",
+            action.label,
+            action
+                .candidates
+                .iter()
+                .map(|c| c.program.as_str())
+                .collect::<Vec<_>>()
+                .join(", ")
+        )),
+        // `ACT-9`'s per-project axis, phrased in terms of the project rather
+        // than the tooling: this is the half the user can see on the row in
+        // front of them.
+        crate::tools::Resolution::NoTarget => {
+            Some(format!("{} has no remote", project.name))
+        }
+    }
+}
+
+/// Press a SHIFTED action key: open the re-pick popup (`ACT-11`).
+///
+/// Deliberately does not go through `tools::resolve`. That function collapses
+/// an unambiguous choice to `Resolution::Ready` and throws the candidate list
+/// away, so on the machines re-pick is *for* — one where a default already
+/// resolves cleanly — there would be nothing left to list. `repick_candidates`
+/// is the door that stays open.
+fn begin_repick(
+    action: &crate::tools::Action,
+    radar: &Option<petridish_core::schema::Radar>,
+    browser_state: &Option<crate::browser::BrowserState>,
+    picker: &mut Option<crate::picker::PickerState>,
+    picker_action: &mut Option<crate::tools::Action>,
+) -> Option<String> {
+    let Some(project) = selected_project(radar, browser_state) else {
+        return Some("nothing selected".to_string());
+    };
+    let facts = crate::tools::Facts {
+        path: &project.path,
+        url: project.git.github_url.as_deref(),
+    };
+    match crate::tools::repick_candidates(action, &facts, &|p| crate::exec::is_installed(p)) {
+        // `ACT-9`'s per-project axis, phrased the same way `begin_action`
+        // phrases it, so the two paths never disagree on screen.
+        None => Some(format!("{} has no remote", project.name)),
+        // An empty list still opens the popup: `Other — specify path…` is
+        // always a row, so a machine with nothing installed is still usable.
+        Some(installed) => {
+            *picker = Some(crate::picker::PickerState::repick(action, installed));
+            *picker_action = Some(action.clone());
+            None
+        }
+    }
+}
+
+/// Run the program the user just chose in the picker. Storing the answer
+/// without acting on it would make the picker feel like a settings dialog
+/// rather than the one keystroke it interrupted.
+///
+/// `program` is passed in explicitly rather than re-read from `prefs`, and
+/// that is load-bearing for `ACT-11`. This function used to re-resolve through
+/// `prefs.tools.get(action.id)`, which worked only because the caller always
+/// wrote the answer to `prefs` first. A one-off launch deliberately does not
+/// write it — so re-resolving would launch the user's OLD default, which is
+/// exactly the behaviour the shifted key exists to escape.
+///
+/// The fix is structural rather than test-guarded: with no `prefs` parameter
+/// in scope, this function *cannot* consult a stored answer even by accident,
+/// which is a stronger guarantee than a test that a later refactor could
+/// silently stop exercising. The event loop's half — persist only when the
+/// picker says so — is covered by `s8_pty_repick.rs`.
+fn run_action(
+    terminal: &mut ratatui::Terminal<ratatui::backend::CrosstermBackend<std::io::Stdout>>,
+    action: &crate::tools::Action,
+    program: &str,
+    radar: &Option<petridish_core::schema::Radar>,
+    browser_state: &Option<crate::browser::BrowserState>,
+) -> Option<String> {
+    let Some(project) = selected_project(radar, browser_state) else {
+        return Some("nothing selected".to_string());
+    };
+    let facts = crate::tools::Facts {
+        path: &project.path,
+        url: project.git.github_url.as_deref(),
+    };
+    let launch = crate::tools::launch_for(action, &facts, program);
+    launch_now(terminal, &launch, std::path::Path::new(&project.path))
+}
+
+/// Run one resolved launch, turning every failure into a notice rather than an
+/// error that would take the TUI down. A tool that is missing at launch time
+/// (uninstalled since it was chosen) is a message, not a crash.
+fn launch_now(
+    terminal: &mut ratatui::Terminal<ratatui::backend::CrosstermBackend<std::io::Stdout>>,
+    launch: &crate::tools::Launch,
+    cwd: &std::path::Path,
+) -> Option<String> {
+    match crate::exec::run(terminal, launch, cwd) {
+        Ok(crate::exec::Outcome::Finished(_)) | Ok(crate::exec::Outcome::Detached) => None,
+        Ok(crate::exec::Outcome::Failed(e)) => {
+            Some(format!("could not run {}: {e}", launch.program))
+        }
+        Err(e) => Some(format!("terminal hand-off failed: {e}")),
+    }
+}

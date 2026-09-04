@@ -263,8 +263,12 @@ def _dump(screen: list[str]) -> str:
 class _Petri:
     """A live ``petri`` in a pty. Use as a context manager."""
 
-    def __init__(self, state_path: str) -> None:
+    def __init__(self, state_path: str, pinned_now: "datetime | None" = None) -> None:
         self.state_path = state_path
+        #: When set, the child renders against this instant instead of the wall
+        #: clock (``tui._now``). Only the row-for-row identity test needs it;
+        #: every other test here asserts on content that does not move.
+        self.pinned_now = pinned_now
         self.pid = -1
         self.fd = -1
         #: Every byte the child has written, kept so :meth:`screen` can replay
@@ -289,6 +293,11 @@ class _Petri:
         if self.pid == 0:  # pragma: no cover - child process
             os.environ["TERM"] = "xterm-256color"
             os.environ["PYTHONPATH"] = src
+            # Pin the child's clock so a rendered duration or the header clock
+            # cannot tick between the renderer call in the parent and the frame
+            # the child draws. See `tui._now`.
+            if self.pinned_now is not None:
+                os.environ["PETRIDISH_NOW"] = self.pinned_now.isoformat()
             os.execvp(sys.executable, [sys.executable, "-c", code])
 
         # A forked pty starts at 0x0; the renderers would correctly emit nothing.
@@ -461,6 +470,11 @@ def test_blitter_puts_the_renderer_output_on_screen_verbatim(state_file):
     contained every string the tests looked for. Identity catches it on the
     first row that goes missing, and prints both screens.
     """
+    # One instant for both sides. Without this the parent renders at T1 and the
+    # child draws at T2, and any duration on screen ticks between them: a real
+    # run of this test failed on `silent 13s` vs `silent 12s`, a correct program
+    # reported as a defect. petri/SPEC.md §8 requires an injected clock for the
+    # Rust PTY layer for exactly this reason; this suite predates that rule.
     now = datetime.now(timezone.utc)
     expected = render_dashboard(
         read_json(state_file),
@@ -469,7 +483,7 @@ def test_blitter_puts_the_renderer_output_on_screen_verbatim(state_file):
         height=ROWS,
         home=os.path.expanduser("~"),
     )
-    with _Petri(state_file) as petri:
+    with _Petri(state_file, pinned_now=now) as petri:
         actual = petri.settle()
 
     for i, exp in enumerate(expected):

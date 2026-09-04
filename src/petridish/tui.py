@@ -82,6 +82,34 @@ def _init_color_attrs() -> dict[str, int]:
 # Pure helpers (no curses, testable without a terminal)
 # ---------------------------------------------------------------------------
 
+def _now() -> datetime:
+    """Current UTC time, overridable by ``PETRIDISH_NOW`` (an ISO-8601 string).
+
+    Exists for the PTY tests, and it is test *infrastructure* rather than a
+    feature: those tests reconstruct the terminal and compare it row-for-row
+    against what ``render_dashboard`` produced for the same fixture, and the
+    two calls necessarily happen a moment apart. Any rendered duration
+    (``silent 12s``) or the header clock can tick between them, so the
+    comparison fails on a correct program — which is exactly the flake that
+    turned up on a real run and is why ``petri/SPEC.md`` section 8 makes an
+    injected clock a hard requirement for the Rust PTY layer (this module is
+    scanned by the glyph gate, so that reference is spelled out rather than
+    using a section sign). This suite predates that
+    rule; this is the same fix applied here.
+
+    An unparseable value falls through to the real clock rather than raising:
+    a frontend must never fail to start over an environment variable.
+    """
+    override = os.environ.get("PETRIDISH_NOW")
+    if override:
+        try:
+            parsed = datetime.fromisoformat(override)
+        except ValueError:
+            return datetime.now(timezone.utc)
+        return parsed if parsed.tzinfo else parsed.replace(tzinfo=timezone.utc)
+    return datetime.now(timezone.utc)
+
+
 def _format_stale_banner(radar: Radar, *, now: datetime | None = None) -> str:
     """Return a banner string describing how old ``radar``'s data is.
 
@@ -162,7 +190,7 @@ def _run(stdscr) -> int:
                 selection = SelectionState()
                 last_mtime = current_mtime
 
-            now = datetime.now(timezone.utc)
+            now = _now()
             stdscr.erase()
             h, w = stdscr.getmaxyx()
 
