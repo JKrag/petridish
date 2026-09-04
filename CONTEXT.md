@@ -2,12 +2,11 @@
 
 Terms resolved during design discussions, kept here so they don't drift.
 Implementation details belong in `ARCHITECTURE.md` / `petri/SPEC.md`, not here
-(`docs/archive/DESIGN.md` is the original pre-implementation pitch doc, archived).
+(ADR-0004 records why the Python read-side was removed; git history has the rest.)
 
 ## `swab` vs `petri`
 
-Two separate console scripts, both installed by the `petridish` package, with
-different jobs:
+Two separate binaries from the same workspace, with different jobs:
 
 - **`swab`** — the scanner/CLI (Rust, `swab/`). Runs the crawl, writes `projects.json`
   (`swab scan`), and exposes non-interactive inspection commands (`list`,
@@ -15,25 +14,28 @@ different jobs:
   life" — the sensing side of the metaphor.
 - **`petri`** — the interactive frontend. Launches the terminal dashboard that renders
   `projects.json` for a human to look at. Read-only consumer of the state file; never
-  writes it. Named for the petri dish itself — the thing you look *into*. As of the
-  Rust edition, `petri` means the Rust/ratatui build; the original Python/`curses`
-  build is [[petripy]] (below) and is deprecated, kept only until the Rust one
-  replaces it in daily use.
-  _Avoid_: calling the Rust build a "port" — it is a reimplementation that keeps the
-  behavior and discards the curses-shaped internals (see "Screens" below).
+  writes it. Named for the petri dish itself — the thing you look *into*. Rust/ratatui;
+  there is no other `petri`, and the deprecated Python `petripy` it replaced was deleted
+  in ADR-0004.
+  _Avoid_: calling it a "port" of the Python original — it was a reimplementation that
+  kept the behaviour and discarded the curses-shaped internals (see "Screens" below).
 
 `petri` is TUI-only for now. `swab`'s subcommands are not migrating under
 it; that merge is explicitly out of scope until/unless revisited.
 
-## `petripy`
+## `petridish`
 
-The original Python/`curses` `petri` (`src/petridish/{tui,tui_state,screens}.py`),
-renamed to `petripy` when the Rust edition took the `petri` name. Deprecated on
-arrival of the Rust build but deliberately kept installed and working — it is the
-reference for what "feature parity at the abstract level" means, and the fallback
-while the Rust one earns trust. Not a supported long-term surface; no new features
-land here.
-_Avoid_: "the old petri", "legacy petri" — it has a name.
+The command a user runs first, and the crate behind it (`petridish-cli`, published as
+`petri-dish`). Owns everything that wires the tool into the machine: the launchd job, the
+Claude Code hook entries, the menu-bar plugin, and `doctor` over all three. It replaced the
+Python `installer.py` and `menubar.py` in ADR-0004.
+
+Note the three-way naming, which is deliberate rather than sloppy: the *crate* is
+`petri-dish` (because `petridish` is taken on crates.io by an unrelated tool), the *binary*
+is `petridish`, and the *project* is petridish. Only the crate name is unusual, and only
+crates.io ever sees it.
+_Avoid_: "the installer" as a synonym — `petridish install` is one of its four
+subcommands, not the whole thing.
 
 ## Screens: Dashboard and Browser
 
@@ -47,9 +49,9 @@ Rust edition; more screens may be added later.
 - **Browser** — the *tool you drive*. Dense list plus a detail pane, search, and
   selection. Density beats prominence; every project must be reachable.
 
-**The Dashboard is navigable, not inert.** The Python build made it strictly
-input-free so it could be a pure function; in real use that was the wrong trade —
-the hands want to move. In the Rust edition it is a screen you can move around in.
+**The Dashboard is navigable, not inert.** An early build made it strictly input-free so
+it could be a pure function; in real use that was the wrong trade — the hands want to move.
+It is a screen you can move around in.
 Selection is therefore a concept shared by both screens, not a Browser-only one.
 _Avoid_: "read-only screen", "static view" for the Dashboard — read-only refers to
 the [[state file]], not to whether you can put a cursor on something.
@@ -57,8 +59,7 @@ the [[state file]], not to whether you can put a cursor on something.
 ## Status buckets
 
 `active` / `in_flight` / `stale` / `cold` — see `petridish-core/src/schema.rs`'s
-`StatusBucket` (or Python `schema.py`'s `STATUS_BUCKETS` on the read side) and
-`ARCHITECTURE.md` §4 for the time thresholds. Every frontend (CLI table, `petri`'s grouped
+`StatusBucket` and `ARCHITECTURE.md` §4 for the time thresholds. Every frontend (CLI table, `petri`'s grouped
 sections) organizes primarily by this axis.
 
 ## Foreign project

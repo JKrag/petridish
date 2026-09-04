@@ -1,98 +1,80 @@
 # petridish
 
-Local monitoring daemon for macOS: crawls project roots, tracks git state, senses AI agent
-activity, and aggregates into `~/.petridish/projects.json`.
+A local monitoring daemon for macOS. It crawls your project roots every minute, tracks git
+state, senses which AI coding agents are actually working, and aggregates it all into
+`~/.petridish/projects.json` — which a terminal dashboard, a menu-bar plugin and a Raycast
+extension then read.
 
-## Install (dev)
+Built for the situation where you have dozens of small experiments scattered across the
+filesystem and no idea which ones are alive, which have uncommitted work, and which agent
+is currently waiting on you.
 
-Two separate pieces, two separate toolchains:
+macOS only, by nature: launchd and `~/Library` are load-bearing.
 
-**`swab` / `swab-hook`** (the scanner) are Rust, built from `swab/`:
+## Install
 
 ```sh
-cargo install --path swab --locked
+brew install jkrag/tap/petridish
+petridish install
 ```
 
-This puts `swab` and `swab-hook` on `~/.cargo/bin` (verify it's on `PATH`). **`--locked`
-is required, not optional:** `cargo install` ignores `Cargo.lock` by default and
-re-resolves from scratch, and a transitive `gix` dependency (`bisync`) has had its
-matching versions yanked from crates.io, so the default resolution fails outright. The
-lockfile pins a working set. Same flag for `petri` below, for the same reason.
+`petridish install` is the step that wires the tool into the machine. It:
+
+- creates `~/.petridish/` with a commented-out default `config.toml`
+- registers a launchd job that runs `swab scan` every 60 seconds, logging to
+  `~/.petridish/daemon.log`
+- adds Claude Code hook entries to `~/.claude/settings.json`, tagged with the literal
+  marker `# petridish`, **without disturbing any other hook consumer** already configured
+  there
+- installs the xbar/SwiftBar menu-bar plugin (skip it with `--no-menubar-plugin`)
+
+It backs up `~/.claude/settings.json` once, to `~/.petridish/settings.json.backup`, before
+touching it. That backup is a safety artifact for you — uninstall never reads it back
+automatically. See [Uninstall semantics](#uninstall-semantics).
+
+Re-running `petridish install` is safe and is the right move after any upgrade that
+relocates the binaries.
+
+<details>
+<summary>Installing from a checkout instead</summary>
 
 ```sh
-swab --help
+cargo install --path petridish-cli --locked   # petridish
+cargo install --path swab --locked            # swab, swab-hook
+cargo install --path petri --locked           # petri
+petridish install
 ```
 
-**`petri`** (the TUI dashboard) is Rust/ratatui and is built — both screens, filtering,
-collapsible sections, worktree nesting and the activity feed. `petri/SPEC.md` is
-authoritative for its behaviour:
+**`--locked` is required, not optional.** `cargo install` ignores `Cargo.lock` by default
+and re-resolves from scratch; a transitive `gix` dependency (`bisync`) has had its matching
+versions yanked from crates.io, so the default resolution fails outright. The lockfile pins
+a working set.
+</details>
+
+## Commands
+
+Four binaries, each with one job:
+
+| Binary | Role |
+| --- | --- |
+| `petridish` | Install, uninstall, health-check, and render the menu bar |
+| `swab` | The scanner. The **only** thing that writes `projects.json` |
+| `swab-hook` | The Claude Code hook. Appends one line to `events.ndjson`, nothing else |
+| `petri` | The terminal dashboard |
 
 ```sh
-cargo install --path petri --locked
-```
+petridish install       # wire up launchd + the Claude Code hook + the menu bar
+petridish uninstall     # remove all of that, leaving ~/.petridish intact
+petridish doctor        # is the install intact?
+petridish menubar       # print xbar plugin text for the current state
 
-This puts `petri` on `~/.cargo/bin` alongside `swab`. It only ever reads
-`~/.petridish/projects.json`; `swab scan` remains its sole writer.
-
-**`petripy`** is the Python original, renamed to free up the `petri` name. It is
-deprecated and frozen — kept installed as a fallback while the Rust build earns trust,
-not developed further (see `CONTEXT.md`'s `petripy` entry for its deletion trigger). The
-same `uv` install also provides `petridish-installer`, which is used below, so this step
-is still needed even if you never run `petripy`:
-
-```sh
-uv tool install --editable .
-```
-
-This puts `petripy` and `petridish-installer` on `~/.local/bin` (already first on `PATH`
-for most `uv` setups).
-
-## Wire up the launchd job + Claude Code hook
-
-```sh
-./install.sh              # install: launchd job (60s tick) + Claude Code PreToolUse/Stop hook
-./install.sh --uninstall  # remove both, cleanly
-```
-
-`install.sh` requires `swab`/`swab-hook` and `petridish-installer` to already be on `PATH`
-(see above). It:
-
-- creates `~/.petridish/` and writes a default `config.toml` if one isn't already there
-- backs up `~/.claude/settings.json` once, to `~/.petridish/settings.json.backup`, before ever
-  touching it — this is a safety artifact, not something `--uninstall` reads back automatically
-  (see "Uninstall semantics" below)
-- appends hook entries tagged with the literal marker `# petridish`, without disturbing any
-  other hook consumers already configured (this machine has three: pixtuoid, statusbar,
-  notchbar)
-- registers `resources/com.petridish.daemon.plist` with launchd (`StartInterval` 60s,
-  `RunAtLoad`, logs to `~/.petridish/daemon.log`)
-
-Both the install and the launchd/hook step are idempotent — running `install.sh` twice is safe
-(the second run detects the hook marker and the launchd label already loaded, and changes
-nothing). One caveat: the plist file itself is always rewritten with the current `swab` path, but
-`launchd` won't pick up that change on an already-loaded label — if `swab`'s absolute path
-changes (e.g. after `cargo install --path swab` relocates it), run
-`./install.sh --uninstall && ./install.sh` rather than just `./install.sh` again.
-
-### Uninstall semantics
-
-`--uninstall` unloads the launchd job, deletes its plist, and **structurally removes only the
-hook entries carrying the `# petridish` marker** from `settings.json` — it does not restore the
-pre-install backup verbatim. That distinction matters: if you (or another tool) edited
-`settings.json` after installing petridish, a verbatim restore would silently discard that edit.
-Structural removal only ever touches what petridish itself added.
-
-`~/.petridish/` (config, state, the settings.json backup) is never deleted by `--uninstall` — it
-survives so a later reinstall picks up where you left off.
-
-## CLI
-
-```sh
-swab scan              # run a tick, write ~/.petridish/projects.json
+swab scan               # run one tick, write ~/.petridish/projects.json
 swab list [--bucket B] [--all] [--json]
-swab path <query>      # print the best-matching project's path
-swab doctor            # health-check config, roots, state freshness, hook wiring
-swab config            # print the config file location, its fields, and an example
+swab path <query>       # print the best-matching project's path
+swab doctor             # health-check config, roots, state freshness, hook wiring
+swab config             # print the config file location and an example
+
+petri                   # the dashboard
 ```
 
 `swab list` sample output:
@@ -105,14 +87,38 @@ in_flight  fastfood-filter  copilot (idle)         main
 cold       old-experiment   idle                   main
 ```
 
+Two `doctor` commands, deliberately: `swab doctor` answers "is the scanner healthy"
+(config parses, roots exist, state file is fresh), `petridish doctor` answers "is the
+install intact" (binaries resolve, the plist points somewhere real, every hook event is
+registered).
+
+### Uninstall semantics
+
+`petridish uninstall` unloads the launchd job, deletes its plist, and **structurally
+removes only the hook entries carrying the `# petridish` marker** from `settings.json`. It
+does not restore the backup verbatim. That distinction matters: if you or another tool
+edited `settings.json` after installing, a verbatim restore would silently discard that
+edit.
+
+`~/.petridish/` — config, state, the backup — is never deleted, so a later reinstall picks
+up where you left off.
+
+## Frontends
+
+- **`petri`** — the terminal dashboard. Two screens, filtering, collapsible sections,
+  worktree nesting, an activity feed. `petri/SPEC.md` is authoritative for its behaviour.
+- **Menu bar** — xbar/SwiftBar. See [`integrations/xbar/`](integrations/xbar/).
+- **Raycast** — a list view and a jump-to-project command. See
+  [`integrations/raycast/`](integrations/raycast/).
+
+All three are read-only. `swab scan` is the single writer, always.
+
 ## Shell integration: quick-jump between projects
 
 A `cd`-in-your-current-shell project switcher, for opening a new terminal and jumping
 straight to a project without remembering its path — including when the folder name
-doesn't match what you'd search for (e.g. this repo's folder is still `project-radar`,
-but its GitHub remote is `JKrag/petridish`, and `pj` matches on both). Not installed by
-anything above — add it yourself to `~/.zshrc` (requires `fzf` and `jq`, e.g.
-`brew install fzf jq`):
+doesn't match what you'd search for. Not installed by anything above; add it to `~/.zshrc`
+yourself (needs `fzf` and `jq`: `brew install fzf jq`):
 
 ```sh
 pj() {
@@ -131,43 +137,49 @@ pj() {
 }
 ```
 
-- `pj` alone opens an fzf picker over every project `swab` knows about — folder name,
-  and (when the project has a GitHub remote) its `org/repo` alongside it, e.g.
-  `project-radar  (JKrag/petridish)`. The trailing column is the path that gets `cd`'d
-  into; matching is restricted to the name/org-repo column so a query never accidentally
-  matches something buried in the filesystem path.
-- `pj <query>` prefilters to that query; if exactly one project matches, it jumps there
-  directly with no picker. Because the GitHub org is searchable, `pj eficode-academy/`
-  narrows to every repo under that org even if they're scattered across folders instead
-  of tidily grouped by org.
-- The query is auto-prefixed with a leading `'` (fzf's exact-match token syntax), so
-  `pj petri` only matches names/org-repos containing the literal substring `petri` —
-  not fzf's usual scattered-letters fuzzy matching, which was matching too many
-  unrelated projects to reliably auto-jump. If you want loose fuzzy matching to browse
-  around once the picker is open, just backspace that leading `'` yourself.
-- Relies on `swab list --json`'s `name`/`git.github_url`/`path` fields, so it stays in
-  sync with whatever `swab scan` last wrote to `~/.petridish/projects.json` — no
-  separate index to maintain.
+- `pj` alone opens an fzf picker over every project `swab` knows about — folder name, and
+  (when the project has a GitHub remote) its `org/repo` alongside it. Matching is
+  restricted to the name column, so a query never accidentally matches something buried in
+  the filesystem path.
+- `pj <query>` prefilters; if exactly one project matches it jumps straight there. Because
+  the GitHub org is searchable, `pj eficode-academy/` narrows to every repo under that org
+  even if they are scattered across folders.
+- The query is auto-prefixed with `'` (fzf's exact-match token), so `pj petri` matches the
+  literal substring rather than fzf's scattered-letter fuzzy matching, which matched too
+  much to auto-jump reliably. Backspace it in the picker if you want loose matching.
 
 ## Config
 
-`~/.petridish/config.toml` — entirely optional; every field has a default. Run
-`swab config` for the full field reference (sourced from `swab/src/config.rs`'s own
-`Config::default()`, so it can't drift out of sync with the code) and an example.
-`install.sh` writes a commented-out template there on first install (see
-`DEFAULT_CONFIG_TOML` in `src/petridish/installer.py`).
+`~/.petridish/config.toml` — entirely optional; every field has a default. Run `swab
+config` for the full field reference, sourced from `swab/src/config.rs`'s own
+`Config::default()` so it cannot drift out of sync with the code.
+
+## Development
+
+A cargo workspace; one toolchain, no other language runtime required.
+
+```sh
+make check     # fmt-check + clippy -D warnings + the full test suite
+make fmt       # reformat
+```
+
+`make check` is exactly what CI runs, so green locally means green in CI.
+
+This repo uses `.git-blame-ignore-revs` to keep `git blame` readable across the bulk
+formatting commit. Configure it once:
+
+```sh
+git config blame.ignoreRevsFile .git-blame-ignore-revs
+```
 
 ## Docs
 
-- `ARCHITECTURE.md` — language-agnostic architecture, empirical findings, the
-  `projects.json` schema, and the distribution/installer requirements (§8); the current
-  authoritative reference
-- `petri/SPEC.md` — the Rust TUI's spec, authoritative for its screens/behavior
-- `docs/archive/DESIGN.md` — original pre-implementation pitch doc (Python `Textual`, a
-  FastAPI web UI, neither built); kept as historical context, superseded by `ARCHITECTURE.md`
-- `docs/archive/IMPLEMENTATION_PLAN.md` — the original all-Python build spec, archived once
-  the scanner was ported to Rust
-- `CLAUDE.md` — non-negotiable invariants for anyone changing this code
+- `ARCHITECTURE.md` — architecture, empirical findings, the `projects.json` schema, and
+  the distribution/installer requirements (§8). The authoritative reference.
+- `petri/SPEC.md` — the dashboard's spec, authoritative for its screens and behaviour.
+- `CONTRIBUTING.md` — what to run, and what must not break.
+- `CLAUDE.md` — non-negotiable invariants for anyone changing this code.
+- `ADR-0001`…`ADR-0004` — the decisions that are expensive to revisit.
 
 ## License
 
