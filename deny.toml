@@ -12,11 +12,23 @@ version = 2
 # whole check.
 ignore = []
 
-[licences]
+# Expect one standing warning here: `bisync 0.3.0`, reached via
+# gix-protocol -> gix, is yanked from crates.io. That is precisely why every
+# `cargo install` in this project must pass `--locked` (README.md,
+# ARCHITECTURE.md §8.1) — an unlocked resolve fails outright. It is a warning
+# rather than an error on purpose: the lockfile pins a working set, and this
+# resolves itself when gix next bumps the dependency.
+
+[licenses]
 version = 2
-# Permissive licences plus the ones GPL-3.0-or-later can absorb. Anything not
-# on this list needs a human decision, which is the point of the gate.
+# An allowance that goes unused is fine — it means no dependency happens to use
+# that licence today. Only an *unlisted* licence should stop the build.
+unused-allowed-license = "allow"
+# Our own crates, plus permissive licences GPL-3.0-or-later can absorb. Anything
+# not on this list needs a human decision, which is the point of the gate.
 allow = [
+    # petridish's own crates. cargo-deny checks workspace members too.
+    "GPL-3.0-or-later",
     "Apache-2.0",
     "Apache-2.0 WITH LLVM-exception",
     "BSD-2-Clause",
