@@ -30,3 +30,21 @@ npm run build       # ray build (same)
 `swab scan` must have run at least once (real `~/.petridish/projects.json`
 present) to see actual data in the list; otherwise it shows the same
 "no state file" message the CLI and `petri` both print.
+
+## Status: not published to the Raycast Store
+
+Two things block `ray publish`, both real rather than merely unfinished:
+
+1. **Licence conflict.** This repo is GPL-3.0-or-later; the Raycast Store requires
+   MIT. `package.json` currently declares MIT, which is the inherited default and
+   not a decision anyone made — resolving it properly is a prerequisite, not a
+   formality.
+2. **Placeholder icon.** `assets/icon.png` is not real artwork.
+
+`npm run lint` (`ray lint`) also fails offline: it calls Raycast's API to validate
+the `author` field, which 404s for a handle not registered with Raycast. CI
+therefore runs `eslint` and `prettier` directly, which are the parts of that
+wrapper that actually check this code.
+
+Until then this is a clone-and-`npm run dev` extension, which works fine for
+personal use.

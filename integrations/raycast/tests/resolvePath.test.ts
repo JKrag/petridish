@@ -34,9 +34,24 @@ function project(overrides: Partial<Project> = {}): Project {
 
 test("exact name match wins, even when substring match also exists", () => {
   const projects: Project[] = [
-    project({ id: "a", name: "petri", path: "/repos/petri", last_activity_at: "2026-01-01T00:00:00Z" }),
-    project({ id: "b", name: "petridish", path: "/repos/petridish", last_activity_at: "2026-01-01T00:00:00Z" }),
-    project({ id: "c", name: "other", path: "/repos/petri-path", last_activity_at: "2026-01-01T00:00:00Z" }),
+    project({
+      id: "a",
+      name: "petri",
+      path: "/repos/petri",
+      last_activity_at: "2026-01-01T00:00:00Z",
+    }),
+    project({
+      id: "b",
+      name: "petridish",
+      path: "/repos/petridish",
+      last_activity_at: "2026-01-01T00:00:00Z",
+    }),
+    project({
+      id: "c",
+      name: "other",
+      path: "/repos/petri-path",
+      last_activity_at: "2026-01-01T00:00:00Z",
+    }),
   ];
   // "petri" is an exact name match on project (a), even though "petridish"
   // contains "petri" as a substring. The path /repos/petri-path also contains
@@ -55,10 +70,17 @@ test("case-insensitive substring match on name", () => {
 
 test("case-insensitive substring match on path when no name matches", () => {
   const projects: Project[] = [
-    project({ id: "a", name: "frontend", path: "/home/user/repos/petri-project" }),
+    project({
+      id: "a",
+      name: "frontend",
+      path: "/home/user/repos/petri-project",
+    }),
     project({ id: "b", name: "backend", path: "/home/user/repos/api-service" }),
   ];
-  assert.equal(resolveProjectPath(projects, "petri"), "/home/user/repos/petri-project");
+  assert.equal(
+    resolveProjectPath(projects, "petri"),
+    "/home/user/repos/petri-project",
+  );
 });
 
 test("no match returns null", () => {
@@ -74,8 +96,18 @@ test("tie-breaker: most recent last_activity_at wins at the same tier", () => {
   // query "thing" exactly, or priority-1 short-circuits before the
   // recency tie-break this test exercises ever runs.
   const projects = [
-    project({ id: "old", name: "old-thing", path: "/old-thing", last_activity_at: "2025-01-01T00:00:00Z" }),
-    project({ id: "new", name: "new-thing", path: "/new-thing", last_activity_at: "2026-12-31T23:59:59Z" }),
+    project({
+      id: "old",
+      name: "old-thing",
+      path: "/old-thing",
+      last_activity_at: "2025-01-01T00:00:00Z",
+    }),
+    project({
+      id: "new",
+      name: "new-thing",
+      path: "/new-thing",
+      last_activity_at: "2026-12-31T23:59:59Z",
+    }),
   ];
   assert.equal(resolveProjectPath(projects, "thing"), "/new-thing");
 });
@@ -88,15 +120,30 @@ test("a project with last_activity_at null sorts after one with a real timestamp
   // the tie-break code this test is meant to cover).
   const projects = [
     project({ id: "a", name: "old-thing", path: "/a", last_activity_at: null }),
-    project({ id: "b", name: "new-thing", path: "/b", last_activity_at: "2026-12-31T23:59:59Z" }),
+    project({
+      id: "b",
+      name: "new-thing",
+      path: "/b",
+      last_activity_at: "2026-12-31T23:59:59Z",
+    }),
   ];
   assert.equal(resolveProjectPath(projects, "thing"), "/b");
 });
 
 test("path-match excludes projects already matched by name at a higher tier", () => {
   const projects: Project[] = [
-    project({ id: "a", name: "petri", path: "/repos/petridish", last_activity_at: "2026-12-31T00:00:00Z" }),
-    project({ id: "b", name: "other", path: "/home/petri-clone", last_activity_at: "2026-01-01T00:00:00Z" }),
+    project({
+      id: "a",
+      name: "petri",
+      path: "/repos/petridish",
+      last_activity_at: "2026-12-31T00:00:00Z",
+    }),
+    project({
+      id: "b",
+      name: "other",
+      path: "/home/petri-clone",
+      last_activity_at: "2026-01-01T00:00:00Z",
+    }),
   ];
   // "petri" exactly matches project a by name (only one exact hit → wins).
   assert.equal(resolveProjectPath(projects, "petri"), "/repos/petridish");
@@ -112,8 +159,6 @@ test("empty query matches every project (empty string is a substring of every st
   // String.includes("") behavior. In practice this command's Raycast
   // argument is `required: true`, so an empty submission shouldn't reach
   // here, but the pure function itself must stay consistent regardless.
-  const projects: Project[] = [
-    project({ id: "a", name: "alpha", path: "/a" }),
-  ];
+  const projects: Project[] = [project({ id: "a", name: "alpha", path: "/a" })];
   assert.equal(resolveProjectPath(projects, ""), "/a");
 });

@@ -1,6 +1,12 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { groupByBucket, filterProjects, isStale, agentLabel, bucketTitle } from "../src/lib/state.ts";
+import {
+  groupByBucket,
+  filterProjects,
+  isStale,
+  agentLabel,
+  bucketTitle,
+} from "../src/lib/state.ts";
 import type { Project, Radar } from "../src/types.ts";
 
 function project(overrides: Partial<Project> = {}): Project {
@@ -49,12 +55,18 @@ test("groupByBucket excludes is_foreign projects", () => {
 });
 
 test("filterProjects empty query returns everything", () => {
-  const projects = [project({ id: "a", name: "alpha" }), project({ id: "b", name: "beta" })];
+  const projects = [
+    project({ id: "a", name: "alpha" }),
+    project({ id: "b", name: "beta" }),
+  ];
   assert.deepEqual(filterProjects(projects, ""), projects);
 });
 
 test("filterProjects matches case-insensitively and by substring", () => {
-  const projects = [project({ id: "a", name: "Cat-Pedigree" }), project({ id: "b", name: "dog-walker" })];
+  const projects = [
+    project({ id: "a", name: "Cat-Pedigree" }),
+    project({ id: "b", name: "dog-walker" }),
+  ];
   const result = filterProjects(projects, "cat");
   assert.equal(result.length, 1);
   assert.equal(result[0].id, "a");
@@ -66,12 +78,28 @@ test("filterProjects with no matches returns empty array", () => {
 });
 
 test("agentLabel includes agent name and state when active_agent is set", () => {
-  const p = project({ agent: { state: "working", active_agent: "Claude Code", last_event: null, last_event_at: null, session_id: null } });
+  const p = project({
+    agent: {
+      state: "working",
+      active_agent: "Claude Code",
+      last_event: null,
+      last_event_at: null,
+      session_id: null,
+    },
+  });
   assert.equal(agentLabel(p), "Claude Code (working)");
 });
 
 test("agentLabel falls back to bare state when no active_agent", () => {
-  const p = project({ agent: { state: "idle", active_agent: null, last_event: null, last_event_at: null, session_id: null } });
+  const p = project({
+    agent: {
+      state: "idle",
+      active_agent: null,
+      last_event: null,
+      last_event_at: null,
+      session_id: null,
+    },
+  });
   assert.equal(agentLabel(p), "idle");
 });
 
@@ -83,7 +111,12 @@ test("bucketTitle covers all four buckets", () => {
 });
 
 function radar(updatedAt: string): Radar {
-  return { schema_version: 1, updated_at: updatedAt, scan_duration_ms: 0, projects: [] };
+  return {
+    schema_version: 1,
+    updated_at: updatedAt,
+    scan_duration_ms: 0,
+    projects: [],
+  };
 }
 
 test("isStale is false just under the threshold", () => {
@@ -94,7 +127,9 @@ test("isStale is false just under the threshold", () => {
 
 test("isStale is true at/just over the threshold", () => {
   const now = new Date("2026-08-07T12:00:00Z");
-  const updated = new Date(now.getTime() - (24 * 3_600_000 + 1000)).toISOString();
+  const updated = new Date(
+    now.getTime() - (24 * 3_600_000 + 1000),
+  ).toISOString();
   assert.equal(isStale(radar(updated), now), true);
 });
 
