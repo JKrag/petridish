@@ -1,0 +1,725 @@
+<title>petri — dashboard layout sketch</title>
+<style>
+  :root {
+    color-scheme: light dark;
+
+    --ground:        #EEF1EF;
+    --panel:         #FAFBFA;
+    --ink:           #161C19;
+    --ink-soft:      #4B5551;
+    --ink-faint:     #7C8783;
+    --rule:          #D3DAD6;
+    --accent:        #1F6B4C;
+    --accent-soft:   #DCE9E2;
+
+    --term-bg:       #FBFCFB;
+    --term-fg:       #2A332E;
+    --term-dim:      #8D9691;
+    --term-rule:     #C9D2CD;
+    --term-chrome:   #E7ECE9;
+
+    --working:       #17794E;
+    --recent:        #9A6B04;
+    --idle:          #8D9691;
+
+    --shadow: 0 1px 2px rgba(20,32,26,.06), 0 8px 28px rgba(20,32,26,.07);
+
+    --mono: ui-monospace, "SF Mono", SFMono-Regular, Menlo, "DejaVu Sans Mono", monospace;
+    --serif: "Iowan Old Style", "Palatino Linotype", Palatino, Georgia, ui-serif, serif;
+  }
+
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --ground:      #0E1311;
+      --panel:       #141A17;
+      --ink:         #E4EAE6;
+      --ink-soft:    #A8B3AE;
+      --ink-faint:   #6F7A75;
+      --rule:        #263029;
+      --accent:      #5FC79A;
+      --accent-soft: #1A2C24;
+
+      --term-bg:     #0A0F0D;
+      --term-fg:     #C9D4CE;
+      --term-dim:    #63706A;
+      --term-rule:   #29352F;
+      --term-chrome: #151D19;
+
+      --working:     #4FD08A;
+      --recent:      #D6A445;
+      --idle:        #63706A;
+
+      --shadow: 0 1px 2px rgba(0,0,0,.4), 0 10px 30px rgba(0,0,0,.35);
+    }
+  }
+
+  :root[data-theme="dark"] {
+    --ground:#0E1311; --panel:#141A17; --ink:#E4EAE6; --ink-soft:#A8B3AE;
+    --ink-faint:#6F7A75; --rule:#263029; --accent:#5FC79A; --accent-soft:#1A2C24;
+    --term-bg:#0A0F0D; --term-fg:#C9D4CE; --term-dim:#63706A; --term-rule:#29352F;
+    --term-chrome:#151D19; --working:#4FD08A; --recent:#D6A445; --idle:#63706A;
+    --shadow: 0 1px 2px rgba(0,0,0,.4), 0 10px 30px rgba(0,0,0,.35);
+  }
+  :root[data-theme="light"] {
+    --ground:#EEF1EF; --panel:#FAFBFA; --ink:#161C19; --ink-soft:#4B5551;
+    --ink-faint:#7C8783; --rule:#D3DAD6; --accent:#1F6B4C; --accent-soft:#DCE9E2;
+    --term-bg:#FBFCFB; --term-fg:#2A332E; --term-dim:#8D9691; --term-rule:#C9D2CD;
+    --term-chrome:#E7ECE9; --working:#17794E; --recent:#9A6B04; --idle:#8D9691;
+    --shadow: 0 1px 2px rgba(20,32,26,.06), 0 8px 28px rgba(20,32,26,.07);
+  }
+
+  body {
+    background: var(--ground);
+    color: var(--ink);
+    font-family: var(--serif);
+    font-size: 17px;
+    line-height: 1.62;
+    -webkit-text-size-adjust: 100%;
+  }
+
+  .wrap {
+    max-width: 62rem;
+    margin: 0 auto;
+    padding: 3rem 1.15rem 5rem;
+    display: flex;
+    flex-direction: column;
+    gap: 2.6rem;
+  }
+
+  header.masthead { display: flex; flex-direction: column; gap: .5rem; }
+
+  .eyebrow {
+    font-family: var(--mono);
+    font-size: .72rem;
+    letter-spacing: .16em;
+    text-transform: uppercase;
+    color: var(--accent);
+  }
+
+  h1 {
+    font-family: var(--mono);
+    font-size: clamp(1.5rem, 5.2vw, 2.1rem);
+    font-weight: 600;
+    letter-spacing: -.015em;
+    text-wrap: balance;
+    line-height: 1.2;
+  }
+
+  .standfirst {
+    max-width: 34em;
+    color: var(--ink-soft);
+    font-size: 1.05rem;
+  }
+
+  section { display: flex; flex-direction: column; gap: 1rem; }
+
+  h2 {
+    font-family: var(--mono);
+    font-size: .8rem;
+    font-weight: 600;
+    letter-spacing: .13em;
+    text-transform: uppercase;
+    color: var(--ink);
+    padding-bottom: .5rem;
+    border-bottom: 1px solid var(--rule);
+    display: flex;
+    justify-content: space-between;
+    align-items: baseline;
+    gap: 1rem;
+  }
+  h2 .n {
+    color: var(--ink-faint);
+    font-weight: 400;
+    letter-spacing: .05em;
+  }
+
+  h3 {
+    font-family: var(--mono);
+    font-size: .82rem;
+    font-weight: 600;
+    letter-spacing: .04em;
+    color: var(--ink);
+  }
+
+  p { max-width: 36em; }
+  p + p { margin-top: -.35rem; }
+
+  strong { font-weight: 600; }
+
+  code {
+    font-family: var(--mono);
+    font-size: .85em;
+    background: var(--accent-soft);
+    color: var(--ink);
+    padding: .08em .34em;
+    border-radius: 2px;
+  }
+
+  /* ---------- terminal frame ---------- */
+
+  figure {
+    display: flex;
+    flex-direction: column;
+    gap: .55rem;
+  }
+
+  .screen {
+    background: var(--term-bg);
+    border: 1px solid var(--term-rule);
+    border-radius: 4px;
+    box-shadow: var(--shadow);
+    overflow: hidden;
+  }
+
+  .screen .chrome {
+    background: var(--term-chrome);
+    border-bottom: 1px solid var(--term-rule);
+    font-family: var(--mono);
+    font-size: .66rem;
+    letter-spacing: .1em;
+    text-transform: uppercase;
+    color: var(--ink-faint);
+    padding: .42rem .7rem;
+    display: flex;
+    justify-content: space-between;
+    gap: 1rem;
+  }
+
+  .screen .body { overflow-x: auto; padding: .7rem .7rem .9rem; }
+
+  pre {
+    font-family: var(--mono);
+    font-size: .72rem;
+    line-height: 1.45;
+    color: var(--term-fg);
+    white-space: pre;
+    tab-size: 4;
+  }
+  @media (min-width: 40rem) { pre { font-size: .8rem; } }
+
+  b.w { color: var(--working); font-weight: 600; }
+  b.r { color: var(--recent);  font-weight: 600; }
+  b.i { color: var(--idle);    font-weight: 400; }
+  span.d { color: var(--term-dim); }
+  span.hi { color: var(--accent); font-weight: 600; }
+  span.sel { background: var(--accent-soft); box-shadow: 0 0 0 1px var(--accent-soft); }
+
+  figcaption {
+    font-size: .92rem;
+    color: var(--ink-soft);
+    max-width: 40em;
+  }
+  figcaption b { color: var(--ink); font-weight: 600; }
+
+  /* ---------- tier ledger ---------- */
+
+  .tiers {
+    display: grid;
+    gap: .8rem;
+    grid-template-columns: 1fr;
+  }
+  @media (min-width: 46rem) { .tiers { grid-template-columns: repeat(3, 1fr); } }
+
+  .tier {
+    background: var(--panel);
+    border: 1px solid var(--rule);
+    border-radius: 3px;
+    padding: .9rem 1rem 1rem;
+    display: flex;
+    flex-direction: column;
+    gap: .45rem;
+  }
+  .tier .cap {
+    font-family: var(--mono);
+    font-size: .68rem;
+    letter-spacing: .12em;
+    text-transform: uppercase;
+    color: var(--ink-faint);
+  }
+  .tier .bucket {
+    font-family: var(--mono);
+    font-size: .95rem;
+    font-weight: 600;
+    color: var(--accent);
+  }
+  .tier ul { list-style: none; display: flex; flex-direction: column; gap: .15rem; }
+  .tier li {
+    font-family: var(--mono);
+    font-size: .74rem;
+    color: var(--ink-soft);
+    line-height: 1.5;
+  }
+
+  /* ---------- notes ---------- */
+
+  .note {
+    border-left: 2px solid var(--accent);
+    padding-left: .95rem;
+    display: flex;
+    flex-direction: column;
+    gap: .45rem;
+  }
+
+  ul.prose {
+    list-style: none;
+    display: flex;
+    flex-direction: column;
+    gap: .55rem;
+    max-width: 38em;
+  }
+  ul.prose li { padding-left: 1.1rem; position: relative; }
+  ul.prose li::before {
+    content: "—";
+    position: absolute;
+    left: 0;
+    color: var(--ink-faint);
+  }
+
+  table {
+    border-collapse: collapse;
+    font-family: var(--mono);
+    font-size: .76rem;
+    width: 100%;
+    font-variant-numeric: tabular-nums;
+  }
+  .scroller { overflow-x: auto; }
+  th, td {
+    text-align: left;
+    padding: .42rem .8rem .42rem 0;
+    border-bottom: 1px solid var(--rule);
+    vertical-align: top;
+    white-space: nowrap;
+  }
+  th {
+    font-weight: 600;
+    font-size: .68rem;
+    letter-spacing: .1em;
+    text-transform: uppercase;
+    color: var(--ink-faint);
+  }
+  td.no { color: var(--recent); }
+
+  footer {
+    border-top: 1px solid var(--rule);
+    padding-top: 1.2rem;
+    font-family: var(--mono);
+    font-size: .72rem;
+    color: var(--ink-faint);
+    letter-spacing: .04em;
+  }
+</style>
+
+<div class="wrap">
+
+  <header class="masthead">
+    <div class="eyebrow">petri · layout sketch · <span style="color:var(--working)">built</span></div>
+    <h1>Two screens, three densities</h1>
+    <p class="standfirst">A rework of the petri TUI, built for the case that actually
+    hurts: eight unattended runs across eight iTerm tabs at 3am, and you want to know
+    <em>which one needs you</em> — without visiting any of them. Then
+    <code>tab</code> for the browser when you do.</p>
+  </header>
+
+  <section>
+    <h2>The short answer <span class="n">yes</span></h2>
+    <p>It makes sense, and it costs less than you'd think, because your three
+    densities already map cleanly onto the four buckets the scanner assigns:</p>
+
+    <div class="tiers">
+      <div class="tier">
+        <div class="cap">Tier 1 · rich, live</div>
+        <div class="bucket">active</div>
+        <ul>
+          <li>agent.state</li>
+          <li>active_agent</li>
+          <li>last_event + at</li>
+          <li>session_id</li>
+          <li>branch, ✎uncommitted</li>
+        </ul>
+      </div>
+      <div class="tier">
+        <div class="cap">Tier 2 · git-centric</div>
+        <div class="bucket">in_flight</div>
+        <ul>
+          <li>branch</li>
+          <li>✎uncommitted_files</li>
+          <li>last_commit_at</li>
+          <li>mine_last_commit_at</li>
+          <li>github_url</li>
+        </ul>
+      </div>
+      <div class="tier">
+        <div class="cap">Tier 3 · today's table</div>
+        <div class="bucket">stale + cold</div>
+        <ul>
+          <li>name</li>
+          <li>branch</li>
+          <li>dirty marker</li>
+          <li>age</li>
+        </ul>
+      </div>
+    </div>
+
+    <div class="note">
+      <p><strong>Your instinct about tier 2 is structurally guaranteed, not just usually true.</strong>
+      <code>_bucket()</code> returns <code>"active"</code> whenever the agent state is
+      <code>working</code> or <code>recent</code>, before it looks at age at all. So an
+      <code>in_flight</code> project can never have a running agent — tier 2 is free to spend
+      that column width on git instead.</p>
+      <p>The flip side: <code>active</code> also catches anything touched in the last 48h,
+      so tier 1 will contain idle-but-recent projects too. The frames below include one
+      so the card design has to survive it.</p>
+    </div>
+
+    <h3>The finding that reshapes tier 1</h3>
+    <p><code>agent.state</code> does not mean what an overnight run needs it to mean.
+    <code>_agent_state_for()</code> is a pure recency clock on the last event:</p>
+
+    <div class="scroller">
+      <table>
+        <thead><tr><th>state</th><th>means</th><th>during an unattended run</th></tr></thead>
+        <tbody>
+          <tr><td><b class="w">working</b></td><td>last event &lt; 90s</td><td>only between tool calls</td></tr>
+          <tr><td><b class="r">recent</b></td><td>90s – 30 min</td><td class="no">also: mid-inference, and stalled</td></tr>
+          <tr><td><b class="i">idle</b></td><td>&gt; 30 min</td><td class="no">also: finished, and dead</td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <p>A delegate-to-local round where Ornith thinks for four minutes reads
+    <code>recent</code> — indistinguishable from a run that wedged four minutes ago.
+    So the dashboard cannot lean on the traffic light. <strong>The load-bearing signal is
+    the age of <code>last_event_at</code>, rendered as an elapsed clock</strong>, and the
+    ordering principle follows from it: quietest first.</p>
+  </section>
+
+  <section>
+    <h2>The ordering <span class="n">silence, descending</span></h2>
+    <p>Sorting tier 1 by most-recent-first puts the healthiest run at the top and buries
+    the wedged one. Inverting it — <strong>longest silence first</strong> — means the row
+    that needs you is always row one, and a screen you can ignore is one where the top
+    card reads a small number.</p>
+  </section>
+
+  <section>
+    <h2>Frame A <span class="n">03:47, four runs, roomy cards</span></h2>
+
+    <figure>
+      <div class="screen">
+        <div class="chrome"><span>petri — 78 × 40</span><span>4 running</span></div>
+        <div class="body">
+<pre>
+petri                                       12 projects · 03:47 · 0.44s
+══════════════════════════════════════════════════════════════════════════
+ RUNNING                                        <span class="d">4 · quietest first</span>
+──────────────────────────────────────────────────────────────────────────
+ <span class="hi">⚠</span> <span class="hi">rtk</span>                                  <b class="i">silent 47m</b>  ornith-35b
+     feat/token-map  ✎3                  Bash  cargo test --lib
+     <span class="d">~/repos/JKrag/rtk                             sess 2b81f004</span>
+
+ <b class="r">●</b> project-radar                        <b class="r">silent 4m</b>   ornith-35b
+     master  ✎7                          Edit  src/petridish/tui.py
+     <span class="d">~/repos/JKrag/project-radar                   sess a43ebbd0</span>
+
+ <b class="w">●</b> nono                                 <b class="w">silent 12s</b>  claude-opus-5
+     main  ✎2                            Bash  nono profile promote
+     <span class="d">~/repos/JKrag/nono                            sess 7f2c1d90</span>
+
+ <b class="i">○</b> eficode-site                         <span class="d">no agent</span>
+     feat/pricing  ✎1                    commit 3h ago <span class="d">(you)</span>
+     <span class="d">~/repos/work/eficode-site</span>
+
+──────────────────────────────────────────────────────────────────────────
+ IN FLIGHT                                                            <span class="d">4</span>
+──────────────────────────────────────────────────────────────────────────
+   delegate-to-local     feat/rounds    ✎12    commit   4d    gh
+   petri-notes           main           ✎0     commit   6d    <span class="d">—</span>
+   swab-hook-bench       wip/latency    ✎3     commit  11d    gh
+   raycast-ext           main           ✎4     commit  13d    gh
+
+──────────────────────────────────────────────────────────────────────────
+ STALE <span class="d">3</span>   ·   COLD <span class="d">2 · collapsed</span>                                <span class="d">[+]</span>
+──────────────────────────────────────────────────────────────────────────
+   <b class="i">○</b> mlx-playground      main          ✎0     41d
+   <b class="i">○</b> kata-2025           main          ✎0     70d
+   <b class="i">○</b> old-notes           main          ✎0     88d
+──────────────────────────────────────────────────────────────────────────
+ <span class="d">j/k move    ⏎ open    r resume session    / search    q quit</span>
+</pre>
+        </div>
+      </div>
+      <figcaption><b>Read it top-down and stop early.</b> <code>rtk</code> is first because
+      it has been silent longest, and the <span class="hi">⚠</span> marks it past the 30-minute
+      line — that's the tab you'd have gone hunting for. Everything below it is fine.
+      The three-line card spends its width on what only matters mid-run: the last tool
+      call, the silence clock, and the session id you'd need for
+      <code>claude --resume</code>. <code>eficode-site</code> is the idle-but-recent case
+      the card has to survive.</figcaption>
+    </figure>
+  </section>
+
+  <section>
+    <h2>Frame B <span class="n">eight runs, compact cards</span></h2>
+    <p>Four roomy cards is 16 rows. Eight would be 32 and push in-flight off a
+    40-row terminal entirely. So the density has to collapse as the fleet grows —
+    same data, one line each:</p>
+
+    <figure>
+      <div class="screen">
+        <div class="chrome"><span>petri — 78 × 40</span><span>8 running</span></div>
+        <div class="body">
+<pre>
+petri                                       15 projects · 03:47 · 0.51s
+══════════════════════════════════════════════════════════════════════════
+ RUNNING                             <span class="d">8 · quietest first · compact</span>
+──────────────────────────────────────────────────────────────────────────
+ <span class="hi">⚠ rtk                 feat/token-map ✎3    47m  Bash  cargo test --lib</span>
+ <span class="hi">⚠ swab-hook-bench     wip/latency    ✎3    38m  Read  bench/results.md</span>
+ <b class="r">●</b> mlx-playground      main           ✎1    22m  Bash  uv run pytest -q
+ <b class="r">●</b> petri-notes         main           ✎0     9m  Write docs/outline.md
+ <b class="r">●</b> project-radar       master         ✎7     4m  Edit  src/…/tui.py
+ <b class="r">●</b> delegate-to-local   feat/rounds    ✎12    2m  Bash  git diff --stat
+ <b class="w">●</b> nono                main           ✎2    12s  Bash  nono profile pro…
+ <b class="w">●</b> kata-2025           main           ✎0     4s  Edit  src/day07.py
+
+──────────────────────────────────────────────────────────────────────────
+ IN FLIGHT                                                            <span class="d">3</span>
+──────────────────────────────────────────────────────────────────────────
+   raycast-ext           main           ✎4     commit  13d    gh
+   eficode-site          feat/pricing   ✎1     commit  16d    gh
+   old-notes             main           ✎0     commit  24d    <span class="d">—</span>
+
+──────────────────────────────────────────────────────────────────────────
+ STALE <span class="d">2</span>   ·   COLD <span class="d">2 · collapsed</span>                                <span class="d">[+]</span>
+──────────────────────────────────────────────────────────────────────────
+   <b class="i">○</b> old-blog            main          ✎0    8mo
+   <b class="i">○</b> dotfiles-v1         main          ✎0   14mo
+──────────────────────────────────────────────────────────────────────────
+ <span class="d">j/k move    ⏎ open    r resume session    z density    q quit</span>
+</pre>
+        </div>
+      </div>
+      <figcaption><b>The decision to make.</b> Auto-switch on count (roomy under five,
+      compact above), or a manual <code>z</code> toggle, or compact always? I'd auto-switch
+      with <code>z</code> as an override — on an eight-run night you're scanning the silence
+      column, not reading cards, and the two ⚠ rows sort themselves to the top either way.
+      The silence column is the whole design: one glance at row one tells you whether to
+      go back to sleep.</figcaption>
+    </figure>
+  </section>
+
+  <section>
+    <h2>Two screens <span class="n">tab to switch</span></h2>
+    <p>Doable, and I think it's the right call — for a reason worth naming. The two
+    screens have <strong>different jobs</strong>, and that's why one layout serving both
+    ends up serving neither:</p>
+    <ul class="prose">
+      <li><strong>Screen 1 is an ambient monitor.</strong> You leave it open in a pane on a
+      second display and look at it, not with it. Its whole job is answering
+      "anything need me?" from across the room. Interaction is incidental.</li>
+      <li><strong>Screen 2 is a tool you drive.</strong> Hands on keys, searching,
+      selecting, opening, resuming. Density beats prominence; every project should be
+      reachable.</li>
+    </ul>
+    <p>The current screen is a screen-2 layout being asked to do screen-1's job. Splitting
+    them lets each stop compromising. <code>tab</code> toggles, <code>z</code> switches
+    density on screen 1, <code>q</code> quits from either.</p>
+
+    <figure>
+      <div class="screen">
+        <div class="chrome"><span>screen 2 — browser — 100 × 22</span><span>wide: detail right</span></div>
+        <div class="body">
+<pre>
+petri · browser                                       15 projects · 03:47 · 0.51s
+════════════════════════════════════════════════════╤═══════════════════════════════════════════════
+   name              agent      branch    ✎  silent │ <span class="hi">project-radar</span>
+────────────────────────────────────────────────────┼───────────────────────────────────────────────
+ ACTIVE                                           5 │ path    ~/repos/JKrag/project-radar
+ <span class="hi">⚠</span> rtk               ornith-35b feat/token  3   47m │ cat     JKrag
+<span class="sel"> <b class="r">●</b> project-radar     ornith-35b master      7    4m </span>│ branch  master   ✎ 7 files
+ <b class="w">●</b> nono              claude     main        2   12s │ github  JKrag/project-radar
+ <b class="w">●</b> kata-2025         claude     main        0    4s │
+ <b class="i">○</b> eficode-site      <span class="d">-</span>          feat/pric   1    3h │ agent   ornith-35b · recent
+                                                    │ event   Edit src/petridish/tui.py
+ IN FLIGHT                                        3 │ silent  <b class="r">4m 12s</b>
+ <b class="i">○</b> delegate-to-local <span class="d">-</span>          feat/round 12    4d │ session a43ebbd0-d1b2-4c65
+ <b class="i">○</b> petri-notes       <span class="d">-</span>          main        0    6d │
+ <b class="i">○</b> swab-hook-bench   <span class="d">-</span>          wip/latency 3   11d │ commit  4m ago  <span class="d">(you)</span>
+                                                    │ seen    4m ago
+ STALE                                            2 │
+ <b class="i">○</b> mlx-playground    <span class="d">-</span>          main        0   41d │ <span class="d">⏎ open    r resume    g github</span>
+ <b class="i">○</b> old-notes         <span class="d">-</span>          main        0   88d │
+ COLD  <span class="d">2 · collapsed</span>              <span class="d">[+]</span>               │
+────────────────────────────────────────────────────┴───────────────────────────────────────────────
+ <span class="d">tab dashboard   j/k move   / search   ⏎ open   r resume   q quit</span>
+</pre>
+        </div>
+      </div>
+      <figcaption><b>Right pane, and it should be automatic.</b> You're right that it's
+      better wide — a bottom panel steals rows from the list, which is the one thing
+      screen 2 has to maximise; a side panel steals columns you weren't using. But don't
+      make it a key. Derive it from terminal width: <code>≥ 100</code> columns → right,
+      below that → bottom. That's a pure <code>int → Layout</code> decision, so it's one
+      trivially testable function and the terminal-resize case comes free.</figcaption>
+    </figure>
+
+    <figure>
+      <div class="screen">
+        <div class="chrome"><span>screen 2 — browser — 78 × 22</span><span>narrow: detail bottom</span></div>
+        <div class="body">
+<pre>
+petri · browser                                   15 projects · 03:47 · 0.51s
+══════════════════════════════════════════════════════════════════════════════
+   name              agent      branch      ✎   silent
+──────────────────────────────────────────────────────────────────────────────
+ ACTIVE                                                              5
+ <span class="hi">⚠</span> rtk               ornith-35b feat/token-map  3     47m
+<span class="sel"> <b class="r">●</b> project-radar     ornith-35b master          7      4m</span>
+ <b class="w">●</b> nono              claude     main            2     12s
+ <b class="i">○</b> eficode-site      <span class="d">-</span>          feat/pricing    1      3h
+
+ IN FLIGHT                                                           3
+ <b class="i">○</b> delegate-to-local <span class="d">-</span>          feat/rounds    12      4d
+ <b class="i">○</b> petri-notes       <span class="d">-</span>          main            0      6d
+
+ STALE <span class="d">2</span>  ·  COLD <span class="d">2 · collapsed</span>                                    <span class="d">[+]</span>
+ <b class="i">○</b> mlx-playground    <span class="d">-</span>          main            0     41d
+──────────────────────────────────────────────────────────────────────────────
+ <span class="hi">project-radar</span>                              master ✎7 · silent <b class="r">4m 12s</b>
+ <span class="d">~/repos/JKrag/project-radar                      sess a43ebbd0-d1b2</span>
+ ornith-35b · recent      Edit src/petridish/tui.py      <span class="d">commit 4m ago</span>
+──────────────────────────────────────────────────────────────────────────────
+ <span class="d">tab dashboard   j/k   / search   ⏎ open   r resume   q quit</span>
+</pre>
+        </div>
+      </div>
+      <figcaption><b>Same screen, narrow.</b> The detail drops to three dense lines rather
+      than the ten <code>format_detail()</code> emits today — at this width the panel is
+      competing with the list for rows, so it should carry only what the row can't:
+      full path, session id, last event.</figcaption>
+    </figure>
+
+    <div class="note">
+      <h3>Why the split pays for itself beyond the layout</h3>
+      <p>Screen 1 has no cursor and no input. That means it's a <em>pure function</em> —
+      <code>render_dashboard(radar, now, width, density) → list[str]</code> — exactly like
+      <code>menubar.py</code>. Which gets you a third consumer for free: a
+      non-interactive <code>swab dash</code> that prints the same block once and exits.
+      Pipe it into a tmux status pane, a cron mail, or a notification. You cannot do that
+      with today's screen, because today's screen is inseparable from curses.</p>
+      <p><strong>The risk to watch:</strong> two renderers drifting into two different
+      idioms for the same fact. Both must build rows from the same
+      <code>tui_state</code> formatters — screen 1 composes them into cards, screen 2 into
+      columns, but neither re-derives "how do we show a dirty branch".</p>
+    </div>
+  </section>
+
+  <section>
+    <h2>Every field in the sketch, and where it comes from</h2>
+    <p>Nothing above is invented except the four rows flagged below. Those need a
+    sensor change before they can be drawn.</p>
+    <div class="scroller">
+      <table>
+        <thead>
+          <tr><th>Shown as</th><th>Source</th><th>Status</th></tr>
+        </thead>
+        <tbody>
+          <tr><td>● / ○ colour</td><td>agent.state</td><td>have</td></tr>
+          <tr><td>claude-opus-5</td><td>agent.active_agent</td><td>have</td></tr>
+          <tr><td>Edit src/…/tui.py</td><td>agent.last_event</td><td>have</td></tr>
+          <tr><td>2m ago</td><td>agent.last_event_at</td><td>have</td></tr>
+          <tr><td>sess a43ebbd0</td><td>agent.session_id</td><td>have</td></tr>
+          <tr><td>silent 47m · ⚠</td><td>now − last_event_at</td><td>have (derived)</td></tr>
+          <tr><td>master / feat/pricing</td><td>git.branch</td><td>have</td></tr>
+          <tr><td>✎7</td><td>git.uncommitted_files</td><td>have</td></tr>
+          <tr><td>commit 3h ago</td><td>git.last_commit_at</td><td>have</td></tr>
+          <tr><td>(you)</td><td>git.mine_last_commit_at</td><td>have</td></tr>
+          <tr><td>gh</td><td>git.github_url</td><td>have</td></tr>
+          <tr><td>last seen 22:41</td><td>last_activity_at</td><td>have</td></tr>
+          <tr><td class="no">finished vs. wedged</td><td class="no">not sensed</td><td class="no">both read idle after 30m</td></tr>
+          <tr><td class="no">2 runs in one repo</td><td class="no">not sensed</td><td class="no">one session_id per project</td></tr>
+          <tr><td class="no">round 4 of 9</td><td class="no">not sensed</td><td class="no">needs .afk/state.json read</td></tr>
+          <tr><td class="no">session duration</td><td class="no">not sensed</td><td class="no">needs first-event ts</td></tr>
+          <tr><td class="no">↑2 ↓5 ahead/behind</td><td class="no">not sensed</td><td class="no">needs git field</td></tr>
+          <tr><td class="no">+142 / −38 diff stat</td><td class="no">not sensed</td><td class="no">needs git field</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <p>I left all six <em>out</em> of the frames on purpose. A mockup that quietly
+    assumes a sensor you don't have becomes a spec you can't build.</p>
+    <p>The top two are the ones this use case actually wants. <strong>Finished vs. wedged</strong>
+    is the honest gap: a clean overnight completion and a hung round both decay to
+    <code>idle</code> at the same 30-minute mark, so the ⚠ in the frames means
+    "hasn't moved", not "broken". <strong>Two runs in one repo</strong> matters if your
+    overnight wrapper ever fans out within a single project — <code>AgentState</code>
+    holds one session, so they'd collapse into one row.</p>
+  </section>
+
+  <section>
+    <h2>Built <span class="n">what shipped, and what differs from these frames</span></h2>
+    <p>All of the above is implemented and green under <code>make check</code>. Four
+    things came out differently once the code was real:</p>
+    <ul class="prose">
+      <li><strong>The keymap footers shrank.</strong> These frames advertise
+      <code>⏎ open</code> and <code>r resume</code>; nothing implements them, so the
+      shipped footers read <code>tab · z · q</code> and
+      <code>tab · j/k · / · esc · q</code>. A footer that promises keys which do
+      nothing teaches you to distrust the whole line.</li>
+      <li><strong>The browser drops the <code>agent</code> column before it truncates.</strong>
+      At 100 columns the right pane left ~52 for the table, and blind truncation ate the
+      <em>silence</em> column — the one value the screen exists for. It now sheds whole
+      low-value columns instead, <code>agent</code> first (the detail pane names it
+      anyway), then <code>branch</code>.</li>
+      <li><strong>The stall glyph ignores <code>agent.state</code> entirely.</strong>
+      Re-derived from <code>last_event_at</code> at render time, so a
+      <code>projects.json</code> that is two minutes stale can't make the traffic light
+      contradict the counter beside it.</li>
+      <li><strong>Density collapses automatically above four runs</strong>, with
+      <code>z</code> as an override — rather than <code>z</code> being the only way.</li>
+    </ul>
+    <p>Verified by driving the real curses TUI through a pty, and by a 36-mutation probe
+    across the new modules: every mutation had to turn a test red. Six initially did not,
+    and each one was a genuine gap — including a header that counted foreign projects it
+    never listed, and a sort key whose explicit grouping turned out to be decorative
+    because a sign was silently doing the work.</p>
+  </section>
+
+  <section>
+    <h2>What it cost</h2>
+    <ul class="prose">
+      <li><strong>No schema change.</strong> Not one new field, not one bucket.
+      <code>group_by_bucket()</code> already returns all four keys in
+      <code>STATUS_BUCKETS</code> order.</li>
+      <li><strong>Variable-height rows are the only real work.</strong> The render loop
+      does <code>cursor_y += 1</code> per project; a three-line card makes that
+      <code>+= card_height</code>. <code>move()</code> is unaffected — it flattens to
+      <code>(bucket, index)</code>, and one card is still one entry.</li>
+      <li><strong>The detail panel moves to screen 2 and shrinks.</strong> Today it
+      reserves <code>1 + len(detail_lines)</code> rows and <code>format_detail()</code>
+      emits about ten. Screen 1's cards already carry most of that, so the panel belongs
+      only on the browser — and only with the fields a row can't fit.</li>
+      <li><strong>Two screens is a mode flag, not an architecture.</strong> One
+      <code>screen</code> variable, one <code>tab</code> branch in the key handler, and
+      two render functions. <code>SelectionState</code> and <code>move()</code> are
+      untouched and belong to screen 2 alone; screen 1 has no cursor.</li>
+      <li><strong>Row budget on 78 × 40.</strong> Roomy: 4 cards × 4 = 16, in-flight
+      4 + 3, stale 3 + 3, chrome 5 ≈ 34. Compact: 8 rows for the same eight runs.
+      That gap is the whole argument for two densities rather than a cap on N — on an
+      overnight fan-out you want to see <em>all</em> of them, not the top three.</li>
+      <li><strong>The silence clock needs a repaint, not just a rescan.</strong> The TUI
+      currently redraws on <code>projects.json</code> mtime change. A ticking
+      <code>47m</code> should re-render on the existing 2s <code>_POLL_MS</code> timeout
+      too — cheap, since the age is derived at render time from
+      <code>last_event_at</code> and needs no new scan.</li>
+      <li><strong>Testable the same way as the rest.</strong> The card layout is a pure
+      <code>Project → list[str]</code> function next to <code>format_row()</code> in
+      <code>tui_state.py</code>, snapshot-tested like <code>menubar.py</code>.
+      <code>tui.py</code> stays a thin blitter.</li>
+    </ul>
+  </section>
+
+  <footer>
+    implemented · src/petridish/screens.py + tui.py · <code>petri</code>, <code>swab dash</code>
+  </footer>
+
+</div>

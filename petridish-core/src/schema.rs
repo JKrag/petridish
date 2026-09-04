@@ -338,6 +338,80 @@ mod tests {
     use super::*;
     use chrono::SubsecRound;
 
+    // ── Timestamp wire format ────────────────────────────────────────────
+    //
+    // Ported from `tests/test_schema.py` when the Python read-side was deleted.
+    // These pin the `iso_second`/`iso_second_opt` serde helpers, which had no
+    // direct Rust coverage: every timestamp in `projects.json` is second
+    // resolution with a literal trailing `Z`, and every frontend parses on that
+    // assumption.
+
+    fn radar_at(updated_at: DateTime<Utc>) -> Radar {
+        Radar {
+            schema_version: 1,
+            updated_at,
+            scan_duration_ms: 0,
+            projects: vec![],
+            quota: None,
+        }
+    }
+
+    #[test]
+    fn timestamps_serialize_with_a_trailing_z() {
+        let text = serde_json::to_string(&radar_at(
+            DateTime::parse_from_rfc3339("2026-08-05T22:45:00Z")
+                .unwrap()
+                .with_timezone(&Utc),
+        ))
+        .unwrap();
+        assert!(
+            text.contains(r#""updated_at":"2026-08-05T22:45:00Z""#),
+            "{text}"
+        );
+    }
+
+    /// Deliberate and documented: the wire format is second resolution. Emitting
+    /// sub-second digits would break every reader parsing the fixed-width form.
+    #[test]
+    fn sub_second_precision_is_truncated_not_rounded() {
+        let t = DateTime::parse_from_rfc3339("2026-08-05T22:45:00.999999Z")
+            .unwrap()
+            .with_timezone(&Utc);
+        let text = serde_json::to_string(&radar_at(t)).unwrap();
+        assert!(
+            text.contains(r#""updated_at":"2026-08-05T22:45:00Z""#),
+            "must truncate, not round: {text}"
+        );
+    }
+
+    /// A non-UTC offset on the way in must be converted, not dropped —
+    /// dropping it would silently shift the timestamp by the offset.
+    #[test]
+    fn a_non_utc_offset_is_converted_to_utc_on_read() {
+        let json = r#"{"schema_version":1,"updated_at":"2026-08-05T23:45:00+01:00","scan_duration_ms":0,"projects":[],"quota":null}"#;
+        let radar: Radar = serde_json::from_str(json).unwrap();
+        assert_eq!(
+            radar.updated_at,
+            DateTime::parse_from_rfc3339("2026-08-05T22:45:00Z")
+                .unwrap()
+                .with_timezone(&Utc)
+        );
+        // ...and it is re-emitted in the canonical `Z` form.
+        assert!(
+            serde_json::to_string(&radar)
+                .unwrap()
+                .contains(r#""updated_at":"2026-08-05T22:45:00Z""#)
+        );
+    }
+
+    #[test]
+    fn an_absent_optional_timestamp_round_trips_as_null() {
+        let json = r#"{"schema_version":1,"updated_at":"2026-08-05T22:45:00Z","scan_duration_ms":0,"projects":[],"quota":null}"#;
+        let radar: Radar = serde_json::from_str(json).unwrap();
+        let text = serde_json::to_string(&radar).unwrap();
+        assert!(text.contains(r#""quota":null"#), "{text}");
+    }
+
     #[test]
     fn agent_state_for_silence_zero_is_working() {
         assert_eq!(agent_state_for_silence(0), AgentActivity::Working);

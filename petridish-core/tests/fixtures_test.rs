@@ -196,3 +196,58 @@ fn hostile_has_a_worktree_with_an_absent_parent() {
         "hostile.json must contain a worktree project whose parent_path does not match any project's own path"
     );
 }
+
+// ── The golden fixture: the cross-frontend wire contract ──────────────────
+//
+// These replace `tests/test_schema.py`'s golden-fixture tests, which went with
+// the Python read-side. They previously had a Rust counterpart only in
+// `swab/examples/golden_probe.rs` — an *example*, which nothing ever ran, so
+// the contract had no live gate on this side at all.
+
+/// Reserializing the golden fixture must reproduce it key-for-key, in order.
+///
+/// Order matters beyond tidiness: `projects.json` is read by eye during
+/// debugging and diffed between ticks, and a serializer that reordered keys
+/// would make every diff unreadable even when nothing changed.
+#[test]
+fn the_golden_fixture_round_trips_with_identical_key_order() {
+    let raw = std::fs::read_to_string(fixture_path("projects.golden.json"))
+        .expect("golden fixture must be readable");
+    let radar: Radar = serde_json::from_str(&raw).expect("golden fixture must deserialize");
+    let produced = serde_json::to_string_pretty(&radar).expect("must reserialize");
+
+    let key_order = |text: &str| -> Vec<String> {
+        text.lines()
+            .filter_map(|l| {
+                let t = l.trim();
+                t.strip_prefix('"')
+                    .and_then(|r| r.split_once("\":"))
+                    .map(|(k, _)| k.to_string())
+            })
+            .collect()
+    };
+
+    assert_eq!(
+        key_order(&produced),
+        key_order(&raw),
+        "serializer key order drifted from the golden fixture:\n{produced}"
+    );
+}
+
+/// Value-identical round trip, independent of whitespace and key order.
+#[test]
+fn the_golden_fixture_round_trips_value_identically() {
+    let raw = std::fs::read_to_string(fixture_path("projects.golden.json")).unwrap();
+    let radar: Radar = serde_json::from_str(&raw).unwrap();
+    let reserialized: serde_json::Value =
+        serde_json::from_str(&serde_json::to_string(&radar).unwrap()).unwrap();
+    let original: serde_json::Value = serde_json::from_str(&raw).unwrap();
+
+    assert_eq!(reserialized, original);
+}
+
+#[test]
+fn schema_version_is_one() {
+    let radar = load("minimal.json");
+    assert_eq!(radar.schema_version, 1);
+}

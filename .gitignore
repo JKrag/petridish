@@ -1,17 +1,21 @@
-.afk/
-.venv/
-.worktrees/
-__pycache__/
-*.pyc
-.pytest_cache/
-.ruff_cache/
-*.egg-info/
+# Build output
+/target
 dist/
 build/
-raycast/node_modules/
-raycast/dist/
-raycast/raycast-env.d.ts
-.claude/settings.local.json
-docs/
+*.egg-info/
+
+# Node (the Raycast extension). Deliberately NOT path-anchored: these used to
+# read `raycast/node_modules/`, which silently stopped matching the moment the
+# extension moved to `integrations/raycast/` — and 3266 files of node_modules
+# went into a commit before anyone noticed. Match by directory name so a future
+# move cannot repeat it.
+node_modules/
+raycast-env.d.ts
+
+# Delegated-build logs and raw session transcripts. These were listed here and
+# tracked anyway, which is how ~40 of them ended up in the public history.
+.afk/
+.worktrees/
 meta_docs/
-/target
+
+.claude/settings.local.json

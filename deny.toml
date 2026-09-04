@@ -1,0 +1,41 @@
+# cargo-deny: licence compatibility and security advisories.
+#
+# The licence check is not bureaucracy here. These binaries ship as
+# GPL-3.0-or-later, so a dependency arriving under a GPL-incompatible licence is
+# a release blocker rather than a style note — and by the time it turns up in a
+# Homebrew tarball it is already distributed.
+
+[advisories]
+version = 2
+# Fail on anything with a filed RUSTSEC advisory. If something unfixable turns
+# up, add it here with a comment saying why it is tolerable — never widen the
+# whole check.
+ignore = []
+
+[licences]
+version = 2
+# Permissive licences plus the ones GPL-3.0-or-later can absorb. Anything not
+# on this list needs a human decision, which is the point of the gate.
+allow = [
+    "Apache-2.0",
+    "Apache-2.0 WITH LLVM-exception",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "BSL-1.0",
+    "CC0-1.0",
+    "ISC",
+    "MIT",
+    "MIT-0",
+    "MPL-2.0",
+    "Unicode-3.0",
+    "Unlicense",
+    "Zlib",
+]
+confidence-threshold = 0.9
+
+[bans]
+multiple-versions = "allow"
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"

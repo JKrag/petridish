@@ -6,11 +6,11 @@
 # Note the form of the `check` target: its gates are PREREQUISITES, not commands
 # joined by `;` in one recipe line. That is load-bearing. A recipe like
 #     check:
-#         pytest -q; pyright
-# returns only the LAST command's exit status, so failing tests would report
-# success. Verified empirically — keep them as prerequisites.
+#         cargo fmt --check; cargo test
+# returns only the LAST command's exit status, so a formatting failure would
+# report success. Verified empirically — keep them as prerequisites.
 
-.PHONY: help install test rust-test typecheck pyver check clean
+.PHONY: help fmt fmt-check clippy test check clean
 
 .DEFAULT_GOAL := help
 
@@ -19,24 +19,28 @@ help:           ## Show this help.
 		| sed -e 's/:.*## /|/' \
 		| awk -F'|' '{ printf "  \033[36m%-12s\033[0m %s\n", $$1, $$2 }'
 
-install:        ## Install the package + dev extras into a uv-managed venv.
-	uv sync --extra dev
+fmt:            ## Reformat the workspace.
+	cargo fmt --all
 
-test:           ## Run the test suite (pytest).
-	uv run --extra dev pytest -q
+fmt-check:      ## Fail if anything is unformatted.
+	cargo fmt --all --check
 
-rust-test:      ## Run the Rust workspace tests (petridish-core, swab).
-	PATH="$$HOME/.rustup/toolchains/stable-aarch64-apple-darwin/bin:$$PATH" \
-		cargo test --workspace -- --test-threads=1
+clippy:         ## Lint, warnings are errors.
+	cargo clippy --workspace --all-targets --all-features -- -D warnings
 
-typecheck:      ## Fail if pyright errors under src/ rose above the baseline.
-	uv run --extra dev python3 scripts/typecheck_ratchet.py
+# `--test-threads=1` is required, and the reason is NOT the one this repo used
+# to give. It is not a Python-side artifact — the Python is gone and the need
+# remains. Three tests in `swab/src/cli.rs` mutate the `HOME` environment
+# variable to point at a scratch directory, and env vars are per-process, so in
+# parallel they race with every other test that reads `HOME`. Measured: running
+# `cargo test -p swab --lib` without this flag fails 3 runs out of 3, on
+# `doctor_fails_when_the_hook_is_registered_on_only_some_events` among others.
+# Removing the flag needs those three tests to stop touching the environment
+# first.
+test:           ## Run the Rust workspace tests.
+	cargo test --locked --workspace -- --test-threads=1
 
-pyver:          ## Fail if src/ uses stdlib APIs newer than requires-python.
-	uv run --extra dev python3 scripts/check_pyver.py
+check: fmt-check clippy test   ## Full gate: formatting + lints + tests.
 
-check: test rust-test typecheck pyver   ## Full gate: tests + Rust workspace + typecheck + version floor.
-
-clean:          ## Remove caches (leaves .venv alone — use `rm -rf .venv` for that).
-	find . -type d -name __pycache__ -prune -exec rm -rf {} +
-	rm -rf .pytest_cache .ruff_cache dist build *.egg-info
+clean:          ## Remove build output.
+	cargo clean
