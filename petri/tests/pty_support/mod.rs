@@ -200,6 +200,22 @@ impl Session {
     /// blocking up to `timeout` total, and returning once nothing new has
     /// arrived for `quiet_for`. Never blocks longer than `timeout` even if the
     /// child is still alive and producing output.
+    ///
+    /// `quiet_for` is a *trailing* quiet period: it only applies once at least
+    /// one byte has arrived. Before then the only bound is `timeout`.
+    ///
+    /// That distinction is the whole point, and getting it wrong made
+    /// `s10_pty_reload` fail roughly half the time under `cargo test
+    /// --workspace` while passing every time under `cargo test -p petri`.
+    /// Applying `quiet_for` to a still-empty buffer conflates "the child has
+    /// finished painting" with "the child has not started yet", so a caller
+    /// asking for `settle(5s, 300ms)` actually got a 300ms budget for first
+    /// output — and `screen_retry`'s five attempts made that a 1.5s budget in
+    /// total, not the 5s the call site plainly reads as. In a workspace run
+    /// petri's first spawn follows swab's ~45s suite, and a cold 2.3MB debug
+    /// binary does not reliably paint that fast. The failure signature was an
+    /// all-blank grid at a near-constant 1.52-1.53s, which is that arithmetic
+    /// rather than anything the test was asserting about.
     pub fn settle(&mut self, timeout: Duration, quiet_for: Duration) -> String {
         let start = Instant::now();
         loop {
@@ -207,9 +223,16 @@ impl Session {
             if remaining.is_zero() {
                 break;
             }
-            match self.chunks.recv_timeout(remaining.min(quiet_for)) {
+            // Wait the full remaining budget while we have nothing at all; once
+            // bytes are flowing, fall back to the trailing quiet window.
+            let wait = if self.accumulated.is_empty() {
+                remaining
+            } else {
+                remaining.min(quiet_for)
+            };
+            match self.chunks.recv_timeout(wait) {
                 Ok(bytes) => self.accumulated.extend_from_slice(&bytes),
-                Err(mpsc::RecvTimeoutError::Timeout) => break, // quiet_for elapsed with nothing new
+                Err(mpsc::RecvTimeoutError::Timeout) => break, // quiet window elapsed with nothing new
                 Err(mpsc::RecvTimeoutError::Disconnected) => break, // drain thread exited (EOF)
             }
         }
