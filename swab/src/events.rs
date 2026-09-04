@@ -65,26 +65,39 @@ fn parse_at(s: &str) -> Option<DateTime<Utc>> {
         .map(|dt| dt.with_timezone(&Utc))
 }
 
-/// Builds one JSON line as serde_json::Value, then formats with `serde_json::to_string`.
+/// One `events.ndjson` record, in the exact field order the file is written in.
+///
+/// Declared as a struct rather than assembled into a `serde_json::Map`, and that
+/// is load-bearing rather than stylistic. A `Map` is a `BTreeMap` — its key order
+/// is alphabetical *by accident of the default feature set*, and enabling
+/// serde_json's `preserve_order` feature anywhere in the workspace silently flips
+/// it to insertion order. Cargo unifies features across the whole graph, so a
+/// sibling crate turning that feature on for its own reasons would rewrite this
+/// file's wire format as a side effect. `events.ndjson` is shared with three
+/// other hook consumers, so serde's declaration-order guarantee is what actually
+/// pins it. Field order here is therefore the file format: do not reorder.
+#[derive(serde::Serialize)]
+struct EventLine<'a> {
+    at: String,
+    cwd: &'a str,
+    event: Option<&'a str>,
+    session_id: Option<&'a str>,
+}
+
+/// Builds one JSON line, then formats with `serde_json::to_string`.
 /// Returns `None` when the line is so malformed we'd rather silently skip it — callers
 /// don't propagate errors, matching hook.py's "never raise" invariant.
-fn build_json_line(event: &RawHookEvent, at: DateTime<Utc>) -> Option<Value> {
+fn build_json_line<'a>(event: &'a RawHookEvent, at: DateTime<Utc>) -> Option<EventLine<'a>> {
     // `cwd` must never be blank — mirroring hook.py's `if not cwd: return 0`.
     if event.cwd.is_empty() {
         return None;
     }
-    let mut line = serde_json::Map::new();
-    line.insert("cwd".into(), Value::String(event.cwd.clone()));
-    line.insert(
-        "session_id".into(),
-        event.session_id.clone().map_or(Value::Null, Value::String),
-    );
-    line.insert(
-        "event".into(),
-        event.event.clone().map_or(Value::Null, Value::String),
-    );
-    line.insert("at".into(), Value::String(format_at(at)));
-    Some(Value::Object(line))
+    Some(EventLine {
+        at: format_at(at),
+        cwd: &event.cwd,
+        event: event.event.as_deref(),
+        session_id: event.session_id.as_deref(),
+    })
 }
 
 /// Writes a single JSON line to the events file with `OpenOptions::create(true).append(true)`,
@@ -300,6 +313,48 @@ mod tests {
             roots,
             ..Config::default()
         }
+    }
+
+    /// Byte-exact lock on the `events.ndjson` wire format.
+    ///
+    /// `events.ndjson` is read by three hook consumers besides ours, so its key
+    /// order and null-handling are a contract, not an implementation detail.
+    /// Before `EventLine` existed the line was built from a `serde_json::Map`,
+    /// whose ordering is alphabetical only because serde_json's `preserve_order`
+    /// feature is off — and Cargo unifies features across the workspace, so any
+    /// sibling crate enabling it (the installer wants it, to avoid reordering a
+    /// user's `~/.claude/settings.json`) would have silently rewritten this file
+    /// from `{at, cwd, event, session_id}` to insertion order.
+    ///
+    /// These two strings are the bytes the shipped `swab-hook` binary produced
+    /// before that change. If this test fails, the wire format moved.
+    #[test]
+    fn json_line_bytes_are_the_frozen_wire_format() {
+        let at = DateTime::parse_from_rfc3339("2026-09-04T15:45:17Z")
+            .unwrap()
+            .with_timezone(&Utc);
+
+        let full = RawHookEvent {
+            cwd: "/tmp/demo".to_string(),
+            session_id: Some("abc123".to_string()),
+            event: Some("PreToolUse".to_string()),
+        };
+        assert_eq!(
+            serde_json::to_string(&build_json_line(&full, at).unwrap()).unwrap(),
+            r#"{"at":"2026-09-04T15:45:17Z","cwd":"/tmp/demo","event":"PreToolUse","session_id":"abc123"}"#,
+        );
+
+        // Absent optionals serialize as explicit `null`, not as omitted keys —
+        // consumers index by key and a missing key is not the same as a null one.
+        let bare = RawHookEvent {
+            cwd: "/tmp/demo".to_string(),
+            session_id: None,
+            event: None,
+        };
+        assert_eq!(
+            serde_json::to_string(&build_json_line(&bare, at).unwrap()).unwrap(),
+            r#"{"at":"2026-09-04T15:45:17Z","cwd":"/tmp/demo","event":null,"session_id":null}"#,
+        );
     }
 
     /// Test 1: append_event writes exactly one line, valid JSON, with `at` matching
