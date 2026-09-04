@@ -236,7 +236,11 @@ fn sha1_id(resolved_path: &str) -> String {
     use sha1::{Digest, Sha1};
     let mut hasher = Sha1::new();
     hasher.update(resolved_path.as_bytes());
-    let hex: String = hasher.finalize().iter().map(|b| format!("{b:02x}")).collect();
+    let hex: String = hasher
+        .finalize()
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect();
     hex[..12].to_string()
 }
 
@@ -394,19 +398,25 @@ pub fn run_scan(config: &Config, paths: &ScanPaths, previous: Option<&Radar>) ->
     //    already degrades on its own, but an out-of-spec panic would otherwise abort the tick).
     //    Every sensor is called with the *real path from `paths`* (the production-defaults
     //    seam): never ad-hoc, never `None`.
-    let claude_signals: HashMap<String, schema::AgentSignal> = std::panic::catch_unwind(
-        AssertUnwindSafe(|| {
-            crate::sensors::claude::scan(&paths.claude_projects_dir, config, DEFAULT_COLD_CUTOFF_HOURS)
-        }),
-    )
-    .unwrap_or_default();
+    let claude_signals: HashMap<String, schema::AgentSignal> =
+        std::panic::catch_unwind(AssertUnwindSafe(|| {
+            crate::sensors::claude::scan(
+                &paths.claude_projects_dir,
+                config,
+                DEFAULT_COLD_CUTOFF_HOURS,
+            )
+        }))
+        .unwrap_or_default();
 
-    let copilot_signals: HashMap<String, schema::AgentSignal> = std::panic::catch_unwind(
-        AssertUnwindSafe(|| {
-            crate::sensors::copilot::scan(&paths.workspace_storage_dir, config, DEFAULT_COLD_CUTOFF_HOURS)
-        }),
-    )
-    .unwrap_or_default();
+    let copilot_signals: HashMap<String, schema::AgentSignal> =
+        std::panic::catch_unwind(AssertUnwindSafe(|| {
+            crate::sensors::copilot::scan(
+                &paths.workspace_storage_dir,
+                config,
+                DEFAULT_COLD_CUTOFF_HOURS,
+            )
+        }))
+        .unwrap_or_default();
 
     let (events_signals, events_counts, waiting_deltas): (
         HashMap<String, schema::AgentSignal>,
@@ -432,7 +442,12 @@ pub fn run_scan(config: &Config, paths: &ScanPaths, previous: Option<&Radar>) ->
     // Previous tick's agent-activity rings, keyed by resolved path (== `Project::path`) so
     // they can be carried forward regardless of any other field changing.
     let prev_activity: HashMap<String, Vec<u32>> = previous
-        .map(|r| r.projects.iter().map(|p| (p.path.clone(), p.agent_activity.clone())).collect())
+        .map(|r| {
+            r.projects
+                .iter()
+                .map(|p| (p.path.clone(), p.agent_activity.clone()))
+                .collect()
+        })
         .unwrap_or_default();
 
     // `quota` is account-global (not per-project), so read once. `read_quota` never panics —
@@ -493,18 +508,26 @@ pub fn run_scan(config: &Config, paths: &ScanPaths, previous: Option<&Radar>) ->
     // with Claude activity). `discovery::resolve_root` collapses monorepo subdirs.
     let mut all_roots: std::collections::HashSet<String> = discovered
         .iter()
-        .map(|p| discovery::resolve_root(p, config).to_string_lossy().into_owned())
+        .map(|p| {
+            discovery::resolve_root(p, config)
+                .to_string_lossy()
+                .into_owned()
+        })
         .collect();
     all_roots.extend(merged.keys().cloned());
 
     // Bucket thresholds — fall back to the documented defaults if config omits them. Python
     // uses `thresholds.get("active", 48.0)`, same fallback semantics.
     let thresholds = &config.bucket_thresholds;
-    let t_active = *thresholds.get("active").unwrap_or(&DEFAULT_THRESHOLD_ACTIVE_H);
+    let t_active = *thresholds
+        .get("active")
+        .unwrap_or(&DEFAULT_THRESHOLD_ACTIVE_H);
     let t_in_flight = *thresholds
         .get("in_flight")
         .unwrap_or(&DEFAULT_THRESHOLD_IN_FLIGHT_H);
-    let t_stale = *thresholds.get("stale").unwrap_or(&DEFAULT_THRESHOLD_STALE_H);
+    let t_stale = *thresholds
+        .get("stale")
+        .unwrap_or(&DEFAULT_THRESHOLD_STALE_H);
 
     let mut projects: Vec<schema::Project> = all_roots
         .into_iter()
@@ -565,11 +588,7 @@ pub fn run_scan(config: &Config, paths: &ScanPaths, previous: Option<&Radar>) ->
 /// CLI's "scanned N projects in Mms -> path" message) or an io error from the write step.
 /// `run_scan` itself doesn't fail — only the write can, per contract (single-writer invariant:
 /// `projects.json` is written atomically via temp-file + rename).
-pub fn write_scan(
-    config: &Config,
-    paths: &ScanPaths,
-    state_path: &Path,
-) -> std::io::Result<Radar> {
+pub fn write_scan(config: &Config, paths: &ScanPaths, state_path: &Path) -> std::io::Result<Radar> {
     // Best-effort read of the previous tick's output, purely to carry `agent_activity`
     // rings forward (invariant #5 in spirit: a missing/corrupt/pre-this-field state file
     // degrades to "no history yet" -- every project's ring just starts fresh -- never an
@@ -642,7 +661,6 @@ mod tests {
                 self.path.display()
             );
         }
-
     }
 
     /// Runs `git add <filename> && git commit` inside `repo_dir`, with pinned author/committer
@@ -670,7 +688,10 @@ mod tests {
                 .success()
         };
         let dir = repo_dir.to_str().unwrap();
-        assert!(run(&["-C", dir, "add", filename]), "git add failed in {dir}");
+        assert!(
+            run(&["-C", dir, "add", filename]),
+            "git add failed in {dir}"
+        );
         assert!(
             run(&["-C", dir, "commit", "--no-gpg-sign", "-m", "test commit"]),
             "git commit failed in {dir}"
@@ -719,7 +740,10 @@ mod tests {
     fn tline(session_id: Option<&str>, cwd: &str) -> String {
         let mut m = serde_json::Map::new();
         if let Some(sid) = session_id {
-            m.insert("sessionId".into(), serde_json::Value::String(sid.to_string()));
+            m.insert(
+                "sessionId".into(),
+                serde_json::Value::String(sid.to_string()),
+            );
         }
         m.insert("cwd".into(), serde_json::Value::String(cwd.to_string()));
         serde_json::to_string(&serde_json::Value::Object(m)).unwrap()
@@ -768,7 +792,12 @@ mod tests {
         let radar = run_scan_with_home(&fixture.path, &repo);
 
         // Exactly one project — the repo itself.
-        assert_eq!(radar.projects.len(), 1, "expected one project: {:?}", radar.projects);
+        assert_eq!(
+            radar.projects.len(),
+            1,
+            "expected one project: {:?}",
+            radar.projects
+        );
         let p = &radar.projects[0];
         assert_eq!(p.name, "repo");
         assert!(p.git.is_repo); // git::scan should detect it as a repo.
@@ -776,7 +805,8 @@ mod tests {
         // falls through to Idle when there's no signal).
         assert!(
             matches!(p.agent.state, AgentActivity::Idle),
-            "no agent activity should yield Idle, got {:?}", p.agent.state
+            "no agent activity should yield Idle, got {:?}",
+            p.agent.state
         );
         // Path must point at the project root. Compare canonicalized forms -- `discover()`
         // stores the resolved path, which on macOS resolves `/var` -> `/private/var` (a
@@ -843,7 +873,8 @@ mod tests {
 
         // workspace_storage_dir -> point at a file (not a dir), which the copilot sensor's
         // `read_dir` will return an Err for. Sensors degrade to empty on such failures.
-        std::fs::write(&fixture.path.join("workspaceStorage_fake"), "garbage").expect("create file");
+        std::fs::write(&fixture.path.join("workspaceStorage_fake"), "garbage")
+            .expect("create file");
 
         // Build ScanPaths by hand for this test (not via `for_home`) so we can point the
         // copilot sensor at a bogus path.
@@ -858,7 +889,8 @@ mod tests {
         // run_scan MUST NOT panic; the tick should still complete with claude + events signals.
         let radar = run_scan(&config, &paths, None);
         assert_eq!(
-            radar.projects.len(), 1,
+            radar.projects.len(),
+            1,
             "corrupted copilot path must not collapse the tick: {:?}",
             radar.projects
         );
@@ -877,8 +909,8 @@ mod tests {
         std::fs::create_dir_all(repo.join(".git")).expect("mkdir .git");
 
         let cases = [
-            ("30s", 30u64, AgentActivity::Working),   // < AGENT_WORKING_MAX_S (90)
-            ("10m", 600u64, AgentActivity::Recent),  // 90 <= 10*60 < 1800
+            ("30s", 30u64, AgentActivity::Working), // < AGENT_WORKING_MAX_S (90)
+            ("10m", 600u64, AgentActivity::Recent), // 90 <= 10*60 < 1800
             ("2h", 7200u64, AgentActivity::Idle),   // >= 1800
         ];
 
@@ -914,7 +946,12 @@ mod tests {
         fixture.git_init();
 
         // Make a commit via env vars (pinned date 2024-01-15T10:30:00 UTC, over 2 years ago).
-        git_add_and_commit_at(&fixture.path, "README.md", "hi", "2024-01-15T10:30:00+00:00");
+        git_add_and_commit_at(
+            &fixture.path,
+            "README.md",
+            "hi",
+            "2024-01-15T10:30:00+00:00",
+        );
 
         let config = test_config(vec![fixture.path.clone()]);
         let paths = ScanPaths::for_home(&fixture.path);
@@ -923,7 +960,8 @@ mod tests {
         assert_eq!(radar.projects.len(), 1);
         let p = &radar.projects[0];
         assert_eq!(
-            p.status_bucket, StatusBucket::Cold,
+            p.status_bucket,
+            StatusBucket::Cold,
             "commit from 2024-01-15 (>1440h ago) must bucket as cold, got {:?}",
             p.status_bucket
         );
@@ -942,19 +980,24 @@ mod tests {
         // Fresh transcript — < 90s old, agent state should be Working.
         write_transcript(
             &fixture.path.join(".claude/projects/-slug/sess.jsonl"),
-            &[&tline(Some("sess-x"), fixture.path.join("repo").to_str().unwrap())],
+            &[&tline(
+                Some("sess-x"),
+                fixture.path.join("repo").to_str().unwrap(),
+            )],
             10, // 10 seconds ago -> Working
         );
 
         let radar = run_scan_with_home(&fixture.path, &fixture.path.join("repo"));
         assert_eq!(radar.projects.len(), 1);
         assert_eq!(
-            radar.projects[0].agent.state, AgentActivity::Working,
+            radar.projects[0].agent.state,
+            AgentActivity::Working,
             "fresh transcript -> Working"
         );
         // Working overrides the cold bucket — must be Active regardless of git age.
         assert_eq!(
-            radar.projects[0].status_bucket, StatusBucket::Active,
+            radar.projects[0].status_bucket,
+            StatusBucket::Active,
             "Working agent overrides cold bucket -> Active"
         );
     }
@@ -969,8 +1012,8 @@ mod tests {
         let fixture = Tmp::new("signal_outside_roots");
 
         // Transcript points at an OUTSIDE dir — not under fixture.path.
-        let outside = std::env::temp_dir()
-            .join(format!("swab_outside_{uuid}", uuid = unique_suffix()));
+        let outside =
+            std::env::temp_dir().join(format!("swab_outside_{uuid}", uuid = unique_suffix()));
         std::fs::create_dir_all(&outside).expect("mkdir outside");
 
         let projects_dir = fixture.path.join(".claude/projects");
@@ -987,7 +1030,8 @@ mod tests {
         let radar = run_scan(&config, &paths, None);
 
         assert_eq!(
-            radar.projects.len(), 1,
+            radar.projects.len(),
+            1,
             "signal-only root outside configured roots must still produce one Project"
         );
         // Compare canonicalized forms on both sides: `resolve_root` (and thus the project's
@@ -1037,7 +1081,11 @@ mod tests {
         let config = test_config(vec![repo.clone()]);
         let radar = run_scan(&config, &paths, None);
 
-        assert_eq!(radar.projects.len(), 1, "two sources for same root -> one Project");
+        assert_eq!(
+            radar.projects.len(),
+            1,
+            "two sources for same root -> one Project"
+        );
         // The newer-at wins — events is 30s old, claude is 600s old. The winning signal's
         // agent (events -> "claude-code" as events always uses claude-code, per events.rs)
         // becomes `active_agent`. Just verify one project and that active_agent is set.
@@ -1133,13 +1181,11 @@ mod tests {
         }
 
         // Different paths -> different ids. (repo_a and repo_b have different resolved paths.)
-        let id_set: std::collections::HashSet<String> = radar_a
-            .projects
-            .iter()
-            .map(|p| p.id.clone())
-            .collect();
+        let id_set: std::collections::HashSet<String> =
+            radar_a.projects.iter().map(|p| p.id.clone()).collect();
         assert_eq!(
-            id_set.len(), 2,
+            id_set.len(),
+            2,
             "two different paths must produce two different ids: {id_set:?}"
         );
     }
@@ -1167,7 +1213,8 @@ mod tests {
 
         // Round-trip: read the file back as JSON and deserialize.
         let back = std::fs::read_to_string(&state_path).expect("read state file");
-        let deserialized: Radar = serde_json::from_str(&back).expect("state file is valid Radar JSON");
+        let deserialized: Radar =
+            serde_json::from_str(&back).expect("state file is valid Radar JSON");
 
         assert_eq!(written, deserialized, "round-trip Radar must equal written");
     }
@@ -1192,7 +1239,8 @@ mod tests {
             .expect("write_scan must succeed even over a corrupt previous state file");
         assert_eq!(written.projects.len(), 1);
         assert_eq!(
-            written.projects[0].agent_activity, vec![0u32],
+            written.projects[0].agent_activity,
+            vec![0u32],
             "corrupt previous state -> ring starts fresh at exactly one sample"
         );
     }
@@ -1239,8 +1287,10 @@ mod tests {
         // If `for_home` had silently defaulted any of its path components (the original bug's
         // shape), the claude sensor would have returned empty and this assertion would fail.
         assert_eq!(
-            radar.projects.len(), 1,
-            "expected one project from fixture: {:?}", radar.projects
+            radar.projects.len(),
+            1,
+            "expected one project from fixture: {:?}",
+            radar.projects
         );
         let p = &radar.projects[0];
         assert_eq!(
@@ -1370,9 +1420,7 @@ mod tests {
         // parent_path must be the string form of the path before .worktrees, joined with '/'.
         // Canonicalize the expected value so macOS symlink resolution (`/var` -> `/private/var`)
         // doesn't cause a spurious mismatch.
-        let canonical_parent = parent
-            .canonicalize()
-            .unwrap();
+        let canonical_parent = parent.canonicalize().unwrap();
         let expected = canonical_parent.to_str().unwrap();
         assert_eq!(
             p.parent_path.as_deref(),
@@ -1413,9 +1461,8 @@ mod tests {
           "status_bucket": "cold"
         }"#;
 
-        let project: schema::Project = serde_json::from_str(json_no_parent).expect(
-            "Project JSON missing parent_path key must deserialize successfully",
-        );
+        let project: schema::Project = serde_json::from_str(json_no_parent)
+            .expect("Project JSON missing parent_path key must deserialize successfully");
         assert_eq!(
             project.parent_path, None,
             "missing parent_path key must deserialize as None"
@@ -1449,7 +1496,8 @@ mod tests {
         let radar1 = run_scan(&config, &paths, None);
         assert_eq!(radar1.projects.len(), 1);
         assert_eq!(
-            radar1.projects[0].agent_activity, vec![0u32],
+            radar1.projects[0].agent_activity,
+            vec![0u32],
             "first-ever tick must start the ring with exactly one (zero) sample"
         );
 
@@ -1466,7 +1514,8 @@ mod tests {
 
         let radar2 = run_scan(&config, &paths, Some(&radar1));
         assert_eq!(
-            radar2.projects[0].agent_activity, vec![0u32, 1u32],
+            radar2.projects[0].agent_activity,
+            vec![0u32, 1u32],
             "second tick must carry tick 1's sample forward and append tick 2's count: {:?}",
             radar2.projects[0].agent_activity
         );
@@ -1489,7 +1538,16 @@ mod tests {
         let mut full_ring = vec![0u32; schema::AGENT_ACTIVITY_WINDOW];
         full_ring[0] = 99;
         let mut seeded_project = build_project(
-            &repo.canonicalize().unwrap(), &config, None, chrono::Utc::now(), 48.0, 336.0, 1440.0, None, 0, None,
+            &repo.canonicalize().unwrap(),
+            &config,
+            None,
+            chrono::Utc::now(),
+            48.0,
+            336.0,
+            1440.0,
+            None,
+            0,
+            None,
         );
         seeded_project.agent_activity = full_ring;
         let previous = Radar {
@@ -1503,8 +1561,10 @@ mod tests {
         let radar = run_scan(&config, &paths, Some(&previous));
         let ring = &radar.projects[0].agent_activity;
         assert_eq!(
-            ring.len(), schema::AGENT_ACTIVITY_WINDOW,
-            "ring must stay capped at AGENT_ACTIVITY_WINDOW, got len {}", ring.len()
+            ring.len(),
+            schema::AGENT_ACTIVITY_WINDOW,
+            "ring must stay capped at AGENT_ACTIVITY_WINDOW, got len {}",
+            ring.len()
         );
         assert!(
             !ring.contains(&99),
@@ -1527,7 +1587,11 @@ mod tests {
         let recent = now - chrono::Duration::minutes(5);
         let expired = now - chrono::Duration::seconds(schema::WAITING_MAX_LATCH_S + 60);
 
-        assert_eq!(resolve_waiting(None, Some(true), now), Some(now), "set with no latch starts one at now");
+        assert_eq!(
+            resolve_waiting(None, Some(true), now),
+            Some(now),
+            "set with no latch starts one at now"
+        );
         assert_eq!(
             resolve_waiting(Some(recent), Some(true), now),
             Some(recent),
@@ -1538,8 +1602,16 @@ mod tests {
             Some(now),
             "a set against an already-expired latch starts a fresh one"
         );
-        assert_eq!(resolve_waiting(Some(recent), Some(false), now), None, "clear releases");
-        assert_eq!(resolve_waiting(None, Some(false), now), None, "clear with no latch stays released");
+        assert_eq!(
+            resolve_waiting(Some(recent), Some(false), now),
+            None,
+            "clear releases"
+        );
+        assert_eq!(
+            resolve_waiting(None, Some(false), now),
+            None,
+            "clear with no latch stays released"
+        );
         assert_eq!(
             resolve_waiting(Some(recent), None, now),
             Some(recent),
@@ -1588,8 +1660,7 @@ mod tests {
         assert_eq!(std::fs::read_to_string(&events).unwrap(), "");
         let second = run_scan(&config, &paths, Some(&first));
         assert_eq!(
-            second.projects[0].agent.waiting_since,
-            first.projects[0].agent.waiting_since,
+            second.projects[0].agent.waiting_since, first.projects[0].agent.waiting_since,
             "the latch must carry forward unchanged, including its start time"
         );
     }
@@ -1657,10 +1728,14 @@ mod tests {
         // Hand the next tick a previous Radar carrying a live latch, exactly as the
         // carry-forward path would.
         let mut previous = baseline.clone();
-        previous.projects[0].agent.waiting_since = Some(chrono::Utc::now() - chrono::Duration::minutes(10));
+        previous.projects[0].agent.waiting_since =
+            Some(chrono::Utc::now() - chrono::Duration::minutes(10));
 
         let radar = run_scan(&config, &paths, Some(&previous));
-        assert!(radar.projects[0].agent.waiting_since.is_some(), "latch carried forward");
+        assert!(
+            radar.projects[0].agent.waiting_since.is_some(),
+            "latch carried forward"
+        );
         assert_eq!(
             radar.projects[0].status_bucket,
             StatusBucket::Active,
@@ -1693,7 +1768,10 @@ mod tests {
             Some(chrono::Utc::now() - chrono::Duration::seconds(schema::WAITING_MAX_LATCH_S + 60));
 
         let radar = run_scan(&config, &paths, Some(&previous));
-        assert_eq!(radar.projects[0].agent.waiting_since, None, "expired latch released");
+        assert_eq!(
+            radar.projects[0].agent.waiting_since, None,
+            "expired latch released"
+        );
         assert_eq!(radar.projects[0].status_bucket, StatusBucket::Cold);
     }
 

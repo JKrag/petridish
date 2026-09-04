@@ -35,10 +35,7 @@ mod iso_second_opt {
     use chrono::{DateTime, SubsecRound, Utc};
     use serde::{Deserialize, Deserializer, Serializer};
 
-    pub fn serialize<S: Serializer>(
-        dt: &Option<DateTime<Utc>>,
-        s: S,
-    ) -> Result<S::Ok, S::Error> {
+    pub fn serialize<S: Serializer>(dt: &Option<DateTime<Utc>>, s: S) -> Result<S::Ok, S::Error> {
         match dt {
             Some(dt) => {
                 s.serialize_str(&dt.trunc_subsecs(0).format("%Y-%m-%dT%H:%M:%SZ").to_string())
@@ -47,9 +44,7 @@ mod iso_second_opt {
         }
     }
 
-    pub fn deserialize<'de, D: Deserializer<'de>>(
-        d: D,
-    ) -> Result<Option<DateTime<Utc>>, D::Error> {
+    pub fn deserialize<'de, D: Deserializer<'de>>(d: D) -> Result<Option<DateTime<Utc>>, D::Error> {
         let opt: Option<String> = Option::deserialize(d)?;
         match opt {
             Some(s) => DateTime::parse_from_rfc3339(&s)
@@ -252,7 +247,11 @@ pub struct AgentSignal {
 /// negative input is treated as zero rather than panicking, a frontend must
 /// never crash on a timestamp from the future.
 pub fn agent_state_for_silence(silence_seconds: i64) -> AgentActivity {
-    let silence = if silence_seconds < 0 { 0 } else { silence_seconds };
+    let silence = if silence_seconds < 0 {
+        0
+    } else {
+        silence_seconds
+    };
     if silence < AGENT_WORKING_MAX_S {
         AgentActivity::Working
     } else if silence < AGENT_RECENT_MAX_S {
@@ -273,10 +272,7 @@ pub fn agent_state_for_silence(silence_seconds: i64) -> AgentActivity {
 ///
 /// A latch from the future (clock skew between writer and reader) counts as live rather than
 /// panicking, mirroring `agent_state_for_silence`'s negative-input clamp.
-pub fn waiting_latch_live(
-    waiting_since: Option<DateTime<Utc>>,
-    now: DateTime<Utc>,
-) -> bool {
+pub fn waiting_latch_live(waiting_since: Option<DateTime<Utc>>, now: DateTime<Utc>) -> bool {
     match waiting_since {
         None => false,
         Some(since) => (now - since).num_seconds() < WAITING_MAX_LATCH_S,
@@ -297,29 +293,24 @@ pub fn write_atomic(path: &Path, radar: &Radar) -> std::io::Result<()> {
         )
     })?)?;
 
-    let tmp_name = path
-        .file_name()
-        .and_then(|n| n.to_str())
-        .ok_or_else(|| {
-            std::io::Error::new(
-                std::io::ErrorKind::InvalidInput,
-                "radar path has a non-UTF8 filename",
-            )
-        })?;
+    let tmp_name = path.file_name().and_then(|n| n.to_str()).ok_or_else(|| {
+        std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "radar path has a non-UTF8 filename",
+        )
+    })?;
     let tmp = path.with_file_name(format!("{}.tmp", tmp_name));
 
-    let body = serde_json::to_string(radar).map_err(|e| {
-        std::io::Error::new(std::io::ErrorKind::Other, e.to_string())
-    })?;
+    let body = serde_json::to_string(radar)
+        .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e.to_string()))?;
 
     std::fs::write(&tmp, &body)?;
-    std::fs::rename(&tmp, path)
-        .map_err(|rename_err| {
-            // Best-effort cleanup: ignore any error from this remove so the
-            // original rename failure is what the caller sees.
-            let _ = std::fs::remove_file(&tmp);
-            rename_err
-        })
+    std::fs::rename(&tmp, path).map_err(|rename_err| {
+        // Best-effort cleanup: ignore any error from this remove so the
+        // original rename failure is what the caller sees.
+        let _ = std::fs::remove_file(&tmp);
+        rename_err
+    })
 }
 
 #[cfg(test)]
@@ -372,8 +363,14 @@ mod tests {
         let now = Utc::now();
         let just_inside = now - chrono::Duration::seconds(WAITING_MAX_LATCH_S - 1);
         let exactly_at = now - chrono::Duration::seconds(WAITING_MAX_LATCH_S);
-        assert!(waiting_latch_live(Some(just_inside), now), "one second short of the cap is live");
-        assert!(!waiting_latch_live(Some(exactly_at), now), "the cap itself has expired");
+        assert!(
+            waiting_latch_live(Some(just_inside), now),
+            "one second short of the cap is live"
+        );
+        assert!(
+            !waiting_latch_live(Some(exactly_at), now),
+            "the cap itself has expired"
+        );
     }
 
     #[test]
@@ -381,7 +378,10 @@ mod tests {
         // Clock skew between the writer and the reader, same case
         // `agent_state_for_silence` clamps rather than panicking on.
         let now = Utc::now();
-        assert!(waiting_latch_live(Some(now + chrono::Duration::hours(1)), now));
+        assert!(waiting_latch_live(
+            Some(now + chrono::Duration::hours(1)),
+            now
+        ));
     }
 
     #[test]
@@ -416,7 +416,10 @@ mod tests {
     #[test]
     fn write_atomic_overwrite_second_call_differs() {
         let tmp = std::env::temp_dir();
-        let dir = tmp.join(format!("swab_write_atomic_overwrite_test_{}", std::process::id()));
+        let dir = tmp.join(format!(
+            "swab_write_atomic_overwrite_test_{}",
+            std::process::id()
+        ));
         let _ = std::fs::remove_dir_all(&dir);
 
         let path = dir.join("projects.json");
@@ -438,8 +441,7 @@ mod tests {
         let back = std::fs::read_to_string(&path).expect("file must be readable");
 
         // File contents must match radar_b, not radar_a.
-        let file_json: serde_json::Value =
-            serde_json::from_str(&back).expect("file is valid JSON");
+        let file_json: serde_json::Value = serde_json::from_str(&back).expect("file is valid JSON");
 
         let expected_b: serde_json::Value =
             serde_json::from_str(&serde_json::to_string(&radar_b).unwrap()).unwrap();

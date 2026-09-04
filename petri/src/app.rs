@@ -6,11 +6,11 @@
 
 use petridish_core::schema::Radar;
 use ratatui::{
+    Frame,
     layout::{Constraint, Layout},
     style::Style,
     text::Line,
     widgets::{Paragraph, Wrap},
-    Frame,
 };
 
 /// Render the header + flat project list into `frame`.

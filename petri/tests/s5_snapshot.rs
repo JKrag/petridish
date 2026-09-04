@@ -7,8 +7,8 @@
 //! `browser::render`'s `todo!()` body means every test below FAILS (panics)
 //! rather than errors — confirmed before delegating S5.
 
-use petridish_core::schema::Radar;
 use petri::browser::BrowserState;
+use petridish_core::schema::Radar;
 use ratatui::{Terminal, backend::TestBackend};
 use std::path::PathBuf;
 
@@ -23,7 +23,8 @@ fn fixture_path(name: &str) -> PathBuf {
 fn load(name: &str) -> Radar {
     let text = std::fs::read_to_string(fixture_path(name))
         .unwrap_or_else(|e| panic!("failed to read fixture {name}: {e}"));
-    serde_json::from_str(&text).unwrap_or_else(|e| panic!("fixture {name} failed to deserialize into Radar: {e}"))
+    serde_json::from_str(&text)
+        .unwrap_or_else(|e| panic!("fixture {name} failed to deserialize into Radar: {e}"))
 }
 
 fn rendered_lines(radar: &Radar, state: &BrowserState, width: u16, height: u16) -> Vec<String> {
@@ -47,7 +48,11 @@ fn header_identifies_the_app_at_80x24() {
     let radar = load("normal.json");
     let state = BrowserState::new(&radar);
     let lines = rendered_lines(&radar, &state, 80, 24);
-    assert!(lines[0].contains("petri"), "row 0 must contain \"petri\", got: {:?}", lines[0]);
+    assert!(
+        lines[0].contains("petri"),
+        "row 0 must contain \"petri\", got: {:?}",
+        lines[0]
+    );
 }
 
 #[test]
@@ -81,7 +86,10 @@ fn every_visible_project_name_reachable_at_200x50() {
     let whole = lines.join("\n");
     for &idx in &state.visible {
         let name = &radar.projects[idx].name;
-        assert!(whole.contains(name.as_str()), "project {name:?} must be reachable at 200x50, got:\n{whole}");
+        assert!(
+            whole.contains(name.as_str()),
+            "project {name:?} must be reachable at 200x50, got:\n{whole}"
+        );
     }
 }
 
@@ -93,7 +101,10 @@ fn every_visible_project_name_reachable_at_80x24_minimal() {
     let whole = lines.join("\n");
     for &idx in &state.visible {
         let name = &radar.projects[idx].name;
-        assert!(whole.contains(name.as_str()), "project {name:?} must be reachable at 80x24, got:\n{whole}");
+        assert!(
+            whole.contains(name.as_str()),
+            "project {name:?} must be reachable at 80x24, got:\n{whole}"
+        );
     }
 }
 

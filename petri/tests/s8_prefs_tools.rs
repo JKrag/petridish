@@ -64,7 +64,10 @@ fn prefs_file_written_before_tools_existed_still_parses() {
     .expect("write legacy prefs must succeed");
 
     let prefs = prefs::load(&path);
-    assert!(prefs.tools.is_empty(), "absent [tools] must mean no choices");
+    assert!(
+        prefs.tools.is_empty(),
+        "absent [tools] must mean no choices"
+    );
     assert_eq!(
         prefs.last_screen,
         LastScreen::Browser,
@@ -83,9 +86,18 @@ fn roundtrip_preserves_tool_choices() {
     prefs::save(&path, &written).expect("save must succeed");
     let read_back = prefs::load(&path);
 
-    assert_eq!(read_back, written, "prefs must survive a save/load round trip");
-    assert_eq!(read_back.tools.get("gitlog").map(String::as_str), Some("serie"));
-    assert_eq!(read_back.tools.get("edit").map(String::as_str), Some("code"));
+    assert_eq!(
+        read_back, written,
+        "prefs must survive a save/load round trip"
+    );
+    assert_eq!(
+        read_back.tools.get("gitlog").map(String::as_str),
+        Some("serie")
+    );
+    assert_eq!(
+        read_back.tools.get("edit").map(String::as_str),
+        Some("code")
+    );
 }
 
 #[test]
@@ -134,7 +146,10 @@ fn unknown_action_ids_round_trip_untouched() {
 
     let loaded = prefs::load(&path);
     assert_eq!(
-        loaded.tools.get("something_from_the_future").map(String::as_str),
+        loaded
+            .tools
+            .get("something_from_the_future")
+            .map(String::as_str),
         Some("quux"),
         "an unrecognised action id must be preserved verbatim"
     );
@@ -151,8 +166,11 @@ fn malformed_tools_table_falls_back_to_defaults_not_a_panic() {
     // parse error means defaults plus a warning — never a crash, never a
     // refusal to start.
     let path = scratch_path("malformed_tools_table_falls_back_to_defaults_not_a_panic");
-    std::fs::write(&path, b"last_screen = \"browser\"\ntools = \"not a table\"\n")
-        .expect("write must succeed");
+    std::fs::write(
+        &path,
+        b"last_screen = \"browser\"\ntools = \"not a table\"\n",
+    )
+    .expect("write must succeed");
 
     let prefs = prefs::load(&path);
     assert_eq!(

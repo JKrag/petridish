@@ -30,7 +30,7 @@
 //! the delegate to make a documented best-effort call.
 
 use chrono::{Duration as ChronoDuration, Utc};
-use petri::dashboard::{DashRow, DashboardState, SelectionAnchor, SECTION_ORDER};
+use petri::dashboard::{DashRow, DashboardState, SECTION_ORDER, SelectionAnchor};
 use petridish_core::schema::{AgentState, GitState, Project, Radar, StatusBucket};
 use std::path::PathBuf;
 
@@ -45,7 +45,8 @@ fn fixture_path(name: &str) -> PathBuf {
 fn load(name: &str) -> Radar {
     let text = std::fs::read_to_string(fixture_path(name))
         .unwrap_or_else(|e| panic!("failed to read fixture {name}: {e}"));
-    serde_json::from_str(&text).unwrap_or_else(|e| panic!("fixture {name} failed to deserialize into Radar: {e}"))
+    serde_json::from_str(&text)
+        .unwrap_or_else(|e| panic!("fixture {name} failed to deserialize into Radar: {e}"))
 }
 
 /// A minimal, otherwise-default project — callers override only the fields
@@ -78,7 +79,10 @@ fn radar_of(projects: Vec<Project>) -> Radar {
 }
 
 fn section_index(b: StatusBucket) -> usize {
-    SECTION_ORDER.iter().position(|s| *s == b).expect("bucket must be in SECTION_ORDER")
+    SECTION_ORDER
+        .iter()
+        .position(|s| *s == b)
+        .expect("bucket must be in SECTION_ORDER")
 }
 
 // --- Default collapse state and initial cursor -----------------------------
@@ -113,10 +117,24 @@ fn collapsed_sections_are_a_stop_but_contribute_zero_row_stops() {
     let radar = load("loaded.json"); // STALE (15) and COLD (12) both non-empty, both collapsed by default
     let state = DashboardState::new(&radar);
 
-    let stale_headers = state.visible.iter().filter(|r| **r == DashRow::Header(StatusBucket::Stale)).count();
-    let cold_headers = state.visible.iter().filter(|r| **r == DashRow::Header(StatusBucket::Cold)).count();
-    assert_eq!(stale_headers, 1, "a non-empty collapsed section still gets exactly one header stop");
-    assert_eq!(cold_headers, 1, "a non-empty collapsed section still gets exactly one header stop");
+    let stale_headers = state
+        .visible
+        .iter()
+        .filter(|r| **r == DashRow::Header(StatusBucket::Stale))
+        .count();
+    let cold_headers = state
+        .visible
+        .iter()
+        .filter(|r| **r == DashRow::Header(StatusBucket::Cold))
+        .count();
+    assert_eq!(
+        stale_headers, 1,
+        "a non-empty collapsed section still gets exactly one header stop"
+    );
+    assert_eq!(
+        cold_headers, 1,
+        "a non-empty collapsed section still gets exactly one header stop"
+    );
 
     for row in &state.visible {
         if let DashRow::Project(idx) = row {
@@ -134,7 +152,11 @@ fn empty_section_contributes_no_stop_at_all_not_even_a_header() {
     let radar = load("hostile.json"); // all 7 projects are cold; active/in_flight/stale are empty and have no worktree relationships
     let state = DashboardState::new(&radar);
 
-    for bucket in [StatusBucket::Active, StatusBucket::InFlight, StatusBucket::Stale] {
+    for bucket in [
+        StatusBucket::Active,
+        StatusBucket::InFlight,
+        StatusBucket::Stale,
+    ] {
         assert!(
             !state.visible.contains(&DashRow::Header(bucket)),
             "an empty section (no projects, per hostile.json's all-cold shape) must not contribute a header stop for {bucket:?}"
@@ -161,13 +183,19 @@ fn toggling_a_header_reveals_or_hides_that_sections_rows() {
     state.selected = Some(stale_header_pos);
 
     state.toggle_selected(&radar);
-    assert!(!state.collapsed[section_index(StatusBucket::Stale)], "toggling STALE's header must expand it");
+    assert!(
+        !state.collapsed[section_index(StatusBucket::Stale)],
+        "toggling STALE's header must expand it"
+    );
     let stale_rows_after_expand = state
         .visible
         .iter()
         .filter(|r| matches!(r, DashRow::Project(idx) if radar.projects[*idx].status_bucket == StatusBucket::Stale))
         .count();
-    assert_eq!(stale_rows_after_expand, 15, "expanding STALE must reveal all 15 of its project rows");
+    assert_eq!(
+        stale_rows_after_expand, 15,
+        "expanding STALE must reveal all 15 of its project rows"
+    );
 
     // Toggle again: back to collapsed, zero rows.
     let stale_header_pos_2 = state
@@ -177,7 +205,10 @@ fn toggling_a_header_reveals_or_hides_that_sections_rows() {
         .expect("STALE header must still be a stop after expanding");
     state.selected = Some(stale_header_pos_2);
     state.toggle_selected(&radar);
-    assert!(state.collapsed[section_index(StatusBucket::Stale)], "toggling STALE's header again must re-collapse it");
+    assert!(
+        state.collapsed[section_index(StatusBucket::Stale)],
+        "toggling STALE's header again must re-collapse it"
+    );
 }
 
 #[test]
@@ -194,8 +225,13 @@ fn toggling_a_row_collapses_its_section_and_moves_selection_to_that_header() {
 
     state.toggle_selected(&radar);
 
-    assert!(state.collapsed[section_index(StatusBucket::Active)], "toggling a RUNNING row must collapse RUNNING");
-    let selected_row = state.visible.get(state.selected.expect("selection must not become None"));
+    assert!(
+        state.collapsed[section_index(StatusBucket::Active)],
+        "toggling a RUNNING row must collapse RUNNING"
+    );
+    let selected_row = state
+        .visible
+        .get(state.selected.expect("selection must not become None"));
     assert_eq!(
         selected_row.copied(),
         Some(DashRow::Header(StatusBucket::Active)),
@@ -243,7 +279,11 @@ fn running_membership_includes_active_bucket_projects_and_excludes_foreign() {
     let radar = radar_of(vec![foreign_active, plain_active, plain_cold]);
     let membership = DashboardState::running_membership(&radar);
 
-    assert_eq!(membership, vec![1], "only the non-foreign Active project (index 1) belongs in RUNNING");
+    assert_eq!(
+        membership,
+        vec![1],
+        "only the non-foreign Active project (index 1) belongs in RUNNING"
+    );
 }
 
 #[test]
@@ -260,9 +300,18 @@ fn running_membership_includes_a_non_active_parent_with_an_active_worktree_child
     let radar = radar_of(vec![parent, child, unrelated]);
     let membership = DashboardState::running_membership(&radar);
 
-    assert!(membership.contains(&0), "the cold parent must be pulled into RUNNING by its active worktree child");
-    assert!(membership.contains(&1), "the active worktree child is itself Active-bucket and belongs in RUNNING on its own merit");
-    assert!(!membership.contains(&2), "an unrelated cold project with no active worktree child stays out of RUNNING");
+    assert!(
+        membership.contains(&0),
+        "the cold parent must be pulled into RUNNING by its active worktree child"
+    );
+    assert!(
+        membership.contains(&1),
+        "the active worktree child is itself Active-bucket and belongs in RUNNING on its own merit"
+    );
+    assert!(
+        !membership.contains(&2),
+        "an unrelated cold project with no active worktree child stays out of RUNNING"
+    );
 }
 
 #[test]
@@ -275,11 +324,15 @@ fn running_membership_does_not_pull_in_a_parent_whose_worktree_child_is_not_acti
     let radar = radar_of(vec![parent, child]);
     let membership = DashboardState::running_membership(&radar);
 
-    assert!(membership.is_empty(), "a cold parent with only a cold (non-active) worktree child has no RUNNING membership at all");
+    assert!(
+        membership.is_empty(),
+        "a cold parent with only a cold (non-active) worktree child has no RUNNING membership at all"
+    );
 }
 
 #[test]
-fn running_membership_orders_quietest_first_within_the_attention_ceiling_then_the_forgotten_group() {
+fn running_membership_orders_quietest_first_within_the_attention_ceiling_then_the_forgotten_group()
+{
     // Superseded by real-world use (see `RUNNING_ATTENTION_CEILING_S`'s doc
     // comment in dashboard.rs): unbounded quietest-first let a project idle
     // for days permanently outrank one actively prompted minutes ago. Now
@@ -467,7 +520,9 @@ fn refresh_restores_the_cursor_to_the_same_header() {
     let radar = load("loaded.json");
     let mut state = DashboardState::new(&radar);
     state.move_selection(0); // sits on the first header
-    let anchor = state.selection_anchor(&radar).expect("a header is selected");
+    let anchor = state
+        .selection_anchor(&radar)
+        .expect("a header is selected");
     assert!(matches!(anchor, SelectionAnchor::Header(_)));
 
     state.refresh(&load("loaded.json"), Some(anchor.clone()));
@@ -579,5 +634,8 @@ fn refresh_on_an_empty_radar_clears_the_selection_without_panicking() {
     state.refresh(&radar_of(vec![]), anchor);
 
     assert!(state.visible.is_empty());
-    assert_eq!(state.selected, None, "the empty selection must be representable");
+    assert_eq!(
+        state.selected, None,
+        "the empty selection must be representable"
+    );
 }

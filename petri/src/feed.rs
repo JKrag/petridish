@@ -284,7 +284,10 @@ impl FeedState {
             // `Some` here exactly as it does for the agent arm above — a repo landing its
             // first-ever commit while petri is open is a commit, not silence.
             if let Some(new_commit) = p.git.last_commit_at
-                && prev_p.git.last_commit_at.is_none_or(|old_commit| new_commit > old_commit)
+                && prev_p
+                    .git
+                    .last_commit_at
+                    .is_none_or(|old_commit| new_commit > old_commit)
             {
                 let branch = p.git.branch.clone().unwrap_or("detached".to_string());
                 rows.push(FeedEvent {
@@ -427,7 +430,9 @@ pub fn feed_block_lines(
     // body_does`, which is the first test to check a width narrower than the label itself.
     lines.push(Line::from(Span::styled(
         " ACTIVITY".chars().take(width).collect::<String>(),
-        Style::default().fg(theme::COLD).add_modifier(Modifier::BOLD),
+        Style::default()
+            .fg(theme::COLD)
+            .add_modifier(Modifier::BOLD),
     )));
 
     // The body is the newest `rows - 1` events, newest first. An empty feed has nothing to
@@ -443,11 +448,7 @@ pub fn feed_block_lines(
     } else {
         // The deque already holds the newest at the front, so taking from the front yields
         // the newest `rows - 2` events in newest-first order.
-        let body: Vec<&FeedEvent> = feed
-            .events()
-            .iter()
-            .take(rows - 1)
-            .collect();
+        let body: Vec<&FeedEvent> = feed.events().iter().take(rows - 1).collect();
         for e in body {
             // Two spans, because the stamp and the body answer different questions and are
             // coloured on different axes (recency vs kind). The width budget is spent on the

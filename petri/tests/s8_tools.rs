@@ -212,11 +212,20 @@ fn stale_configured_program_falls_through_to_a_clean_single_winner() {
 
 #[test]
 fn two_real_candidates_and_no_stored_answer_is_ambiguous() {
-    let got = tools::resolve(&gitlog_fixture(), &PROJECT, None, &only(&["serie", "lazygit"]));
+    let got = tools::resolve(
+        &gitlog_fixture(),
+        &PROJECT,
+        None,
+        &only(&["serie", "lazygit"]),
+    );
     match got {
         Resolution::Ambiguous(list) => {
             let names: Vec<&str> = list.iter().map(|c| c.program.as_str()).collect();
-            assert_eq!(names, vec!["serie", "lazygit"], "registry order, installed only");
+            assert_eq!(
+                names,
+                vec!["serie", "lazygit"],
+                "registry order, installed only"
+            );
         }
         other => panic!("expected Ambiguous, got {other:?}"),
     }
@@ -245,7 +254,12 @@ fn a_lone_fallback_never_opens_the_picker() {
 fn one_real_candidate_plus_a_fallback_runs_the_real_one_without_asking() {
     // The common case on a machine with exactly one git TUI installed: one
     // real candidate, plus `git` which is always there. Not ambiguous.
-    let got = tools::resolve(&gitlog_fixture(), &PROJECT, None, &only(&["lazygit", "git"]));
+    let got = tools::resolve(
+        &gitlog_fixture(),
+        &PROJECT,
+        None,
+        &only(&["lazygit", "git"]),
+    );
     assert_eq!(
         got,
         Resolution::Ready(Launch {
@@ -358,7 +372,11 @@ fn registry_action_ids_are_unique() {
     ids.sort_unstable();
     let before = ids.len();
     ids.dedup();
-    assert_eq!(before, ids.len(), "duplicate action id in registry: {ids:?}");
+    assert_eq!(
+        before,
+        ids.len(),
+        "duplicate action id in registry: {ids:?}"
+    );
 }
 
 #[test]
@@ -368,7 +386,11 @@ fn registry_keys_are_unique() {
     keys.sort_unstable();
     let before = keys.len();
     keys.dedup();
-    assert_eq!(before, keys.len(), "two actions bound to the same key: {keys:?}");
+    assert_eq!(
+        before,
+        keys.len(),
+        "two actions bound to the same key: {keys:?}"
+    );
 }
 
 #[test]
@@ -388,7 +410,11 @@ fn registry_has_at_most_one_fallback_per_action() {
     // untested-ordering decision.
     for action in tools::registry() {
         let n = action.candidates.iter().filter(|c| c.fallback).count();
-        assert!(n <= 1, "action {:?} has {n} fallbacks, expected at most 1", action.id);
+        assert!(
+            n <= 1,
+            "action {:?} has {n} fallbacks, expected at most 1",
+            action.id
+        );
     }
 }
 
@@ -414,8 +440,16 @@ fn git_history_is_bound_and_always_resolvable_thanks_to_its_fallback() {
 #[test]
 fn browse_is_the_only_url_targeted_action() {
     for action in tools::registry() {
-        let expected = if action.id == "browse" { Target::Url } else { Target::Path };
-        assert_eq!(action.target, expected, "unexpected target on {:?}", action.id);
+        let expected = if action.id == "browse" {
+            Target::Url
+        } else {
+            Target::Path
+        };
+        assert_eq!(
+            action.target, expected,
+            "unexpected target on {:?}",
+            action.id
+        );
     }
 }
 
@@ -490,12 +524,9 @@ fn repick_returns_a_lone_fallback_when_no_git_tui_is_installed() {
     let got = tools::repick_candidates(&gitlog_fixture(), &PROJECT, &only(&["git"]));
     assert_eq!(
         got,
-        Some(vec![Candidate::new(
-            "git",
-            &["log", "--graph"],
-            ExecMode::Terminal,
-        )
-        .as_fallback()]),
+        Some(vec![
+            Candidate::new("git", &["log", "--graph"], ExecMode::Terminal,).as_fallback()
+        ]),
         "the lone fallback is a valid re-pick entry"
     );
 }

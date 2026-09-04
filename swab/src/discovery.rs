@@ -129,7 +129,9 @@ fn is_project(dir: &Path) -> bool {
     if dir.join(".git").exists() {
         return true;
     }
-    MANIFEST_FILENAMES.iter().any(|name| dir.join(name).is_file())
+    MANIFEST_FILENAMES
+        .iter()
+        .any(|name| dir.join(name).is_file())
 }
 
 /// Resolves `path` as far as the filesystem allows, mirroring Python's default
@@ -191,9 +193,8 @@ pub fn resolve_root(cwd: &Path, config: &Config) -> PathBuf {
         return cwd;
     }
 
-    let home = std::path::PathBuf::from(
-        std::env::var("HOME").unwrap_or_else(|_| "/home".to_string()),
-    );
+    let home =
+        std::path::PathBuf::from(std::env::var("HOME").unwrap_or_else(|_| "/home".to_string()));
 
     // Ceiling set: configured roots (canonicalised), home, filesystem root. A root is a
     // ceiling, NOT an answer — returned only if it itself holds `.git`.
@@ -314,7 +315,8 @@ mod tests {
 
     impl Tmp {
         fn new(suffix: &str) -> Self {
-            let path = std::env::temp_dir().join(format!("swab_discovery_{suffix}_{}", std::process::id()));
+            let path = std::env::temp_dir()
+                .join(format!("swab_discovery_{suffix}_{}", std::process::id()));
             let _ = fs::remove_dir_all(&path);
             fs::create_dir_all(&path).expect("mktemp");
             Self { path }
@@ -323,8 +325,7 @@ mod tests {
         /// Initialise a bare git repo with the default test author (no commits yet).
         fn git_init(&self) {
             assert!(
-                self.run_git_in(".", &["init", "."])
-                    .success(),
+                self.run_git_in(".", &["init", "."]).success(),
                 "git init failed in {}",
                 self.path.display()
             );
@@ -351,8 +352,17 @@ mod tests {
                 "git add failed"
             );
             assert!(
-                self.run_git_in(".", &["commit", "--no-gpg-sign", "-m", "test commit", "--allow-empty"])
-                    .success(),
+                self.run_git_in(
+                    ".",
+                    &[
+                        "commit",
+                        "--no-gpg-sign",
+                        "-m",
+                        "test commit",
+                        "--allow-empty"
+                    ]
+                )
+                .success(),
                 "git commit failed"
             );
         }
@@ -370,18 +380,28 @@ mod tests {
             fs::create_dir_all(&tmp_dir).expect("mktemp env");
 
             // Commit with pinned author dates + custom author.
-            assert!(Command::new("git")
-                .args([
-                    "-C", self.path.join(filename).parent().unwrap().to_str().unwrap(),
-                    "commit", "--no-gpg-sign", "-m", "test commit", "--allow-empty",
-                ])
-                .envs(author_env.iter().map(|(k, v)| (*k, *v)))
-                .envs(TEST_AUTHOR.iter().map(|(k, v)| (format!("GIT_EXTRA_{k}"), *v)))
-                .spawn()
-                .expect("git spawn")
-                .wait()
-                .expect("git commit wait")
-                .success(),
+            assert!(
+                Command::new("git")
+                    .args([
+                        "-C",
+                        self.path.join(filename).parent().unwrap().to_str().unwrap(),
+                        "commit",
+                        "--no-gpg-sign",
+                        "-m",
+                        "test commit",
+                        "--allow-empty",
+                    ])
+                    .envs(author_env.iter().map(|(k, v)| (*k, *v)))
+                    .envs(
+                        TEST_AUTHOR
+                            .iter()
+                            .map(|(k, v)| (format!("GIT_EXTRA_{k}"), *v))
+                    )
+                    .spawn()
+                    .expect("git spawn")
+                    .wait()
+                    .expect("git commit wait")
+                    .success(),
                 "git commit failed in {}",
                 self.path.display()
             );
@@ -442,7 +462,9 @@ mod tests {
 
         let results = discover(&test_config(vec![tmp.path.clone()], vec![]));
         assert!(
-            !results.iter().any(|p| p.components().any(|c| c.as_os_str() == "node_modules")),
+            !results
+                .iter()
+                .any(|p| p.components().any(|c| c.as_os_str() == "node_modules")),
             "node_modules (or anything inside it) must not appear in results: {:?}",
             results
         );
@@ -460,10 +482,20 @@ mod tests {
         fs::create_dir_all(sub.join(".git")).expect("sub mkdir");
 
         let results = discover(&test_config(vec![tmp.path.clone()], vec![]));
-        assert_eq!(results.len(), 1, "expected only the top-level repo, got {:?}", results);
-        assert_eq!(results[0].canonicalize().unwrap(), tmp.path.canonicalize().unwrap());
+        assert_eq!(
+            results.len(),
+            1,
+            "expected only the top-level repo, got {:?}",
+            results
+        );
+        assert_eq!(
+            results[0].canonicalize().unwrap(),
+            tmp.path.canonicalize().unwrap()
+        );
         assert!(
-            !results.iter().any(|p| p.components().any(|c| c.as_os_str() == "sub")),
+            !results
+                .iter()
+                .any(|p| p.components().any(|c| c.as_os_str() == "sub")),
             "sub (nested .git below the top-level repo) must not appear"
         );
     }
@@ -490,7 +522,11 @@ mod tests {
             vec![PathBuf::from("/tmp/does_not_exist_swab_test_xyzzy99_99")],
             vec![],
         ));
-        assert!(results.is_empty(), "missing root must not crash, got {:?}", results);
+        assert!(
+            results.is_empty(),
+            "missing root must not crash, got {:?}",
+            results
+        );
     }
 
     // 6. discover dedupes two roots that resolve to the same real path.
@@ -512,17 +548,18 @@ mod tests {
         #[cfg(not(unix))]
         fs::create_dir_all(&link).expect("symlink dir fallback");
 
-        let results = discover(&test_config(
-            vec![link.clone(), target.clone()],
-            vec![],
-        ));
+        let results = discover(&test_config(vec![link.clone(), target.clone()], vec![]));
         // The canonical form of the (symlink target) dir should appear at most once.
         let canonical_target = target.canonicalize().unwrap();
         let count = results
             .iter()
             .filter(|p| p.canonicalize().unwrap_or_else(|_| p.to_path_buf()) == canonical_target)
             .count();
-        assert_eq!(count, 1, "expected the canonical target exactly once, got {count}: {:?}", results);
+        assert_eq!(
+            count, 1,
+            "expected the canonical target exactly once, got {count}: {:?}",
+            results
+        );
     }
 
     // ═══ resolve_root tests ═════════════════════════════════════════════════════════
@@ -608,7 +645,10 @@ mod tests {
 
         assert_ne!(
             result.canonicalize().unwrap(),
-            std::env::home_dir().unwrap_or_default().canonicalize().unwrap_or_default(),
+            std::env::home_dir()
+                .unwrap_or_default()
+                .canonicalize()
+                .unwrap_or_default(),
             "must never return home just for being a ceiling"
         );
         assert_ne!(
@@ -674,17 +714,23 @@ mod tests {
             ("GIT_COMMITTER_NAME", author_name),
             ("GIT_COMMITTER_EMAIL", "committer@example.com"),
         ];
-        assert!(Command::new("git")
-            .args([
-                "-C", repo.to_str().unwrap(),
-                "commit", "--no-gpg-sign", "-m", "test commit", "--allow-empty",
-            ])
-            .envs(env.iter().map(|(k, v)| (*k, *v)))
-            .spawn()
-            .expect("git spawn")
-            .wait()
-            .expect("git wait")
-            .success(),
+        assert!(
+            Command::new("git")
+                .args([
+                    "-C",
+                    repo.to_str().unwrap(),
+                    "commit",
+                    "--no-gpg-sign",
+                    "-m",
+                    "test commit",
+                    "--allow-empty",
+                ])
+                .envs(env.iter().map(|(k, v)| (*k, *v)))
+                .spawn()
+                .expect("git spawn")
+                .wait()
+                .expect("git wait")
+                .success(),
             "git commit failed in {}",
             repo.display()
         );
@@ -699,7 +745,10 @@ mod tests {
 
         let config = test_config(vec![], vec![]);
         // Default `test_config` already has `Jan.*Krag` in author_patterns — assert with that.
-        assert!(!is_foreign(&tmp.path, &config), "matching author must not be foreign");
+        assert!(
+            !is_foreign(&tmp.path, &config),
+            "matching author must not be foreign"
+        );
     }
 
     // 12. is_foreign on a repo whose last commit's author does NOT match -> true.
@@ -749,7 +798,10 @@ mod tests {
         fs::create_dir_all(&path).expect("mkdir");
 
         let config = test_config(vec![], vec![]);
-        assert!(!is_foreign(&path, &config), "non-repo path must not be foreign");
+        assert!(
+            !is_foreign(&path, &config),
+            "non-repo path must not be foreign"
+        );
     }
 
     // 15. is_foreign with empty `author_patterns` -> true (foreign) for a real repo.

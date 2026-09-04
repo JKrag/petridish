@@ -56,8 +56,11 @@ fn state_file_pointing_at(dir: &std::path::Path) -> std::path::PathBuf {
     radar["projects"] = serde_json::json!([project]);
 
     let path = dir.join("radar.json");
-    std::fs::write(&path, serde_json::to_string_pretty(&radar).expect("serialize"))
-        .expect("state file must be writable");
+    std::fs::write(
+        &path,
+        serde_json::to_string_pretty(&radar).expect("serialize"),
+    )
+    .expect("state file must be writable");
     path
 }
 
@@ -82,7 +85,13 @@ fn suspending_for_a_child_process_and_coming_back_leaves_a_usable_screen() {
     // `true` is resolvable inside the child without any extra plumbing.
     let mut session = Session::spawn_with_home(&state_path, 90, 40, &home);
 
-    let before = session.screen_retry(90, 40, Duration::from_secs(5), Duration::from_millis(300), 5);
+    let before = session.screen_retry(
+        90,
+        40,
+        Duration::from_secs(5),
+        Duration::from_millis(300),
+        5,
+    );
     let before_body = before.join("\n");
     assert!(
         before_body.contains("browser"),
@@ -97,7 +106,13 @@ fn suspending_for_a_child_process_and_coming_back_leaves_a_usable_screen() {
     session.writer.write_all(b"g").expect("write g");
     session.writer.flush().expect("flush");
 
-    let after = session.screen_retry(90, 40, Duration::from_secs(10), Duration::from_millis(400), 6);
+    let after = session.screen_retry(
+        90,
+        40,
+        Duration::from_secs(10),
+        Duration::from_millis(400),
+        6,
+    );
     let after_body = after.join("\n");
     assert!(
         after_body.contains("browser"),

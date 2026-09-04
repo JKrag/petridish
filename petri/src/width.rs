@@ -91,7 +91,11 @@ mod tests {
     fn width_counts_columns_not_characters() {
         assert_eq!(width("abc"), 3);
         assert_eq!(width("日本語"), 6);
-        assert_eq!("日本語".chars().count(), 3, "the char count disagrees, by design");
+        assert_eq!(
+            "日本語".chars().count(),
+            3,
+            "the char count disagrees, by design"
+        );
     }
 
     #[test]

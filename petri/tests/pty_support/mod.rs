@@ -121,19 +121,37 @@ impl Session {
     /// (and therefore its own env), so this is safe under `--test-threads=1`
     /// without the shared-`HOME`-mutation hazard CLAUDE.md documents for
     /// same-process fixture tests.
-    pub fn spawn_with_home(state_path: &std::path::Path, cols: u16, rows: u16, home: &std::path::Path) -> Self {
+    pub fn spawn_with_home(
+        state_path: &std::path::Path,
+        cols: u16,
+        rows: u16,
+        home: &std::path::Path,
+    ) -> Self {
         Self::spawn_inner(state_path, cols, rows, Some(home))
     }
 
-    fn spawn_inner(state_path: &std::path::Path, cols: u16, rows: u16, home: Option<&std::path::Path>) -> Self {
+    fn spawn_inner(
+        state_path: &std::path::Path,
+        cols: u16,
+        rows: u16,
+        home: Option<&std::path::Path>,
+    ) -> Self {
         let pty_system = native_pty_system();
         let pair = pty_system
-            .openpty(PtySize { rows, cols, pixel_width: 0, pixel_height: 0 })
+            .openpty(PtySize {
+                rows,
+                cols,
+                pixel_width: 0,
+                pixel_height: 0,
+            })
             .expect("openpty must succeed");
 
         // Reader + drain thread set up BEFORE spawning the child — see this
         // module's doc comment, bug 2.
-        let mut reader = pair.master.try_clone_reader().expect("clone reader must succeed");
+        let mut reader = pair
+            .master
+            .try_clone_reader()
+            .expect("clone reader must succeed");
         let writer = pair.master.take_writer().expect("take writer must succeed");
 
         let (tx, rx) = mpsc::channel::<Vec<u8>>();
@@ -160,13 +178,22 @@ impl Session {
             cmd.env("HOME", home);
         }
 
-        let child = pair.slave.spawn_command(cmd).expect("spawn petri must succeed");
+        let child = pair
+            .slave
+            .spawn_command(cmd)
+            .expect("spawn petri must succeed");
         // Drop the slave end in this process once spawned — otherwise our own
         // held fd keeps the pty "open" from the reader's perspective and EOF
         // (Ok(0)) never arrives after the child actually exits.
         drop(pair.slave);
 
-        Session { _master: pair.master, writer, child, chunks: rx, accumulated: Vec::new() }
+        Session {
+            _master: pair.master,
+            writer,
+            child,
+            chunks: rx,
+            accumulated: Vec::new(),
+        }
     }
 
     /// Pull everything the drain thread has produced so far into `accumulated`,
@@ -215,7 +242,13 @@ impl Session {
     /// handling); acceptable because no PTY test asserts against a fixture
     /// with CJK/emoji names (`hostile.json`'s exist only for JSON-parsing
     /// coverage in other layers).
-    pub fn screen(&mut self, cols: u16, rows: u16, timeout: Duration, quiet_for: Duration) -> Vec<String> {
+    pub fn screen(
+        &mut self,
+        cols: u16,
+        rows: u16,
+        timeout: Duration,
+        quiet_for: Duration,
+    ) -> Vec<String> {
         let raw = self.settle(timeout, quiet_for);
         let (cols, rows) = (cols as usize, rows as usize);
         let mut grid: Vec<Vec<char>> = vec![vec![' '; cols]; rows];
@@ -238,7 +271,10 @@ impl Session {
                 let raw_params: String = chars[start_params..j].iter().collect();
                 let is_private = raw_params.starts_with('?');
                 let params_str = raw_params.trim_start_matches('?');
-                let params: Vec<i64> = params_str.split(';').filter_map(|s| s.parse::<i64>().ok()).collect();
+                let params: Vec<i64> = params_str
+                    .split(';')
+                    .filter_map(|s| s.parse::<i64>().ok())
+                    .collect();
 
                 match final_byte {
                     'H' | 'f' => {
@@ -258,7 +294,8 @@ impl Session {
                     'K' if row < rows => {
                         let mode = params.first().copied().unwrap_or(0);
                         match mode {
-                            1 => (0..=col.min(cols.saturating_sub(1))).for_each(|cc| grid[row][cc] = ' '),
+                            1 => (0..=col.min(cols.saturating_sub(1)))
+                                .for_each(|cc| grid[row][cc] = ' '),
                             2 => (0..cols).for_each(|cc| grid[row][cc] = ' '),
                             _ => (col..cols).for_each(|cc| grid[row][cc] = ' '),
                         }
@@ -287,7 +324,9 @@ impl Session {
             i += 1;
         }
 
-        grid.into_iter().map(|line| line.into_iter().collect()).collect()
+        grid.into_iter()
+            .map(|line| line.into_iter().collect())
+            .collect()
     }
 
     /// Like `screen`, but retries the settle+parse step (NOT a respawn — the
@@ -303,12 +342,21 @@ impl Session {
     /// window per call narrows the race window further. Returns the LAST
     /// (possibly still blank) grid if every attempt comes back blank, so a
     /// genuine regression still fails loudly.
-    pub fn screen_retry(&mut self, cols: u16, rows: u16, timeout: Duration, quiet_for: Duration, attempts: u32) -> Vec<String> {
+    pub fn screen_retry(
+        &mut self,
+        cols: u16,
+        rows: u16,
+        timeout: Duration,
+        quiet_for: Duration,
+        attempts: u32,
+    ) -> Vec<String> {
         let mut grid = self.screen(cols, rows, timeout, quiet_for);
         let mut attempt = 1;
         while grid.iter().all(|line| line.trim().is_empty()) && attempt < attempts {
             attempt += 1;
-            eprintln!("screen_retry attempt {attempt}/{attempts}: blank grid (suspected PTY race), retrying");
+            eprintln!(
+                "screen_retry attempt {attempt}/{attempts}: blank grid (suspected PTY race), retrying"
+            );
             grid = self.screen(cols, rows, timeout, quiet_for);
         }
         grid

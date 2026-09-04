@@ -37,13 +37,18 @@ fn fixture_path(name: &str) -> PathBuf {
 fn load(name: &str) -> Radar {
     let text = std::fs::read_to_string(fixture_path(name))
         .unwrap_or_else(|e| panic!("failed to read fixture {name}: {e}"));
-    serde_json::from_str(&text).unwrap_or_else(|e| panic!("fixture {name} failed to deserialize into Radar: {e}"))
+    serde_json::from_str(&text)
+        .unwrap_or_else(|e| panic!("fixture {name} failed to deserialize into Radar: {e}"))
 }
 
 #[test]
 fn minimal_has_exactly_one_project() {
     let radar = load("minimal.json");
-    assert_eq!(radar.projects.len(), 1, "minimal.json must contain exactly one project");
+    assert_eq!(
+        radar.projects.len(),
+        1,
+        "minimal.json must contain exactly one project"
+    );
 }
 
 #[test]
@@ -117,16 +122,25 @@ fn hostile_updated_at_is_stale() {
 #[test]
 fn hostile_quota_is_absent() {
     let radar = load("hostile.json");
-    assert!(radar.quota.is_none(), "hostile.json must have absent quota (quota: null)");
+    assert!(
+        radar.quota.is_none(),
+        "hostile.json must have absent quota (quota: null)"
+    );
 }
 
 #[test]
 fn hostile_all_projects_are_cold() {
     // See the module doc comment above for why this, not a literal empty `projects: []`.
     let radar = load("hostile.json");
-    assert!(!radar.projects.is_empty(), "hostile.json must contain projects to exercise per-project traits");
     assert!(
-        radar.projects.iter().all(|p| p.status_bucket == StatusBucket::Cold),
+        !radar.projects.is_empty(),
+        "hostile.json must contain projects to exercise per-project traits"
+    );
+    assert!(
+        radar
+            .projects
+            .iter()
+            .all(|p| p.status_bucket == StatusBucket::Cold),
         "hostile.json must be all-cold — every project's status_bucket must be Cold"
     );
 }
@@ -162,7 +176,10 @@ fn hostile_has_a_two_hundred_char_name() {
 fn hostile_has_a_cjk_or_emoji_name() {
     let radar = load("hostile.json");
     assert!(
-        radar.projects.iter().any(|p| p.name.chars().any(|c| c as u32 > 0x2E80)),
+        radar
+            .projects
+            .iter()
+            .any(|p| p.name.chars().any(|c| c as u32 > 0x2E80)),
         "hostile.json must contain a project with a CJK or emoji name (a codepoint above U+2E80)"
     );
 }
@@ -173,10 +190,10 @@ fn hostile_has_a_worktree_with_an_absent_parent() {
     let all_paths: std::collections::HashSet<&str> =
         radar.projects.iter().map(|p| p.path.as_str()).collect();
     assert!(
-        radar
-            .projects
-            .iter()
-            .any(|p| p.parent_path.as_deref().is_some_and(|pp| !all_paths.contains(pp))),
+        radar.projects.iter().any(|p| p
+            .parent_path
+            .as_deref()
+            .is_some_and(|pp| !all_paths.contains(pp))),
         "hostile.json must contain a worktree project whose parent_path does not match any project's own path"
     );
 }

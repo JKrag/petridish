@@ -30,7 +30,8 @@ fn missing_state_file_exits_one_with_message() {
     // context, so rather than accept a nonzero flake rate, retry the whole
     // spawn+settle cycle up to 3 times and only fail if it's consistently
     // empty — which would mean a real regression, not this race.
-    let missing = std::env::temp_dir().join(format!("petri_s4_pty_missing_{}.json", std::process::id()));
+    let missing =
+        std::env::temp_dir().join(format!("petri_s4_pty_missing_{}.json", std::process::id()));
     let _ = std::fs::remove_file(&missing);
 
     let mut output = String::new();
@@ -66,7 +67,10 @@ fn q_quits_cleanly_and_restores_the_terminal() {
         "first frame must render before we send any keystroke, got: {first_frame:?}"
     );
 
-    session.writer.write_all(b"q").expect("write 'q' must succeed");
+    session
+        .writer
+        .write_all(b"q")
+        .expect("write 'q' must succeed");
     let status = session.wait_with_timeout(Duration::from_secs(5));
 
     assert_eq!(status.exit_code(), 0, "'q' must exit 0");

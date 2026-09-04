@@ -34,7 +34,8 @@ fn fixture_path(name: &str) -> PathBuf {
 fn load(name: &str) -> Radar {
     let text = std::fs::read_to_string(fixture_path(name))
         .unwrap_or_else(|e| panic!("failed to read fixture {name}: {e}"));
-    serde_json::from_str(&text).unwrap_or_else(|e| panic!("fixture {name} failed to deserialize into Radar: {e}"))
+    serde_json::from_str(&text)
+        .unwrap_or_else(|e| panic!("fixture {name} failed to deserialize into Radar: {e}"))
 }
 
 fn project(id: &str, name: &str, bucket: StatusBucket) -> Project {
@@ -90,7 +91,11 @@ fn header_identifies_the_dashboard_screen_at_80x24() {
     let radar = load("loaded.json");
     let state = DashboardState::new(&radar);
     let lines = rendered_lines(&radar, &state, 80, 24);
-    assert!(lines[0].contains("petri"), "row 0 must contain \"petri\", got: {:?}", lines[0]);
+    assert!(
+        lines[0].contains("petri"),
+        "row 0 must contain \"petri\", got: {:?}",
+        lines[0]
+    );
     assert!(
         lines[0].to_lowercase().contains("dashboard"),
         "row 0 must identify this as the Dashboard screen (distinct from the Browser's \"petri · browser\"), got: {:?}",
@@ -104,7 +109,10 @@ fn running_label_rendered_for_loaded_json_which_has_agents_present() {
     let state = DashboardState::new(&radar);
     let lines = rendered_lines(&radar, &state, 80, 40);
     let whole = lines.join("\n");
-    assert!(whole.contains("RUNNING"), "loaded.json's RUNNING section has agents present, so it must not degrade to RECENT, got:\n{whole}");
+    assert!(
+        whole.contains("RUNNING"),
+        "loaded.json's RUNNING section has agents present, so it must not degrade to RECENT, got:\n{whole}"
+    );
 }
 
 #[test]
@@ -122,8 +130,14 @@ fn running_label_degrades_to_recent_when_no_project_has_an_active_agent() {
     let state = DashboardState::new(&radar);
     let lines = rendered_lines(&radar, &state, 80, 24);
     let whole = lines.join("\n");
-    assert!(whole.contains("RECENT"), "no project has an active_agent, so the label must degrade to RECENT, got:\n{whole}");
-    assert!(!whole.contains("RUNNING"), "must not show RUNNING when every project in the section is agent-less, got:\n{whole}");
+    assert!(
+        whole.contains("RECENT"),
+        "no project has an active_agent, so the label must degrade to RECENT, got:\n{whole}"
+    );
+    assert!(
+        !whole.contains("RUNNING"),
+        "must not show RUNNING when every project in the section is agent-less, got:\n{whole}"
+    );
 }
 
 #[test]
@@ -140,13 +154,25 @@ fn collapsed_sections_show_their_header_but_hide_their_project_names() {
     let lines = rendered_lines(&radar, &state, 200, 160);
     let whole = lines.join("\n");
 
-    assert!(whole.contains("STALE"), "STALE's header must render even while collapsed, got:\n{whole}");
-    assert!(whole.contains("COLD"), "COLD's header must render even while collapsed, got:\n{whole}");
+    assert!(
+        whole.contains("STALE"),
+        "STALE's header must render even while collapsed, got:\n{whole}"
+    );
+    assert!(
+        whole.contains("COLD"),
+        "COLD's header must render even while collapsed, got:\n{whole}"
+    );
     for name in ["charlie-01", "charlie-02"] {
-        assert!(!whole.contains(name), "STALE is collapsed by default — {name:?} must not be visible, got:\n{whole}");
+        assert!(
+            !whole.contains(name),
+            "STALE is collapsed by default — {name:?} must not be visible, got:\n{whole}"
+        );
     }
     for name in ["delta-01", "delta-02"] {
-        assert!(!whole.contains(name), "COLD is collapsed by default — {name:?} must not be visible, got:\n{whole}");
+        assert!(
+            !whole.contains(name),
+            "COLD is collapsed by default — {name:?} must not be visible, got:\n{whole}"
+        );
     }
 }
 
@@ -208,7 +234,9 @@ fn roomy_running_card_renders_a_sparkline_from_agent_activity() {
         "the sparkline's zero/pad-level bar (U+2581) must render, got:\n{whole}"
     );
     assert!(
-        whole.chars().any(|c| ('\u{2582}'..='\u{2588}').contains(&c)),
+        whole
+            .chars()
+            .any(|c| ('\u{2582}'..='\u{2588}').contains(&c)),
         "at least one non-zero-level bar must render for the nonzero samples, got:\n{whole}"
     );
 }
@@ -226,7 +254,9 @@ fn compact_running_row_does_not_render_a_sparkline() {
     let lines = rendered_lines(&radar, &state, 100, 12);
     let whole = lines.join("\n");
     assert!(
-        !whole.chars().any(|c| ('\u{2581}'..='\u{2588}').contains(&c)),
+        !whole
+            .chars()
+            .any(|c| ('\u{2581}'..='\u{2588}').contains(&c)),
         "the compact tier must not render any sparkline glyph, got:\n{whole}"
     );
 }
@@ -265,7 +295,9 @@ fn roomy_running_card_renders_a_git_zone_row_with_its_own_sparkline() {
         "the git zone row must show its own label and branch, got:\n{git_row:?}"
     );
     assert!(
-        git_row.chars().any(|c| ('\u{2582}'..='\u{2588}').contains(&c)),
+        git_row
+            .chars()
+            .any(|c| ('\u{2582}'..='\u{2588}').contains(&c)),
         "the git zone row must contain at least one non-zero-level git sparkline bar, got:\n{git_row:?}"
     );
     assert!(
@@ -322,7 +354,10 @@ fn compact_row_for_a_waiting_project_shows_the_marker_and_the_words() {
         whole.contains("waiting on you"),
         "the compact row must carry the full phrase, not an elided one, got:\n{whole}"
     );
-    assert!(whole.contains('▲'), "compact rows carry the marker too, got:\n{whole}");
+    assert!(
+        whole.contains('▲'),
+        "compact rows carry the marker too, got:\n{whole}"
+    );
 }
 
 #[test]

@@ -19,7 +19,8 @@ use std::path::PathBuf;
 /// A fresh scratch path under the OS tmpdir, unique per test (via the test's
 /// own name plus a random suffix) so parallel test runs never collide.
 fn scratch_path(name: &str) -> PathBuf {
-    let dir = std::env::temp_dir().join(format!("petri_s7_prefs_test_{name}_{}", std::process::id()));
+    let dir =
+        std::env::temp_dir().join(format!("petri_s7_prefs_test_{name}_{}", std::process::id()));
     std::fs::create_dir_all(&dir).expect("scratch dir must be creatable");
     dir.join("petri.toml")
 }
@@ -27,7 +28,10 @@ fn scratch_path(name: &str) -> PathBuf {
 #[test]
 fn missing_file_returns_defaults() {
     let path = scratch_path("missing_file_returns_defaults");
-    assert!(!path.exists(), "test precondition: scratch path must not exist yet");
+    assert!(
+        !path.exists(),
+        "test precondition: scratch path must not exist yet"
+    );
     let prefs = prefs::load(&path);
     assert_eq!(prefs, Prefs::default());
     assert_eq!(prefs.last_screen, LastScreen::Dashboard);
@@ -71,10 +75,14 @@ fn roundtrip_save_then_load_preserves_non_default_values() {
 
 #[test]
 fn save_creates_missing_parent_directory() {
-    let dir = std::env::temp_dir().join(format!("petri_s7_prefs_test_nested_{}", std::process::id()));
+    let dir =
+        std::env::temp_dir().join(format!("petri_s7_prefs_test_nested_{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
     let path = dir.join("nested").join("deeper").join("petri.toml");
-    assert!(!dir.exists(), "test precondition: parent dir tree must not exist yet");
+    assert!(
+        !dir.exists(),
+        "test precondition: parent dir tree must not exist yet"
+    );
 
     prefs::save(&path, &Prefs::default()).expect("save must create missing parent dirs");
     assert!(path.exists(), "target file must exist after save");
@@ -90,16 +98,33 @@ fn save_leaves_no_tmp_file_behind() {
         .filter_map(|e| e.ok())
         .filter(|e| e.file_name().to_string_lossy().contains(".tmp"))
         .collect();
-    assert!(leftover_tmp.is_empty(), "no .tmp file should remain after a successful save, found: {leftover_tmp:?}");
+    assert!(
+        leftover_tmp.is_empty(),
+        "no .tmp file should remain after a successful save, found: {leftover_tmp:?}"
+    );
 }
 
 #[test]
 fn save_overwrite_second_call_replaces_the_first() {
     let path = scratch_path("save_overwrite_second_call_replaces_the_first");
-    prefs::save(&path, &Prefs { last_screen: LastScreen::Dashboard, collapsed: [false, false, true, true], tools: std::collections::BTreeMap::new() })
-        .expect("first save must succeed");
-    prefs::save(&path, &Prefs { last_screen: LastScreen::Browser, collapsed: [true, false, true, false], tools: std::collections::BTreeMap::new() })
-        .expect("second save must succeed");
+    prefs::save(
+        &path,
+        &Prefs {
+            last_screen: LastScreen::Dashboard,
+            collapsed: [false, false, true, true],
+            tools: std::collections::BTreeMap::new(),
+        },
+    )
+    .expect("first save must succeed");
+    prefs::save(
+        &path,
+        &Prefs {
+            last_screen: LastScreen::Browser,
+            collapsed: [true, false, true, false],
+            tools: std::collections::BTreeMap::new(),
+        },
+    )
+    .expect("second save must succeed");
     let read_back = prefs::load(&path);
     assert_eq!(read_back.last_screen, LastScreen::Browser);
     assert_eq!(read_back.collapsed, [true, false, true, false]);
@@ -111,7 +136,10 @@ fn default_prefs_path_is_under_petridish_home_dir() {
     // directory, different filename.
     let path = prefs::default_prefs_path();
     assert!(path.ends_with("petri.toml"), "got: {path:?}");
-    assert!(path.to_string_lossy().contains(".petridish"), "got: {path:?}");
+    assert!(
+        path.to_string_lossy().contains(".petridish"),
+        "got: {path:?}"
+    );
 }
 
 /// Not a real gate assertion, just documents the type contract other tests
@@ -121,6 +149,10 @@ fn default_prefs_path_is_under_petridish_home_dir() {
 #[test]
 fn collapsed_state_type_matches_dashboard_state() {
     let c: CollapsedState = [true, false, true, false];
-    let p = Prefs { last_screen: LastScreen::Dashboard, collapsed: c, tools: std::collections::BTreeMap::new() };
+    let p = Prefs {
+        last_screen: LastScreen::Dashboard,
+        collapsed: c,
+        tools: std::collections::BTreeMap::new(),
+    };
     assert_eq!(p.collapsed, c);
 }

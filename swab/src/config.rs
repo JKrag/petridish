@@ -88,7 +88,9 @@ pub fn for_home(home: &std::path::Path) -> PathBuf {
 
 /// Default location: `~/.petridish/config.toml`, reading `$HOME` from the environment.
 pub fn default_path() -> PathBuf {
-    for_home(&PathBuf::from(std::env::var("HOME").expect("HOME must be set")))
+    for_home(&PathBuf::from(
+        std::env::var("HOME").expect("HOME must be set"),
+    ))
 }
 
 /// A single-string value from a TOML table entry — `None` when the key is missing or
@@ -125,7 +127,12 @@ fn as_path_list(table: &toml::value::Table, key: &str) -> Option<Vec<PathBuf>> {
         return Some(Vec::new());
     }
     let home = std::env::var("HOME").unwrap_or_default();
-    Some(items.iter().map(|s| PathBuf::from(expand_path(s, &home))).collect())
+    Some(
+        items
+            .iter()
+            .map(|s| PathBuf::from(expand_path(s, &home)))
+            .collect(),
+    )
 }
 
 /// A `{string: number}` table (`bucket_thresholds`), coerced per-key against `defaults`
@@ -176,10 +183,7 @@ fn as_float_table(
 ///
 /// Found via a gap audit: an earlier version bailed the whole table to `None` on the
 /// first non-string value.
-fn as_str_table(
-    table: &toml::value::Table,
-    key: &str,
-) -> Option<HashMap<String, String>> {
+fn as_str_table(table: &toml::value::Table, key: &str) -> Option<HashMap<String, String>> {
     let tbl = table.get(key)?.as_table()?;
     let mut out = HashMap::with_capacity(tbl.len());
     for (k, v) in tbl {
@@ -275,7 +279,11 @@ pub fn load_config(path: &std::path::Path) -> Result<Config, ConfigError> {
     if let Some(items) = as_string_list(&table, "ignore_dirs") {
         cfg.ignore_dirs = items.into_iter().collect();
     }
-    if let Some(v) = as_float_table(&table, "bucket_thresholds", &Config::default().bucket_thresholds) {
+    if let Some(v) = as_float_table(
+        &table,
+        "bucket_thresholds",
+        &Config::default().bucket_thresholds,
+    ) {
         cfg.bucket_thresholds = v;
     }
     if let Some(v) = as_str_table(&table, "category_overrides") {
@@ -408,7 +416,8 @@ mod tests {
         for root in &cfg.roots {
             assert!(
                 !root.to_string_lossy().starts_with('~'),
-                "expected absolute path, got {:?}", root
+                "expected absolute path, got {:?}",
+                root
             );
         }
         // And order/contents match the input (after expansion).
@@ -493,10 +502,15 @@ stale = 1440.0
         assert_eq!(cfg.category_overrides.get("*.js").unwrap(), "javascript");
         assert_eq!(cfg.category_overrides.get("*.py").unwrap(), "python");
         assert_eq!(
-            cfg.category_overrides.get("*.bad"), None,
+            cfg.category_overrides.get("*.bad"),
+            None,
             "the non-string value's key must be dropped, not crash the whole table"
         );
-        assert_eq!(cfg.category_overrides.len(), 2, "the two good keys must survive");
+        assert_eq!(
+            cfg.category_overrides.len(),
+            2,
+            "the two good keys must survive"
+        );
     }
 
     /// Sanity check: env-var prefix on a path string is expanded too.
@@ -506,6 +520,9 @@ stale = 1440.0
         let cfg = load_config(&path).expect("env-expand must succeed");
         assert_eq!(cfg.roots.len(), 1);
         let s = cfg.roots[0].to_string_lossy();
-        assert!(!s.starts_with('$'), "env var should have been expanded: {s:?}");
+        assert!(
+            !s.starts_with('$'),
+            "env var should have been expanded: {s:?}"
+        );
     }
 }

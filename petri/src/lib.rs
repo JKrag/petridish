@@ -10,9 +10,9 @@ pub mod exec;
 pub mod feed;
 pub mod picker;
 pub mod prefs;
-pub mod width;
-pub mod tools;
 pub mod theme;
+pub mod tools;
+pub mod width;
 use crate::prefs::{LastScreen, Prefs};
 
 /// Row count for the Browser's `Shift`-style fast-jump keys (`J`/`K`). 10 is
@@ -26,7 +26,9 @@ const BROWSER_FAST_JUMP: i32 = 10;
 /// can override it without touching `HOME`).
 pub fn default_state_path() -> std::path::PathBuf {
     let home = std::env::var("HOME").expect("HOME must be set");
-    std::path::PathBuf::from(&home).join(".petridish").join("projects.json")
+    std::path::PathBuf::from(&home)
+        .join(".petridish")
+        .join("projects.json")
 }
 
 /// Read and deserialize the state file. The error message is promoted to
@@ -123,7 +125,6 @@ fn install_panic_hook() {
     }));
 }
 
-
 /// Which screen `poll_loop` is currently rendering. Dashboard is the default
 /// landing screen (petri/SPEC.md §3.2 frames it as the ambient monitor) — S6
 /// wires a one-way `Enter`-on-a-row transition to the Browser; `Tab` to
@@ -164,16 +165,17 @@ fn poll_loop(
     // way when the next field is added.
     let mut prefs = prefs;
     let (mut screen, mut browser_state) = match prefs.last_screen {
-        LastScreen::Dashboard => {
-            (Screen::Dashboard, None)
-        }
+        LastScreen::Dashboard => (Screen::Dashboard, None),
         LastScreen::Browser => {
             let bstate = last_good.as_ref().map(crate::browser::BrowserState::new);
             (Screen::Browser, bstate)
         }
     };
     let mut dashboard_state: Option<crate::dashboard::DashboardState> = match last_good.as_ref() {
-        Some(radar) => Some(crate::dashboard::DashboardState::with_collapsed(radar, prefs.collapsed)),
+        Some(radar) => Some(crate::dashboard::DashboardState::with_collapsed(
+            radar,
+            prefs.collapsed,
+        )),
         None => None,
     };
 
@@ -198,14 +200,24 @@ fn poll_loop(
     let mut picker_action: Option<crate::tools::Action> = None;
 
     // Initial draw — unconditional so we always paint something on startup.
-    render_current(terminal, &last_good, screen, &dashboard_state, &browser_state, &picker, &notice, &feed);
+    render_current(
+        terminal,
+        &last_good,
+        screen,
+        &dashboard_state,
+        &browser_state,
+        &picker,
+        &notice,
+        &feed,
+    );
 
     loop {
         // crossterm's `poll` returns true when *any* event is queued (Key,
         // Resize, Mouse, FocusGained/Lost). We handle `q` to break; everything
         // else (in particular Resize) is absorbed and the next draw tick will
         // pick up the new terminal size.
-        let event_ready = crossterm::event::poll(std::time::Duration::from_secs(1)).unwrap_or(false);
+        let event_ready =
+            crossterm::event::poll(std::time::Duration::from_secs(1)).unwrap_or(false);
         if event_ready {
             if let Ok(crossterm::event::Event::Key(key)) = crossterm::event::read() {
                 // Any keystroke dismisses a transient notice, so it can never
@@ -241,9 +253,7 @@ fn poll_loop(
                                     if let Err(e) =
                                         prefs::save(&prefs::default_prefs_path(), &prefs)
                                     {
-                                        eprintln!(
-                                            "petri: persisting the tool choice failed: {e}"
-                                        );
+                                        eprintln!("petri: persisting the tool choice failed: {e}");
                                     }
                                 }
                                 notice = run_action(
@@ -266,9 +276,7 @@ fn poll_loop(
                         // Build browser state lazily on the first Tab switch,
                         // only if we have a valid radar (State read failures
                         // happen on first run when no state file exists yet).
-                        let bstate = last_good
-                            .as_ref()
-                            .map(crate::browser::BrowserState::new);
+                        let bstate = last_good.as_ref().map(crate::browser::BrowserState::new);
                         screen = Screen::Browser;
                         browser_state = bstate;
                         prefs.last_screen = LastScreen::Browser;
@@ -282,20 +290,24 @@ fn poll_loop(
                         true
                     } else {
                         match key.code {
-                            crossterm::event::KeyCode::Up | crossterm::event::KeyCode::Char('k') => {
+                            crossterm::event::KeyCode::Up
+                            | crossterm::event::KeyCode::Char('k') => {
                                 if let Some(ref mut dstate) = dashboard_state {
                                     dstate.move_selection(-1);
                                 }
                                 true
                             }
-                            crossterm::event::KeyCode::Down | crossterm::event::KeyCode::Char('j') => {
+                            crossterm::event::KeyCode::Down
+                            | crossterm::event::KeyCode::Char('j') => {
                                 if let Some(ref mut dstate) = dashboard_state {
                                     dstate.move_selection(1);
                                 }
                                 true
                             }
                             crossterm::event::KeyCode::Char(' ') => {
-                                if let (Some(dstate), Some(radar)) = (&mut dashboard_state, &last_good) {
+                                if let (Some(dstate), Some(radar)) =
+                                    (&mut dashboard_state, &last_good)
+                                {
                                     dstate.toggle_selected(radar);
                                 }
                                 true
@@ -304,8 +316,13 @@ fn poll_loop(
                             // row, jump to the Browser with that project selected
                             // (petri/SPEC.md §5).
                             crossterm::event::KeyCode::Enter => {
-                                if let (Some(dstate), Some(radar)) = (&mut dashboard_state, &last_good) {
-                                    let current_row = dstate.selected.and_then(|i| dstate.visible.get(i)).copied();
+                                if let (Some(dstate), Some(radar)) =
+                                    (&mut dashboard_state, &last_good)
+                                {
+                                    let current_row = dstate
+                                        .selected
+                                        .and_then(|i| dstate.visible.get(i))
+                                        .copied();
                                     match current_row {
                                         Some(crate::dashboard::DashRow::Header(_)) => {
                                             dstate.toggle_selected(radar);
@@ -317,10 +334,15 @@ fn poll_loop(
                                             if let Err(e) =
                                                 prefs::save(&prefs::default_prefs_path(), &prefs)
                                             {
-                                                eprintln!("petri S7: persist Enter→Browser failed: {e}");
+                                                eprintln!(
+                                                    "petri S7: persist Enter→Browser failed: {e}"
+                                                );
                                             }
-                                            let mut bstate = crate::browser::BrowserState::new(radar);
-                                            if let Some(pos) = bstate.visible.iter().position(|&i| i == proj_idx) {
+                                            let mut bstate =
+                                                crate::browser::BrowserState::new(radar);
+                                            if let Some(pos) =
+                                                bstate.visible.iter().position(|&i| i == proj_idx)
+                                            {
                                                 bstate.selected = Some(pos);
                                             }
                                             browser_state = Some(bstate);
@@ -475,20 +497,24 @@ fn poll_loop(
                             .map(|d| d.collapsed)
                             .unwrap_or([false, false, true, true]);
                         if let Err(e) = prefs::save(&prefs::default_prefs_path(), &prefs) {
-                            eprintln!("petri S7: persist Tab switch (Browser→Dashboard) failed: {e}");
+                            eprintln!(
+                                "petri S7: persist Tab switch (Browser→Dashboard) failed: {e}"
+                            );
                         }
                         screen = Screen::Dashboard;
                         true
                     } else {
                         match key.code {
                             // Navigation in normal (non-filter) mode.
-                            crossterm::event::KeyCode::Up | crossterm::event::KeyCode::Char('k') => {
+                            crossterm::event::KeyCode::Up
+                            | crossterm::event::KeyCode::Char('k') => {
                                 if let Some(ref mut state) = browser_state {
                                     state.move_selection(-1);
                                 }
                                 true
                             }
-                            crossterm::event::KeyCode::Down | crossterm::event::KeyCode::Char('j') => {
+                            crossterm::event::KeyCode::Down
+                            | crossterm::event::KeyCode::Char('j') => {
                                 if let Some(ref mut state) = browser_state {
                                     state.move_selection(1);
                                 }
@@ -605,7 +631,16 @@ fn poll_loop(
                     }
                 };
                 if handled {
-                    render_current(terminal, &last_good, screen, &dashboard_state, &browser_state, &picker, &notice, &feed);
+                    render_current(
+                        terminal,
+                        &last_good,
+                        screen,
+                        &dashboard_state,
+                        &browser_state,
+                        &picker,
+                        &notice,
+                        &feed,
+                    );
                 }
             }
         }
@@ -644,9 +679,8 @@ fn poll_loop(
                     // (per spec §3.1 — `apply_filter` guarantees this). We take a
                     // snapshot of the filter query first so we don't hold two
                     // borrows on `browser_state` at once.
-                    let query_snapshot: Option<String> = browser_state
-                        .as_ref()
-                        .map(|s| s.filter_query.clone());
+                    let query_snapshot: Option<String> =
+                        browser_state.as_ref().map(|s| s.filter_query.clone());
                     if let (Some(radar), Some(q)) = (&last_good, query_snapshot) {
                         if let Some(ref mut state) = browser_state {
                             state.apply_filter(radar, &q);
@@ -668,12 +702,11 @@ fn poll_loop(
                         match dashboard_state {
                             Some(ref mut d) => d.refresh(radar, dash_anchor),
                             None => {
-                                dashboard_state = Some(
-                                    crate::dashboard::DashboardState::with_collapsed(
+                                dashboard_state =
+                                    Some(crate::dashboard::DashboardState::with_collapsed(
                                         radar,
                                         prefs.collapsed,
-                                    ),
-                                )
+                                    ))
                             }
                         }
                     }
@@ -687,7 +720,16 @@ fn poll_loop(
         // ticks we skip draw so the output stream goes still — this keeps PTY
         // harnesses happy and the user's terminal clean when petri is idle.
         if event_ready || mtime_changed {
-            render_current(terminal, &last_good, screen, &dashboard_state, &browser_state, &picker, &notice, &feed);
+            render_current(
+                terminal,
+                &last_good,
+                screen,
+                &dashboard_state,
+                &browser_state,
+                &picker,
+                &notice,
+                &feed,
+            );
         }
 
         last_mtime = new_mtime;
@@ -760,7 +802,6 @@ fn render_current(
         }
     }
 }
-
 
 /// The currently-selected project's path and remote URL, or `None` when
 /// nothing is selected (an empty filtered list is a representable state —
@@ -852,9 +893,7 @@ fn begin_action(
         // `ACT-9`'s per-project axis, phrased in terms of the project rather
         // than the tooling: this is the half the user can see on the row in
         // front of them.
-        crate::tools::Resolution::NoTarget => {
-            Some(format!("{} has no remote", project.name))
-        }
+        crate::tools::Resolution::NoTarget => Some(format!("{} has no remote", project.name)),
     }
 }
 

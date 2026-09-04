@@ -47,7 +47,11 @@ fn parse_at(s: &str) -> Option<DateTime<Utc>> {
     // forms: trailing `Z` (strip + synthesize UTC offset) or RFC3339 with explicit
     // fixed offset (e.g. `+00:00`). In both cases we end up with a fixed-offset
     // datetime at UTC.
-    let body = if s.ends_with('Z') { &s[..s.len() - 1] } else { s };
+    let body = if s.ends_with('Z') {
+        &s[..s.len() - 1]
+    } else {
+        s
+    };
     let with_offset = if body.contains('+') || body.ends_with("+00:00") {
         body.to_string()
     } else if body.contains('T') && !body.ends_with('+') {
@@ -92,11 +96,7 @@ fn build_json_line(event: &RawHookEvent, at: DateTime<Utc>) -> Option<Value> {
 /// concurrent appends from multiple `swab-hook-rs` processes safe without locking:
 /// `O_APPEND` ensures each write is atomic, and the single `write_all` makes sure the line
 /// isn't interleaved with a sibling's partial write.
-fn write_single_line(
-    path: &Path,
-    event: &RawHookEvent,
-    at: DateTime<Utc>,
-) -> std::io::Result<()> {
+fn write_single_line(path: &Path, event: &RawHookEvent, at: DateTime<Utc>) -> std::io::Result<()> {
     let Some(value) = build_json_line(event, at) else {
         // `cwd` empty — silently drop, no error. Mirrors hook.py's "no-op on missing cwd".
         return Ok(());
@@ -162,7 +162,11 @@ pub fn read_and_compact(
     path: &Path,
     config: &Config,
     max_bytes: u64,
-) -> (HashMap<String, AgentSignal>, HashMap<String, u32>, WaitingDeltas) {
+) -> (
+    HashMap<String, AgentSignal>,
+    HashMap<String, u32>,
+    WaitingDeltas,
+) {
     let content = match std::fs::read_to_string(path) {
         Ok(s) => s,
         Err(_) => return (HashMap::new(), HashMap::new(), HashMap::new()),
@@ -209,7 +213,10 @@ pub fn read_and_compact(
             _ => continue,
         };
 
-        let session_id = obj.get("session_id").and_then(|v| v.as_str()).map(String::from);
+        let session_id = obj
+            .get("session_id")
+            .and_then(|v| v.as_str())
+            .map(String::from);
         let event = obj.get("event").and_then(|v| v.as_str()).map(String::from);
         let at_str = match obj.get("at").and_then(|v| v.as_str()) {
             Some(s) => s.to_string(),
@@ -284,7 +291,8 @@ mod tests {
         use std::sync::atomic::{AtomicU64, Ordering};
         static CTR: AtomicU64 = AtomicU64::new(0);
         let id = CTR.fetch_add(1, Ordering::Relaxed);
-        let dir = std::env::temp_dir().join(format!("swab_test_events_{id}_{}", std::process::id()));
+        let dir =
+            std::env::temp_dir().join(format!("swab_test_events_{id}_{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap_or_else(|_| {
             // Another thread may have created it first; that's fine.
         });
@@ -370,7 +378,10 @@ mod tests {
             .filter(|l| !l.is_empty())
             .collect();
         assert_eq!(
-            non_empty_lines.len(), 2, "two calls -> two lines, got: {:?}", non_empty_lines
+            non_empty_lines.len(),
+            2,
+            "two calls -> two lines, got: {:?}",
+            non_empty_lines
         );
 
         for line in &non_empty_lines {
@@ -392,8 +403,16 @@ mod tests {
         let path = PathBuf::from("/tmp/does_not_exist_swab_test_xyzzy99_100/events.ndjson");
         let cfg = test_config(vec![]);
         let (signals, counts, _waiting) = read_and_compact(&path, &cfg, 5_000_000);
-        assert!(signals.is_empty(), "missing file -> empty map, got: {:?}", signals);
-        assert!(counts.is_empty(), "missing file -> empty counts, got: {:?}", counts);
+        assert!(
+            signals.is_empty(),
+            "missing file -> empty map, got: {:?}",
+            signals
+        );
+        assert!(
+            counts.is_empty(),
+            "missing file -> empty counts, got: {:?}",
+            counts
+        );
     }
 
     /// Test 4: read_and_compact skips a malformed line (invalid JSON) but keeps a valid
@@ -412,7 +431,10 @@ not valid json
         // Both entries should be in the map with their respective session_id (None here).
         let keys: Vec<&String> = result.keys().collect();
         assert_eq!(
-            keys.len(), 2, "two valid lines -> two entries, got {:?}", keys
+            keys.len(),
+            2,
+            "two valid lines -> two entries, got {:?}",
+            keys
         );
 
         // File should be truncated after read.
@@ -442,8 +464,10 @@ not valid json
         assert_eq!(entry.session_id.as_deref(), Some("s2"));
         // The fold collapses to one signal, but the count tally still sees both lines.
         assert_eq!(
-            counts.values().next().copied(), Some(2),
-            "two raw lines for the same root -> count of 2, got {:?}", counts
+            counts.values().next().copied(),
+            Some(2),
+            "two raw lines for the same root -> count of 2, got {:?}",
+            counts
         );
     }
 
@@ -458,7 +482,11 @@ not valid json
         let cfg = test_config(vec![PathBuf::from("/tmp")]);
         let (first, first_counts, _waiting) = read_and_compact(&path, &cfg, 10_000_000);
         assert_eq!(first.len(), 1, "first read should pick up one signal");
-        assert_eq!(first_counts.values().sum::<u32>(), 1, "first read should count one event");
+        assert_eq!(
+            first_counts.values().sum::<u32>(),
+            1,
+            "first read should count one event"
+        );
 
         // File must be empty after truncation.
         let size = std::fs::metadata(&path).expect("meta").len();
@@ -470,7 +498,10 @@ not valid json
             "second read of truncated file must be empty, got {:?}",
             second
         );
-        assert!(second_counts.is_empty(), "second read must see no counts either");
+        assert!(
+            second_counts.is_empty(),
+            "second read must see no counts either"
+        );
     }
 
     /// Test 7: read_and_compact on a line missing `cwd` -> that line is dropped
@@ -486,9 +517,7 @@ not valid json
         let (result, _counts, _waiting) = read_and_compact(&path, &cfg, 10_000_000);
 
         let keys: Vec<&String> = result.keys().collect();
-        assert_eq!(
-            keys.len(), 2, "missing cwd line dropped: got {:?}", keys
-        );
+        assert_eq!(keys.len(), 2, "missing cwd line dropped: got {:?}", keys);
 
         // Verify the file got truncated.
         let size = std::fs::metadata(&path).expect("meta").len();
@@ -520,12 +549,18 @@ not valid json
         // becomes ~46 which is > max_bytes=10. Line 2: bytes_seen(=46)>0 AND (46+line>10) -> break.
         // So exactly one entry should be in the map.
         assert_eq!(
-            result.len(), 1, "soft cap should limit to one entry at most, got {:?}", result
+            result.len(),
+            1,
+            "soft cap should limit to one entry at most, got {:?}",
+            result
         );
 
         // The first line's data must survive (newest "at" wins is irrelevant here).
         let entry = result.values().next().unwrap();
-        assert!(entry.root.contains("/a_0"), "first line should have been processed");
+        assert!(
+            entry.root.contains("/a_0"),
+            "first line should have been processed"
+        );
 
         // And file is truncated.
         let size = std::fs::metadata(&path).expect("meta").len();
@@ -547,7 +582,10 @@ not valid json
 
         let keys: Vec<&String> = result.keys().collect();
         assert_eq!(
-            keys.len(), 2, "truncated trailing line dropped: got {:?}", keys
+            keys.len(),
+            2,
+            "truncated trailing line dropped: got {:?}",
+            keys
         );
 
         // File still truncated to empty after read.

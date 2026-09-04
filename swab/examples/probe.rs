@@ -6,7 +6,7 @@
 //! `diff_check.sh`'s whole-scan comparison possible. Do not add subcommands here without
 //! adding the matching one in `py_probe.py` — parity_check.sh assumes the two are 1:1.
 
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use std::collections::{HashMap, HashSet};
 use std::io::Read;
 use std::path::PathBuf;
@@ -35,7 +35,10 @@ fn str_vec(args: &Value, key: &str) -> Vec<String> {
 
 fn config_from_args(args: &Value) -> Config {
     let mut cfg = Config::default();
-    cfg.roots = str_vec(args, "roots").into_iter().map(PathBuf::from).collect();
+    cfg.roots = str_vec(args, "roots")
+        .into_iter()
+        .map(PathBuf::from)
+        .collect();
     cfg.extra_paths = str_vec(args, "extra_paths")
         .into_iter()
         .map(PathBuf::from)

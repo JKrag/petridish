@@ -321,7 +321,11 @@ pub fn resolve(
 fn build_launch(candidate: &Candidate, facts: &Facts) -> Launch {
     Launch {
         program: candidate.program.clone(),
-        args: candidate.args.iter().map(|a| substitute(a, facts)).collect(),
+        args: candidate
+            .args
+            .iter()
+            .map(|a| substitute(a, facts))
+            .collect(),
         mode: candidate.mode,
     }
 }

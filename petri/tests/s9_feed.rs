@@ -10,9 +10,7 @@
 //! delegating.
 
 use petri::feed::{FeedKind, FeedState, agent_detail, humanize_event};
-use petridish_core::schema::{
-    AgentActivity, AgentState, GitState, Project, Radar, StatusBucket,
-};
+use petridish_core::schema::{AgentActivity, AgentState, GitState, Project, Radar, StatusBucket};
 
 fn ts(s: &str) -> chrono::DateTime<chrono::Utc> {
     chrono::DateTime::parse_from_rfc3339(s)
@@ -107,13 +105,23 @@ fn humanize_event_falls_back_when_nothing_is_left() {
 
 #[test]
 fn agent_detail_names_the_agent_and_the_event() {
-    let p = with_agent(project("a", "radar", StatusBucket::Active), "claude-code", "Stop", "2026-09-03T14:22:00Z");
+    let p = with_agent(
+        project("a", "radar", StatusBucket::Active),
+        "claude-code",
+        "Stop",
+        "2026-09-03T14:22:00Z",
+    );
     assert_eq!(agent_detail(&p), "claude-code stop");
 }
 
 #[test]
 fn agent_detail_appends_the_dirty_file_count_with_correct_grammar() {
-    let base = with_agent(project("a", "radar", StatusBucket::Active), "copilot", "PreToolUse", "2026-09-03T14:22:00Z");
+    let base = with_agent(
+        project("a", "radar", StatusBucket::Active),
+        "copilot",
+        "PreToolUse",
+        "2026-09-03T14:22:00Z",
+    );
 
     let three = with_git(base.clone(), "main", 3, None);
     assert_eq!(agent_detail(&three), "copilot pre tool use · 3 files");
@@ -155,7 +163,12 @@ fn agent_detail_falls_back_when_the_event_name_is_missing() {
 #[test]
 fn row_text_is_clock_project_then_detail() {
     let p = with_git(
-        with_agent(project("a", "project-radar", StatusBucket::Active), "claude-code", "Stop", "2026-09-03T14:22:07Z"),
+        with_agent(
+            project("a", "project-radar", StatusBucket::Active),
+            "claude-code",
+            "Stop",
+            "2026-09-03T14:22:07Z",
+        ),
         "main",
         3,
         None,
@@ -182,7 +195,11 @@ fn row_text_shows_a_date_for_an_event_from_an_earlier_day() {
         "2026-09-02T23:14:00Z",
     );
     let feed = FeedState::seeded(&radar_at("2026-09-03T05:00:00Z", vec![p]));
-    let row = feed.events().front().unwrap().row_text(ts("2026-09-03T05:00:00Z"));
+    let row = feed
+        .events()
+        .front()
+        .unwrap()
+        .row_text(ts("2026-09-03T05:00:00Z"));
     assert_eq!(row, "09-02  project-radar · claude-code stop");
 }
 
@@ -190,13 +207,27 @@ fn row_text_shows_a_date_for_an_event_from_an_earlier_day() {
 
 #[test]
 fn seeded_emits_one_row_per_project_with_an_agent_timestamp_newest_first() {
-    let old = with_agent(project("a", "alpha", StatusBucket::Active), "claude-code", "Stop", "2026-09-03T09:00:00Z");
-    let new = with_agent(project("b", "bravo", StatusBucket::Active), "claude-code", "PreToolUse", "2026-09-03T11:00:00Z");
+    let old = with_agent(
+        project("a", "alpha", StatusBucket::Active),
+        "claude-code",
+        "Stop",
+        "2026-09-03T09:00:00Z",
+    );
+    let new = with_agent(
+        project("b", "bravo", StatusBucket::Active),
+        "claude-code",
+        "PreToolUse",
+        "2026-09-03T11:00:00Z",
+    );
     let silent = project("c", "charlie", StatusBucket::Cold);
 
     let feed = FeedState::seeded(&radar_at("2026-09-03T12:00:00Z", vec![old, new, silent]));
 
-    assert_eq!(feed.len(), 2, "the project with no agent timestamp contributes no row");
+    assert_eq!(
+        feed.len(),
+        2,
+        "the project with no agent timestamp contributes no row"
+    );
     let names: Vec<&str> = feed.events().iter().map(|e| e.project.as_str()).collect();
     assert_eq!(names, vec!["bravo", "alpha"], "newest first");
     assert!(feed.events().iter().all(|e| e.kind == FeedKind::Agent));
@@ -208,17 +239,34 @@ fn seeded_emits_one_row_per_project_with_an_agent_timestamp_newest_first() {
 
 #[test]
 fn seeded_breaks_timestamp_ties_by_project_name() {
-    let b = with_agent(project("b", "bravo", StatusBucket::Active), "claude-code", "Stop", "2026-09-03T09:00:00Z");
-    let a = with_agent(project("a", "alpha", StatusBucket::Active), "claude-code", "Stop", "2026-09-03T09:00:00Z");
+    let b = with_agent(
+        project("b", "bravo", StatusBucket::Active),
+        "claude-code",
+        "Stop",
+        "2026-09-03T09:00:00Z",
+    );
+    let a = with_agent(
+        project("a", "alpha", StatusBucket::Active),
+        "claude-code",
+        "Stop",
+        "2026-09-03T09:00:00Z",
+    );
     // Deliberately out of name order in the input.
     let feed = FeedState::seeded(&radar_at("2026-09-03T12:00:00Z", vec![b, a]));
     let names: Vec<&str> = feed.events().iter().map(|e| e.project.as_str()).collect();
-    assert_eq!(names, vec!["alpha", "bravo"], "ties resolve by name ascending, not input order");
+    assert_eq!(
+        names,
+        vec!["alpha", "bravo"],
+        "ties resolve by name ascending, not input order"
+    );
 }
 
 #[test]
 fn seeded_is_empty_for_a_fleet_with_no_agent_activity() {
-    let feed = FeedState::seeded(&radar_at("2026-09-03T12:00:00Z", vec![project("a", "alpha", StatusBucket::Cold)]));
+    let feed = FeedState::seeded(&radar_at(
+        "2026-09-03T12:00:00Z",
+        vec![project("a", "alpha", StatusBucket::Cold)],
+    ));
     assert!(feed.is_empty());
     assert_eq!(feed.len(), 0);
 }
@@ -227,20 +275,38 @@ fn seeded_is_empty_for_a_fleet_with_no_agent_activity() {
 
 #[test]
 fn ingest_emits_nothing_when_nothing_changed() {
-    let p = with_agent(project("a", "alpha", StatusBucket::Active), "claude-code", "Stop", "2026-09-03T09:00:00Z");
+    let p = with_agent(
+        project("a", "alpha", StatusBucket::Active),
+        "claude-code",
+        "Stop",
+        "2026-09-03T09:00:00Z",
+    );
     let prev = radar_at("2026-09-03T12:00:00Z", vec![p.clone()]);
     let next = radar_at("2026-09-03T12:01:00Z", vec![p]);
 
     let mut feed = FeedState::default();
     feed.ingest(&prev, &next);
-    assert!(feed.is_empty(), "a tick where nothing moved must not produce rows");
+    assert!(
+        feed.is_empty(),
+        "a tick where nothing moved must not produce rows"
+    );
 }
 
 #[test]
 fn ingest_emits_an_agent_row_when_the_agent_timestamp_advances() {
-    let before = with_agent(project("a", "alpha", StatusBucket::Active), "claude-code", "PreToolUse", "2026-09-03T09:00:00Z");
+    let before = with_agent(
+        project("a", "alpha", StatusBucket::Active),
+        "claude-code",
+        "PreToolUse",
+        "2026-09-03T09:00:00Z",
+    );
     let after = with_git(
-        with_agent(project("a", "alpha", StatusBucket::Active), "claude-code", "Stop", "2026-09-03T09:05:00Z"),
+        with_agent(
+            project("a", "alpha", StatusBucket::Active),
+            "claude-code",
+            "Stop",
+            "2026-09-03T09:05:00Z",
+        ),
         "main",
         2,
         None,
@@ -264,7 +330,12 @@ fn ingest_emits_an_agent_row_when_the_agent_timestamp_advances() {
 fn ingest_treats_a_first_ever_agent_timestamp_as_an_advance() {
     // None -> Some must count: `None` is older than any `Some`.
     let before = project("a", "alpha", StatusBucket::Active);
-    let after = with_agent(project("a", "alpha", StatusBucket::Active), "claude-code", "Stop", "2026-09-03T09:05:00Z");
+    let after = with_agent(
+        project("a", "alpha", StatusBucket::Active),
+        "claude-code",
+        "Stop",
+        "2026-09-03T09:05:00Z",
+    );
     let mut feed = FeedState::default();
     feed.ingest(
         &radar_at("2026-09-03T09:00:00Z", vec![before]),
@@ -276,8 +347,18 @@ fn ingest_treats_a_first_ever_agent_timestamp_as_an_advance() {
 
 #[test]
 fn ingest_emits_a_commit_row_naming_the_branch() {
-    let before = with_git(project("a", "alpha", StatusBucket::Active), "main", 0, Some("2026-09-03T08:00:00Z"));
-    let after = with_git(project("a", "alpha", StatusBucket::Active), "main", 0, Some("2026-09-03T09:30:00Z"));
+    let before = with_git(
+        project("a", "alpha", StatusBucket::Active),
+        "main",
+        0,
+        Some("2026-09-03T08:00:00Z"),
+    );
+    let after = with_git(
+        project("a", "alpha", StatusBucket::Active),
+        "main",
+        0,
+        Some("2026-09-03T09:30:00Z"),
+    );
     let mut feed = FeedState::default();
     feed.ingest(
         &radar_at("2026-09-03T08:01:00Z", vec![before]),
@@ -292,9 +373,19 @@ fn ingest_emits_a_commit_row_naming_the_branch() {
 
 #[test]
 fn ingest_commit_row_falls_back_when_there_is_no_branch() {
-    let mut before = with_git(project("a", "alpha", StatusBucket::Active), "main", 0, Some("2026-09-03T08:00:00Z"));
+    let mut before = with_git(
+        project("a", "alpha", StatusBucket::Active),
+        "main",
+        0,
+        Some("2026-09-03T08:00:00Z"),
+    );
     before.git.branch = None;
-    let mut after = with_git(project("a", "alpha", StatusBucket::Active), "main", 0, Some("2026-09-03T09:30:00Z"));
+    let mut after = with_git(
+        project("a", "alpha", StatusBucket::Active),
+        "main",
+        0,
+        Some("2026-09-03T09:30:00Z"),
+    );
     after.git.branch = None;
     let mut feed = FeedState::default();
     feed.ingest(
@@ -323,10 +414,16 @@ fn ingest_emits_a_bucket_row_on_a_section_change() {
 
 #[test]
 fn ingest_emits_an_appeared_row_for_a_project_new_to_the_scan() {
-    let prev = radar_at("2026-09-03T08:00:00Z", vec![project("a", "alpha", StatusBucket::Active)]);
+    let prev = radar_at(
+        "2026-09-03T08:00:00Z",
+        vec![project("a", "alpha", StatusBucket::Active)],
+    );
     let next = radar_at(
         "2026-09-03T09:00:00Z",
-        vec![project("a", "alpha", StatusBucket::Active), project("b", "bravo", StatusBucket::Cold)],
+        vec![
+            project("a", "alpha", StatusBucket::Active),
+            project("b", "bravo", StatusBucket::Cold),
+        ],
     );
     let mut feed = FeedState::default();
     feed.ingest(&prev, &next);
@@ -342,24 +439,43 @@ fn ingest_emits_an_appeared_row_for_a_project_new_to_the_scan() {
 fn ingest_ignores_a_project_that_disappeared() {
     let prev = radar_at(
         "2026-09-03T08:00:00Z",
-        vec![project("a", "alpha", StatusBucket::Active), project("b", "bravo", StatusBucket::Cold)],
+        vec![
+            project("a", "alpha", StatusBucket::Active),
+            project("b", "bravo", StatusBucket::Cold),
+        ],
     );
-    let next = radar_at("2026-09-03T09:00:00Z", vec![project("a", "alpha", StatusBucket::Active)]);
+    let next = radar_at(
+        "2026-09-03T09:00:00Z",
+        vec![project("a", "alpha", StatusBucket::Active)],
+    );
     let mut feed = FeedState::default();
     feed.ingest(&prev, &next);
-    assert!(feed.is_empty(), "a project leaving the scan is not something the user did");
+    assert!(
+        feed.is_empty(),
+        "a project leaving the scan is not something the user did"
+    );
 }
 
 #[test]
 fn ingest_can_emit_several_rows_for_one_project_in_one_tick() {
     let before = with_git(
-        with_agent(project("a", "alpha", StatusBucket::Active), "claude-code", "PreToolUse", "2026-09-03T09:00:00Z"),
+        with_agent(
+            project("a", "alpha", StatusBucket::Active),
+            "claude-code",
+            "PreToolUse",
+            "2026-09-03T09:00:00Z",
+        ),
         "main",
         1,
         Some("2026-09-03T08:00:00Z"),
     );
     let after = with_git(
-        with_agent(project("a", "alpha", StatusBucket::InFlight), "claude-code", "Stop", "2026-09-03T09:10:00Z"),
+        with_agent(
+            project("a", "alpha", StatusBucket::InFlight),
+            "claude-code",
+            "Stop",
+            "2026-09-03T09:10:00Z",
+        ),
         "main",
         0,
         Some("2026-09-03T09:20:00Z"),
@@ -374,14 +490,32 @@ fn ingest_can_emit_several_rows_for_one_project_in_one_tick() {
     assert_eq!(feed.len(), 3, "agent + commit + bucket, got {kinds:?}");
     // Newest first by the events' own timestamps: bucket (09:30, the snapshot time),
     // commit (09:20), agent (09:10).
-    assert_eq!(kinds, vec![FeedKind::Bucket, FeedKind::Commit, FeedKind::Agent]);
+    assert_eq!(
+        kinds,
+        vec![FeedKind::Bucket, FeedKind::Commit, FeedKind::Agent]
+    );
 }
 
 #[test]
 fn ingest_pushes_newer_rows_in_front_of_older_ones() {
-    let a0 = with_agent(project("a", "alpha", StatusBucket::Active), "claude-code", "Stop", "2026-09-03T09:00:00Z");
-    let a1 = with_agent(project("a", "alpha", StatusBucket::Active), "claude-code", "Stop", "2026-09-03T09:05:00Z");
-    let a2 = with_agent(project("a", "alpha", StatusBucket::Active), "claude-code", "Stop", "2026-09-03T09:10:00Z");
+    let a0 = with_agent(
+        project("a", "alpha", StatusBucket::Active),
+        "claude-code",
+        "Stop",
+        "2026-09-03T09:00:00Z",
+    );
+    let a1 = with_agent(
+        project("a", "alpha", StatusBucket::Active),
+        "claude-code",
+        "Stop",
+        "2026-09-03T09:05:00Z",
+    );
+    let a2 = with_agent(
+        project("a", "alpha", StatusBucket::Active),
+        "claude-code",
+        "Stop",
+        "2026-09-03T09:10:00Z",
+    );
 
     let r0 = radar_at("2026-09-03T09:00:30Z", vec![a0]);
     let r1 = radar_at("2026-09-03T09:05:30Z", vec![a1]);
@@ -395,7 +529,10 @@ fn ingest_pushes_newer_rows_in_front_of_older_ones() {
     assert_eq!(feed.len(), 2);
     assert_eq!(
         times,
-        vec![ts("2026-09-03T09:10:00Z").to_rfc3339(), ts("2026-09-03T09:05:00Z").to_rfc3339()],
+        vec![
+            ts("2026-09-03T09:10:00Z").to_rfc3339(),
+            ts("2026-09-03T09:05:00Z").to_rfc3339()
+        ],
         "later ingests land in front of earlier ones"
     );
 }
@@ -403,22 +540,37 @@ fn ingest_pushes_newer_rows_in_front_of_older_ones() {
 #[test]
 fn ingest_orders_a_timestamp_tie_by_project_name() {
     let mk = |id: &str, name: &str, at: &str| {
-        with_agent(project(id, name, StatusBucket::Active), "claude-code", "Stop", at)
+        with_agent(
+            project(id, name, StatusBucket::Active),
+            "claude-code",
+            "Stop",
+            at,
+        )
     };
     let prev = radar_at(
         "2026-09-03T08:00:00Z",
-        vec![mk("b", "bravo", "2026-09-03T08:00:00Z"), mk("a", "alpha", "2026-09-03T08:00:00Z")],
+        vec![
+            mk("b", "bravo", "2026-09-03T08:00:00Z"),
+            mk("a", "alpha", "2026-09-03T08:00:00Z"),
+        ],
     );
     let next = radar_at(
         "2026-09-03T09:00:00Z",
-        vec![mk("b", "bravo", "2026-09-03T09:00:00Z"), mk("a", "alpha", "2026-09-03T09:00:00Z")],
+        vec![
+            mk("b", "bravo", "2026-09-03T09:00:00Z"),
+            mk("a", "alpha", "2026-09-03T09:00:00Z"),
+        ],
     );
     let mut feed = FeedState::default();
     feed.ingest(&prev, &next);
     let names: Vec<&str> = feed.events().iter().map(|e| e.project.as_str()).collect();
     // Same timestamp: the LAST pushed ends up at the front, and rows are pushed in
     // ascending (at, name) order — so bravo, then alpha.
-    assert_eq!(names, vec!["bravo", "alpha"], "tie order must not depend on input order");
+    assert_eq!(
+        names,
+        vec!["bravo", "alpha"],
+        "tie order must not depend on input order"
+    );
 }
 
 #[test]
@@ -426,12 +578,16 @@ fn feed_is_capped_at_feed_capacity_dropping_the_oldest() {
     use petri::feed::FEED_CAPACITY;
 
     let mut feed = FeedState::default();
-    let mut prev = radar_at("2026-09-03T00:00:00Z", vec![project("a", "alpha", StatusBucket::Active)]);
+    let mut prev = radar_at(
+        "2026-09-03T00:00:00Z",
+        vec![project("a", "alpha", StatusBucket::Active)],
+    );
 
     // Drive one agent event per tick, well past the cap.
     for i in 1..=(FEED_CAPACITY + 25) {
-        let at = chrono::DateTime::<chrono::Utc>::from_timestamp(1_800_000_000 + (i as i64) * 60, 0)
-            .expect("valid timestamp");
+        let at =
+            chrono::DateTime::<chrono::Utc>::from_timestamp(1_800_000_000 + (i as i64) * 60, 0)
+                .expect("valid timestamp");
         let mut p = project("a", "alpha", StatusBucket::Active);
         p.agent = AgentState {
             state: AgentActivity::Working,
@@ -480,8 +636,17 @@ fn ingest_treats_a_first_ever_commit_as_an_advance() {
     // than any `Some` for commits too. A repo landing its first commit while petri is open
     // must produce a row, not silence.
     let mut before = project("a", "alpha", StatusBucket::Active);
-    before.git = GitState { is_repo: true, branch: Some("main".to_string()), ..GitState::not_a_repo() };
-    let after = with_git(project("a", "alpha", StatusBucket::Active), "main", 0, Some("2026-09-03T09:30:00Z"));
+    before.git = GitState {
+        is_repo: true,
+        branch: Some("main".to_string()),
+        ..GitState::not_a_repo()
+    };
+    let after = with_git(
+        project("a", "alpha", StatusBucket::Active),
+        "main",
+        0,
+        Some("2026-09-03T09:30:00Z"),
+    );
 
     let mut feed = FeedState::default();
     feed.ingest(
@@ -501,7 +666,12 @@ fn agent_detail_suffix_follows_the_count_not_the_dirty_flag() {
     // `is_dirty` and `uncommitted_files` are derived independently by the scanner; if they
     // ever disagree, the row must not read "· 0 files". The count is the thing being
     // reported, so the count is what decides whether the suffix exists at all.
-    let mut p = with_agent(project("a", "alpha", StatusBucket::Active), "claude-code", "Stop", "2026-09-03T09:00:00Z");
+    let mut p = with_agent(
+        project("a", "alpha", StatusBucket::Active),
+        "claude-code",
+        "Stop",
+        "2026-09-03T09:00:00Z",
+    );
     p.git = GitState {
         is_repo: true,
         branch: Some("main".to_string()),
@@ -516,7 +686,10 @@ fn agent_detail_suffix_follows_the_count_not_the_dirty_flag() {
 
 #[test]
 fn a_new_waiting_latch_emits_one_feed_row() {
-    let prev = radar_at("2026-09-04T10:00:00Z", vec![project("p1", "alpha", StatusBucket::Active)]);
+    let prev = radar_at(
+        "2026-09-04T10:00:00Z",
+        vec![project("p1", "alpha", StatusBucket::Active)],
+    );
     let mut next_p = project("p1", "alpha", StatusBucket::Active);
     next_p.agent.waiting_since = Some(ts("2026-09-04T10:00:30Z"));
     let next = radar_at("2026-09-04T10:01:00Z", vec![next_p]);
@@ -524,15 +697,28 @@ fn a_new_waiting_latch_emits_one_feed_row() {
     let mut feed = FeedState::default();
     feed.ingest(&prev, &next);
 
-    let rows: Vec<_> = feed.events().iter().filter(|e| e.kind == FeedKind::Waiting).collect();
-    assert_eq!(rows.len(), 1, "one row for the transition, got {:?}", feed.events());
+    let rows: Vec<_> = feed
+        .events()
+        .iter()
+        .filter(|e| e.kind == FeedKind::Waiting)
+        .collect();
+    assert_eq!(
+        rows.len(),
+        1,
+        "one row for the transition, got {:?}",
+        feed.events()
+    );
     assert_eq!(rows[0].project, "alpha");
     assert_eq!(
         rows[0].at,
         ts("2026-09-04T10:00:30Z"),
         "the row is stamped when the wait began, not when the scan noticed it"
     );
-    assert!(rows[0].detail.contains("waiting on you"), "got {:?}", rows[0].detail);
+    assert!(
+        rows[0].detail.contains("waiting on you"),
+        "got {:?}",
+        rows[0].detail
+    );
 }
 
 #[test]
@@ -551,7 +737,8 @@ fn a_carried_forward_latch_does_not_re_emit_every_tick() {
 
     assert!(
         feed.events().iter().all(|e| e.kind != FeedKind::Waiting),
-        "an unchanged latch is not news, got {:?}", feed.events()
+        "an unchanged latch is not news, got {:?}",
+        feed.events()
     );
 }
 
@@ -567,7 +754,10 @@ fn a_second_wait_after_the_first_was_answered_emits_a_second_row() {
 
     let mut feed = FeedState::default();
     feed.ingest(
-        &radar_at("2026-09-04T10:00:00Z", vec![project("p1", "alpha", StatusBucket::Active)]),
+        &radar_at(
+            "2026-09-04T10:00:00Z",
+            vec![project("p1", "alpha", StatusBucket::Active)],
+        ),
         &radar_at("2026-09-04T10:01:00Z", vec![p_wait1]),
     );
     feed.ingest(
@@ -575,10 +765,22 @@ fn a_second_wait_after_the_first_was_answered_emits_a_second_row() {
         &radar_at("2026-09-04T10:02:00Z", vec![answered]),
     );
     feed.ingest(
-        &radar_at("2026-09-04T10:04:00Z", vec![project("p1", "alpha", StatusBucket::Active)]),
+        &radar_at(
+            "2026-09-04T10:04:00Z",
+            vec![project("p1", "alpha", StatusBucket::Active)],
+        ),
         &radar_at("2026-09-04T10:05:30Z", vec![p_wait2]),
     );
 
-    let rows: Vec<_> = feed.events().iter().filter(|e| e.kind == FeedKind::Waiting).collect();
-    assert_eq!(rows.len(), 2, "two separate waits -> two rows, got {:?}", feed.events());
+    let rows: Vec<_> = feed
+        .events()
+        .iter()
+        .filter(|e| e.kind == FeedKind::Waiting)
+        .collect();
+    assert_eq!(
+        rows.len(),
+        2,
+        "two separate waits -> two rows, got {:?}",
+        feed.events()
+    );
 }
