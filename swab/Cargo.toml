@@ -1,7 +1,16 @@
 [package]
 name = "swab"
-version = "0.1.0"
-edition = "2024"
+description = "The petridish scanner: crawls project roots, reads git state, senses agent activity."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+authors.workspace = true
+keywords.workspace = true
+categories.workspace = true
+readme = "../README.md"
 
 [[bin]]
 name = "swab"
@@ -12,13 +21,13 @@ name = "swab-hook"
 path = "src/bin/swab-hook.rs"
 
 [dependencies]
-chrono = { version = "0.4", features = ["serde"] }
+chrono.workspace = true
 clap = { version = "4", features = ["derive"] }
 gix = { version = "0.86.0", features = ["status", "revision"] }
-petridish-core = { path = "../petridish-core" }
+petridish-core.workspace = true
 regex = "1.13.1"
-serde = { version = "1", features = ["derive"] }
-serde_json = "1"
+serde.workspace = true
+serde_json.workspace = true
 sha1 = "0.10"
-toml = "0.8"
+toml.workspace = true
 url = "2"

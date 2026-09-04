@@ -1,3 +1,43 @@
 [workspace]
 members = ["petridish-core", "swab", "petri"]
 resolver = "3"
+
+# Shared package metadata. Every member inherits from here with
+# `field.workspace = true` so there is exactly one version string in the repo
+# and one place to change the license/repository when they move.
+#
+# `version` covers all crates in lockstep. They ship as one product from one
+# tag, and a user who has `swab` 1.0 and `petri` 0.9 is in a state we have no
+# intention of supporting, so independent versioning would be a lie told to
+# cargo.
+[workspace.package]
+version = "1.0.0-beta.1"
+edition = "2024"
+# Floor comes from `gix` and `clap` (1.85, also the edition-2024 floor); the
+# widest MSRV anywhere in the resolved tree is 1.88. Verified by the MSRV job
+# in CI — bump this only when that job tells you to, never speculatively.
+rust-version = "1.88"
+license = "GPL-3.0-or-later"
+repository = "https://github.com/JKrag/petridish"
+homepage = "https://github.com/JKrag/petridish"
+authors = ["Jan Krag <jan.krag@eficode.com>"]
+keywords = ["macos", "git", "monitoring", "tui", "ai"]
+categories = ["command-line-utilities", "development-tools"]
+
+# Dependencies shared by two or more members, pinned once. Members that need
+# extra features add them locally with `features = [..]`, which unions with
+# whatever is declared here.
+[workspace.dependencies]
+chrono = { version = "0.4", features = ["serde"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+toml = "0.8"
+petridish-core = { path = "petridish-core", version = "1.0.0-beta.1" }
+
+# Release binaries are shipped as prebuilt tarballs (Homebrew tap + shell
+# installer), so build time at release is cheap and size/speed at the user's
+# machine is what matters.
+[profile.release]
+lto = "thin"
+codegen-units = 1
+strip = true
