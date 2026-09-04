@@ -23,9 +23,18 @@ import shutil
 import subprocess
 import sys
 from pathlib import Path
-from typing import Callable
+from typing import Any, Callable, cast
 
 from petridish.schema import HOOK_MARKER
+
+#: A parsed ``settings.json``, as far as this module is concerned. The real
+#: file is shared with other hook consumers and has no schema we own, so the
+#: value type is deliberately ``Any``: everything here is *structural*
+#: (recursive add/drop of marked subtrees) and must pass unknown shapes
+#: through untouched rather than assert a shape it would then be tempted to
+#: normalise. Naming it keeps that "opaque on purpose" decision in one place
+#: instead of once per signature.
+Settings = dict[str, Any]
 
 PLIST_LABEL = "com.petridish.daemon"
 
@@ -140,21 +149,27 @@ def write_default_config(data_dir: Path) -> bool:
 # ---------------------------------------------------------------------------
 
 def _contains_marker(obj: object, marker: str) -> bool:
+    # The casts below carry no runtime meaning: `isinstance` narrows to a bare
+    # `dict`/`list`, whose element types the checker then has to call Unknown.
+    # Every element is walked as `object` anyway, so naming that here is the
+    # honest annotation rather than a widening.
     if isinstance(obj, str):
         return marker in obj
     if isinstance(obj, dict):
-        return any(_contains_marker(v, marker) for v in obj.values())
+        values = cast("dict[object, object]", obj).values()
+        return any(_contains_marker(v, marker) for v in values)
     if isinstance(obj, list):
-        return any(_contains_marker(v, marker) for v in obj)
+        items = cast("list[object]", obj)
+        return any(_contains_marker(v, marker) for v in items)
     return False
 
 
-def has_marker(settings: dict, marker: str = HOOK_MARKER) -> bool:
+def has_marker(settings: Settings, marker: str = HOOK_MARKER) -> bool:
     return _contains_marker(settings, marker)
 
 
 def event_has_marker(
-    settings: dict, event: str, marker: str = HOOK_MARKER
+    settings: Settings, event: str, marker: str = HOOK_MARKER
 ) -> bool:
     """Is one of *our* hook groups already registered under `event`?
 
@@ -165,8 +180,8 @@ def event_has_marker(
 
 
 def add_hook_entries(
-    settings: dict, hook_abspath: str, marker: str = HOOK_MARKER
-) -> dict:
+    settings: Settings, hook_abspath: str, marker: str = HOOK_MARKER
+) -> Settings:
     """Return a settings dict with our hook-group present under each HOOK_EVENTS key.
 
     Idempotent **per event**, not for the file as a whole: returns `settings`
@@ -195,20 +210,34 @@ def add_hook_entries(
     return updated
 
 
+def _is_marked_group(item: object, marker: str) -> bool:
+    """Is `item` a dict whose subtree carries `marker`?
+
+    A named helper rather than an inline ``isinstance(...) and ...`` so the
+    narrowing stays inside it: narrowing `item` in the caller's comprehension
+    would leave every later use of it typed as an element-less ``dict``.
+    """
+    if not isinstance(item, dict):
+        return False
+    return _contains_marker(cast(object, item), marker)
+
+
 def _drop_marked(obj: object, marker: str) -> object:
     """Recursively drop list elements whose subtree contains `marker`."""
     if isinstance(obj, list):
+        items = cast("list[object]", obj)
         return [
             _drop_marked(item, marker)
-            for item in obj
-            if not (isinstance(item, dict) and _contains_marker(item, marker))
+            for item in items
+            if not _is_marked_group(item, marker)
         ]
     if isinstance(obj, dict):
-        return {k: _drop_marked(v, marker) for k, v in obj.items()}
+        pairs = cast("dict[str, object]", obj).items()
+        return {k: _drop_marked(v, marker) for k, v in pairs}
     return obj
 
 
-def remove_marker_entries(settings: dict, marker: str = HOOK_MARKER) -> dict:
+def remove_marker_entries(settings: Settings, marker: str = HOOK_MARKER) -> Settings:
     """Structurally remove every hook-group tagged with `marker`.
 
     Only drops dict elements *of a list* whose subtree contains the marker —
@@ -220,26 +249,29 @@ def remove_marker_entries(settings: dict, marker: str = HOOK_MARKER) -> dict:
     Only keys that were non-empty before the drop are removed — a user who
     keeps a deliberately empty event key gets it back untouched.
     """
-    cleaned = _drop_marked(settings, marker)
-    if not isinstance(cleaned, dict):
-        return cleaned  # pragma: no cover - _drop_marked preserves dict-ness
+    dropped = _drop_marked(settings, marker)
+    if not isinstance(dropped, dict):
+        return settings  # pragma: no cover - _drop_marked preserves dict-ness
+    cleaned = cast(Settings, dropped)
     before = settings.get("hooks")
     after = cleaned.get("hooks")
     if isinstance(before, dict) and isinstance(after, dict):
+        before_events = cast("dict[str, object]", before)
+        after_events = cast("dict[str, object]", after)
         cleaned = dict(cleaned)
         cleaned["hooks"] = {
             event: groups
-            for event, groups in after.items()
-            if groups != [] or before.get(event) == []
+            for event, groups in after_events.items()
+            if groups != [] or before_events.get(event) == []
         }
     return cleaned
 
 
-def serialize_settings(data: dict) -> str:
+def serialize_settings(data: Settings) -> str:
     return json.dumps(data, indent=2) + "\n"
 
 
-def load_settings(settings_path: Path) -> dict:
+def load_settings(settings_path: Path) -> Settings:
     if not settings_path.exists():
         return {}
     text = settings_path.read_text(encoding="utf-8")
@@ -248,7 +280,7 @@ def load_settings(settings_path: Path) -> dict:
     return json.loads(text)
 
 
-def write_settings_atomic(settings_path: Path, data: dict) -> None:
+def write_settings_atomic(settings_path: Path, data: Settings) -> None:
     settings_path.parent.mkdir(parents=True, exist_ok=True)
     tmp = settings_path.with_suffix(settings_path.suffix + ".tmp")
     tmp.write_text(serialize_settings(data), encoding="utf-8")
