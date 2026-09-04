@@ -1,5 +1,5 @@
 [workspace]
-members = ["petridish-core", "swab", "petri"]
+members = ["petridish-core", "petridish-cli", "swab", "petri"]
 resolver = "3"
 
 # Shared package metadata. Every member inherits from here with
@@ -30,7 +30,23 @@ categories = ["command-line-utilities", "development-tools"]
 [workspace.dependencies]
 chrono = { version = "0.4", features = ["serde"] }
 serde = { version = "1", features = ["derive"] }
-serde_json = "1"
+# `preserve_order` swaps serde_json's `Map` from a `BTreeMap` (alphabetical) to
+# an `IndexMap` (insertion order). The installer needs it: `~/.claude/settings.json`
+# is a user-owned file shared with other hook consumers, and silently
+# alphabetising every key on install would be a gratuitous, alarming diff.
+#
+# Declared at workspace level rather than in the one crate that needs it, because
+# Cargo unifies features across a build anyway — declaring it locally would mean
+# `cargo test --workspace` and `cargo install -p swab` produced *different* JSON
+# key ordering from the same source, which is a far worse trap than the feature
+# itself. One setting, one behaviour, everywhere.
+#
+# Verified empirically before enabling, by diffing real output with the feature
+# off and on: `projects.json` key order is unchanged (every schema type is a
+# named struct, so serde uses declaration order regardless), and
+# `events.ndjson` is unchanged because `swab::events::EventLine` was converted
+# from a `Map` to a struct for exactly this reason.
+serde_json = { version = "1", features = ["preserve_order"] }
 toml = "0.8"
 petridish-core = { path = "petridish-core", version = "1.0.0-beta.1" }
 
