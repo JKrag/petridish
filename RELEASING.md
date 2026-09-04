@@ -1,0 +1,113 @@
+# Releasing
+
+Releases are built and published by `cargo-dist`. `.github/workflows/release.yml`
+is **generated** — never hand-edit it; change `dist-workspace.toml` and run
+`dist generate`.
+
+## One-time setup
+
+1. **Install the tool.** Note the binary is `dist`, not `cargo-dist`, so
+   `cargo dist ...` fails with "no such command":
+
+   ```sh
+   cargo install cargo-dist --locked
+   dist --version
+   ```
+
+2. **Create the tap repository:** `github.com/JKrag/homebrew-tap`, public. It must
+   exist before the first release — cargo-dist pushes to it, it does not create
+   it. An empty repo with a README is enough.
+
+3. **Create `HOMEBREW_TAP_TOKEN`.** The release workflow needs a token with write
+   access to the tap repo, because the default `GITHUB_TOKEN` is scoped to this
+   repository only. A fine-grained PAT limited to `JKrag/homebrew-tap` with
+   Contents: read & write is the least-privilege option. Add it under
+   *Settings → Secrets and variables → Actions* in **this** repo, named
+   `HOMEBREW_TAP_TOKEN`.
+
+## Cutting a release
+
+1. Bump `version` in `[workspace.package]` in the root `Cargo.toml`. All crates
+   inherit it — they ship as one product from one tag, so they move together.
+2. Update `CHANGELOG.md`: move `Unreleased` items under the new version.
+3. `make check` must be green.
+4. `dist plan` — sanity-check the artifact list before anything is pushed.
+5. Commit, then tag and push:
+
+   ```sh
+   git tag v1.0.0-beta.1
+   git push origin v1.0.0-beta.1
+   ```
+
+   The tag is what triggers the release. A **version-only** tag (`v1.0.0-beta.1`)
+   announces every crate at that version together, which is what we want; a
+   package-qualified tag (`swab-v1.0.0`) would release just that one.
+
+   Note this repo's remote quirk: pushes need the explicit SSH URL,
+   `git@github.com:JKrag/petridish.git`.
+
+## What gets published
+
+Three Homebrew formulae, because cargo-dist builds one app per package and the
+crates cannot merge (ADR-0002 keeps `swab-hook` out of a dependency tree
+containing ratatui, and keeps the read/write boundary compiler-enforced):
+
+| Formula | Binaries |
+| --- | --- |
+| `petridish` | `petridish` |
+| `swab` | `swab`, `swab-hook` |
+| `petri` | `petri` |
+
+`petridish` `depends_on` the other two, so users only ever type one command:
+
+```sh
+brew install jkrag/tap/petridish
+```
+
+That relationship is declared in `petridish-cli/Cargo.toml` under
+`[package.metadata.dist.dependencies.homebrew]`. **`stage = ["run"]` is required
+there** — the default stage is build-only, which produces no `depends_on` line in
+the formula at all, and the failure is silent: the formula generates fine and
+simply installs one third of the product.
+
+## Verifying a release
+
+On a machine that has never had petridish installed:
+
+```sh
+brew install jkrag/tap/petridish
+petridish install
+petridish doctor          # every check should pass
+launchctl list | grep petridish
+petri                     # should render real data within a minute
+```
+
+Then check the hook landed **alongside** any pre-existing entries rather than
+replacing them:
+
+```sh
+grep -c 'petridish' ~/.claude/settings.json
+```
+
+### Test the upgrade path too
+
+The one failure this pipeline can produce that a fresh install will not show:
+
+```sh
+brew upgrade petridish
+launchctl list | grep petridish     # must still be running
+petridish doctor                    # the `plist` check catches a stale path
+```
+
+`petridish install` writes an absolute `swab` path into the launchd plist. It
+deliberately keeps Homebrew's stable `/opt/homebrew/bin` symlink rather than
+resolving through to the version-stamped Cellar directory, so an upgrade should
+not break the daemon. `doctor`'s `plist` check exists to catch it if that ever
+stops being true.
+
+## Prereleases
+
+cargo-dist marks a release as a prerelease automatically when the version has a
+prerelease component (`1.0.0-beta.1`). Confirm before promoting to `1.0.0` that
+Homebrew upgrades cleanly from the beta version string — an installed formula that
+will not upgrade is exactly the kind of gap a beta exists to find.

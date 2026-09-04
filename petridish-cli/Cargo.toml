@@ -35,3 +35,19 @@ clap = { version = "4", features = ["derive"] }
 petridish-core.workspace = true
 serde.workspace = true
 serde_json.workspace = true
+
+# cargo-dist: this is the formula a user installs. The crate is `petri-dish`
+# (crates.io name), but the formula and the binary are both `petridish`.
+[package.metadata.dist]
+formula = "petridish"
+
+# cargo-dist builds one "app" per package and cannot bundle binaries from
+# several crates into one artifact, but the crates cannot merge either —
+# ADR-0002 keeps `swab-hook` out of a dependency tree containing ratatui, and
+# keeps the read/write boundary compiler-enforced rather than a matter of
+# discipline. So the four binaries ship as three formulae, and this one pulls
+# the other two in, making `brew install jkrag/tap/petridish` install
+# everything.
+[package.metadata.dist.dependencies.homebrew]
+"jkrag/tap/swab" = { stage = ["run"] }
+"jkrag/tap/petri" = { stage = ["run"] }
