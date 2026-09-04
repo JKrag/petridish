@@ -43,7 +43,6 @@ use std::time::{Duration, Instant};
 pub fn fixture_path(name: &str) -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join("..")
-        .join("tests")
         .join("fixtures")
         .join(name)
 }

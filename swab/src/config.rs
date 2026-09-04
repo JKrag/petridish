@@ -5,20 +5,11 @@
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 
-/// Literal marker string appended to hook `command` entries in `~/.claude/settings.json`;
-/// shared with `swab doctor`'s hook-detection.
-pub const HOOK_MARKER: &str = "# petridish";
-
-/// The Claude Code hook events `swab-hook` is registered on. **`installer.py`'s
-/// `HOOK_EVENTS` is the writer and this is the checker** — the duplication is deliberate
-/// (the installer is Python, `swab doctor` is Rust, and neither can call the other), so
-/// they must be kept in step; `doctor` failing on a machine the installer just set up is
-/// how a drift here shows itself.
-///
-/// `Notification`/`PermissionRequest` are the `MECH-5` pair: without them registered,
-/// `agent.waiting_since` is never set and the "waiting on you" indicator is dead code on
-/// that machine — which is exactly what `doctor` exists to notice.
-pub const HOOK_EVENTS: [&str; 4] = ["PreToolUse", "Stop", "Notification", "PermissionRequest"];
+// Both constants now live in `petridish-core`, the crate every frontend and the
+// installer share, so the writer of these hook entries and the `doctor` that
+// checks them cannot drift apart. Re-exported here so existing
+// `config::HOOK_MARKER` / `config::HOOK_EVENTS` call sites keep working.
+pub use petridish_core::schema::{HOOK_EVENTS, HOOK_MARKER};
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct Config {

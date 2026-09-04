@@ -30,7 +30,7 @@ from petridish.schema import (
     write_atomic,
 )
 
-FIXTURE = Path(__file__).parent / "fixtures" / "projects.golden.json"
+FIXTURE = Path(__file__).parent.parent / "fixtures" / "projects.golden.json"
 
 
 def _dt(y, mo, d, h, mi, s) -> datetime:

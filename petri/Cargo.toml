@@ -41,7 +41,7 @@ serde_json.workspace = true
 # glyph-portability gate (petri/SPEC.md §4.2). Promoted from dev-only after
 # review: the render paths were budgeting terminal COLUMNS but spending
 # CHARACTERS, which are not the same thing the moment a project, branch or
-# query contains a wide character — and `tests/fixtures/hostile.json` carries
+# query contains a wide character — and `fixtures/hostile.json` carries
 # a CJK name precisely because that case is meant to be handled. This is the
 # same width table ratatui and crossterm use for their own cell maths, so
 # using it here means petri measures text the way its renderer will.

@@ -22,7 +22,7 @@
 //! worktree child sits in a different (compact) section — the spec text
 //! does not resolve where, if anywhere, that child's existence gets
 //! reflected. The only worktree relationship across all four fixtures
-//! (`delta-05-worktree` parented under `alpha-01`, in `tests/fixtures/loaded.json`)
+//! (`delta-05-worktree` parented under `alpha-01`, in `fixtures/loaded.json`)
 //! is exactly this ambiguous case. Rather than pin an invented resolution,
 //! this gate does NOT assert compact-section worktree-rollup rendering at
 //! all — `running_membership`'s tests below cover the unambiguous ADR-0001
@@ -37,7 +37,6 @@ use std::path::PathBuf;
 fn fixture_path(name: &str) -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join("..")
-        .join("tests")
         .join("fixtures")
         .join(name)
 }

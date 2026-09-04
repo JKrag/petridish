@@ -6,7 +6,7 @@
 //! character and two columns, so a project, branch, session id or filter query containing
 //! one overruns its cell, and the overrun lands on whatever was drawn next: the match
 //! count a filter chip explicitly reserves room for, or the column alignment of every row
-//! below. `tests/fixtures/hostile.json` carries a CJK name precisely because this case is
+//! below. `fixtures/hostile.json` carries a CJK name precisely because this case is
 //! supposed to be handled.
 //!
 //! These helpers measure with `unicode-width`, the same table ratatui and crossterm use

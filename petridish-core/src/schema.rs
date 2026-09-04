@@ -55,6 +55,30 @@ mod iso_second_opt {
     }
 }
 
+/// Literal marker string appended to every hook `command` entry this project
+/// writes into `~/.claude/settings.json`.
+///
+/// Load-bearing, not decorative: it is the *only* thing that distinguishes our
+/// entries from the other hook consumers sharing that file, so both the
+/// installer's `--uninstall` and `doctor`'s health check identify their own
+/// work by matching it. Changing this string orphans every existing install.
+pub const HOOK_MARKER: &str = "# petridish";
+
+/// The Claude Code hook events `swab-hook` is registered on.
+///
+/// Lives here, in the crate both the writer and the checker depend on, so the
+/// installer that registers these events and the `doctor` that verifies them
+/// cannot drift apart. They previously could: the writer was Python and the
+/// checker Rust, so the list was duplicated by necessity and kept in step by
+/// hand.
+///
+/// `Notification`/`PermissionRequest` are the MECH-5 pair. Without them
+/// registered, `agent.waiting_since` is never set and the "waiting on you"
+/// indicator is dead code on that machine — which is exactly what `doctor`
+/// exists to notice, and why it checks per-event rather than just for the
+/// marker's presence.
+pub const HOOK_EVENTS: [&str; 4] = ["PreToolUse", "Stop", "Notification", "PermissionRequest"];
+
 /// Silence below this many seconds => `AgentActivity::Working`.
 pub const AGENT_WORKING_MAX_S: i64 = 90;
 /// Silence below this many seconds (and not `Working`) => `AgentActivity::Recent`.
