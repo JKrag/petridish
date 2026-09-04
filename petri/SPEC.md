@@ -174,6 +174,18 @@ The ambient monitor: "does anything need me?" across a fleet of unattended runs.
   RUNNING either way (a live agent process in a forgotten tab still counts, ADR-0001)
   — just not at the top. Label degrades to `RECENT` when nothing in the section has
   an agent at all, because `RUNNING` would then overstate it.
+  - **A project waiting on a human sorts above every silence-derived rank**, ceiling
+    included (`MECH-5`). `agent.waiting_since` is set by Claude Code's
+    `Notification`/`PermissionRequest` hooks and cleared by the `PreToolUse`/`Stop`
+    that means the human answered; `swab scan` also buckets such a project `active`,
+    so it cannot decay out of this section while it is still blocked. Its card
+    replaces the silence age with `▲ WAITING ON YOU` in `theme::DANGER` (compact rows:
+    `▲` plus `waiting on you`) — the silence duration is displaced rather than shown
+    alongside, because it is the inference the latch contradicts. `petri` re-derives
+    the latch's expiry (`WAITING_MAX_LATCH_S`, 3h) at render time for the same reason
+    it re-derives silence: a state file the daemon stopped updating must not keep a
+    dead latch pinned to the top of the screen. Blank for copilot projects, which
+    have no equivalent signal — blank, never false.
   - **Density is row-budget-driven, not width-driven**: above
     `COMPACT_TIER_MAX_CONTENT_ROWS` (16) content rows, RUNNING renders roomy
     bordered cards (glyph, name, overall silence in the header; a `git` zone row —
@@ -283,6 +295,12 @@ The ambient monitor: "does anything need me?" across a fleet of unattended runs.
     (as few as two body rows) — a divider would spend real activity on a boundary.
     The row's *body* keeps its own colour, by event kind: the two columns answer
     different questions ("when was this" vs "what was it") and vary independently.
+  - **A new waiting latch (`MECH-5`) emits one `▲ waiting on you` row**, stamped when the
+    wait began rather than when the scan noticed it, and tinted `theme::DANGER`. Keyed on
+    `agent.waiting_since` *changing*, not on it being set: the latch is carried forward
+    unchanged for as long as the human takes to answer, which is exactly the window the
+    feed is most likely to be read in, so an `is_some()` test would fill the block with
+    copies of one event. Release emits nothing — "you answered" is not news.
   - **The event name comes from the transcript, not from the hook** — `swab`'s
     `sensors/claude.rs::event_name_for`, so this bullet describes a dependency, not
     `petri` code. It was once true that `agent.last_event` was `null` for *every*
@@ -425,7 +443,11 @@ degenerate 0×0 a freshly-forked pty reports.
 ### 4.6 Schema drift
 
 `#[serde(default)]` on every field that can be absent, so a state file written by
-an older `swab` still parses. If `schema_version` is *greater* than the version
+an older `swab` still parses. This is also why "waiting on you" (`MECH-5`) is an
+optional `agent.waiting_since` **field** rather than a fourth `AgentActivity`
+variant: an unknown field is skipped by every reader on disk, where an unknown
+variant is a hard parse failure for all of them at once — `petripy`, the menubar,
+and any `swab`/`petri` binary not yet rebuilt. If `schema_version` is *greater* than the version
 this build knows, render normally but show a banner in the same slot as the
 staleness banner. Never hard-fail on a readable file.
 

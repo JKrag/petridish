@@ -164,7 +164,8 @@ truncate the file. Capped defensively (5MB) in case the daemon isn't running.
         "active_agent": "claude-code",         // claude-code | copilot | null
         "last_event": "PreToolUse",            // null when derived from mtime only
         "last_event_at": "2026-08-05T22:44:12Z",
-        "session_id": "6f4a8f6e-…"             // resumable via `claude --resume`
+        "session_id": "6f4a8f6e-…",            // resumable via `claude --resume`
+        "waiting_since": null                  // MECH-5: set while the agent is blocked on a human; null otherwise
       },
       "last_activity_at": "2026-08-05T22:44:12Z",  // max of all signals; drives bucket
       "status_bucket": "active"                // active | in_flight | stale | cold
@@ -175,6 +176,17 @@ truncate the file. Capped defensively (5MB) in case the daemon isn't running.
 
 **`agent.state`** (F3 — mtime-derived, no reliable transcript state machine):
 `working` = event or transcript mtime < 90s · `recent` = < 30min · `idle` = older.
+
+**`agent.waiting_since`** (MECH-5) is the one agent fact that is *observed* rather than
+inferred from silence, and it exists because the three states above cannot tell a blocked run
+from a busy one: both produce no events, so a run held at a permission prompt decays
+`working → recent → idle` exactly like one that finished. Claude Code's `Notification` and
+`PermissionRequest` hooks fire precisely when a human is needed, so `swab-hook` is registered
+on them (and only them — they are rare, unlike `PostToolUse`); `PreToolUse`/`Stop` clear the
+latch, and a 3h backstop releases one whose clearing event never arrives. A project with a
+live latch buckets `active` regardless of age. It is an optional **field** rather than a
+fourth `agent.state` value so that a reader which predates it skips it instead of failing to
+parse. No equivalent signal exists for copilot, whose rows stay blank rather than false.
 
 **`status_bucket`** from `last_activity_at` = max(`mine_last_commit_at`, `agent.last_event_at`,
 newest mtime among uncommitted files): `active` < 48h · `in_flight` < 14d · `stale` < 60d ·

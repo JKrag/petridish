@@ -23,9 +23,18 @@ import shutil
 import subprocess
 import sys
 from pathlib import Path
-from typing import Callable
+from typing import Any, Callable, cast
 
 from petridish.schema import HOOK_MARKER
+
+#: A parsed ``settings.json``, as far as this module is concerned. The real
+#: file is shared with other hook consumers and has no schema we own, so the
+#: value type is deliberately ``Any``: everything here is *structural*
+#: (recursive add/drop of marked subtrees) and must pass unknown shapes
+#: through untouched rather than assert a shape it would then be tempted to
+#: normalise. Naming it keeps that "opaque on purpose" decision in one place
+#: instead of once per signature.
+Settings = dict[str, Any]
 
 PLIST_LABEL = "com.petridish.daemon"
 
@@ -44,9 +53,34 @@ def default_menubar_plugins_dir(home: Path) -> Path:
     return home / "Library" / "Application Support" / "xbar" / "plugins"
 
 #: Events the hook is registered on: PreToolUse for in-session liveness,
-#: Stop for turn-end. Both accept matcher-less hook groups in the real
-#: settings.json (verified against this machine's file).
-HOOK_EVENTS: tuple[str, ...] = ("PreToolUse", "Stop")
+#: Stop for turn-end, plus the MECH-5 pair below. All four are real event
+#: names in Claude Code 2.1.236, verified against this machine's own
+#: settings.json rather than taken from documentation. Three of them
+#: (``PreToolUse``, ``Stop``, ``Notification``) also have matcher-less
+#: hook groups in that file, from other consumers, so the shape written
+#: here is known-good for those; ``PermissionRequest`` appears there only
+#: with a ``"matcher": "*"``, so a matcher-less group under it is the one
+#: unverified detail — an omitted matcher means "all" everywhere else in
+#: the hook schema, and if it turns out not to here, ``Notification`` still
+#: fires on permission prompts and the feature degrades rather than dies.
+#:
+#: ``Notification`` and ``PermissionRequest`` are the MECH-5 pair — the only
+#: signal that says "this agent is blocked on a human", which no transcript
+#: record expresses (``petri/IDEAS.md`` §11). They are deliberately the *only*
+#: widening of this tuple: the objection to registering more events is that
+#: every one adds ``swab-hook`` invocations on the declared latency path, and
+#: it is fatal for something like ``PostToolUse`` (fires on every tool call)
+#: while being nearly free for these two, which fire only when a human is
+#: already being asked to stop and look.
+#:
+#: Both names verified live against Claude Code 2.1.236's own settings.json
+#: schema on this machine, not taken from documentation.
+HOOK_EVENTS: tuple[str, ...] = (
+    "PreToolUse",
+    "Stop",
+    "Notification",
+    "PermissionRequest",
+)
 
 DEFAULT_CONFIG_TOML = """\
 # petridish config — every field below is optional; these are the defaults.
@@ -115,68 +149,129 @@ def write_default_config(data_dir: Path) -> bool:
 # ---------------------------------------------------------------------------
 
 def _contains_marker(obj: object, marker: str) -> bool:
+    # The casts below carry no runtime meaning: `isinstance` narrows to a bare
+    # `dict`/`list`, whose element types the checker then has to call Unknown.
+    # Every element is walked as `object` anyway, so naming that here is the
+    # honest annotation rather than a widening.
     if isinstance(obj, str):
         return marker in obj
     if isinstance(obj, dict):
-        return any(_contains_marker(v, marker) for v in obj.values())
+        values = cast("dict[object, object]", obj).values()
+        return any(_contains_marker(v, marker) for v in values)
     if isinstance(obj, list):
-        return any(_contains_marker(v, marker) for v in obj)
+        items = cast("list[object]", obj)
+        return any(_contains_marker(v, marker) for v in items)
     return False
 
 
-def has_marker(settings: dict, marker: str = HOOK_MARKER) -> bool:
+def has_marker(settings: Settings, marker: str = HOOK_MARKER) -> bool:
     return _contains_marker(settings, marker)
 
 
-def add_hook_entries(
-    settings: dict, hook_abspath: str, marker: str = HOOK_MARKER
-) -> dict:
-    """Return a settings dict with one hook-group appended per HOOK_EVENTS.
+def event_has_marker(
+    settings: Settings, event: str, marker: str = HOOK_MARKER
+) -> bool:
+    """Is one of *our* hook groups already registered under `event`?
 
-    Idempotent: if `marker` is already present anywhere, returns `settings`
-    unchanged (same object) so callers can tell nothing needs writing.
+    Per-event, unlike :func:`has_marker`, which answers the whole-file
+    question uninstall needs.
     """
-    if has_marker(settings, marker):
+    return _contains_marker(settings.get("hooks", {}).get(event, []), marker)
+
+
+def add_hook_entries(
+    settings: Settings, hook_abspath: str, marker: str = HOOK_MARKER
+) -> Settings:
+    """Return a settings dict with our hook-group present under each HOOK_EVENTS key.
+
+    Idempotent **per event**, not for the file as a whole: returns `settings`
+    unchanged (same object) only when every event already carries a marked
+    group, so callers can still tell nothing needs writing.
+
+    The per-event check is what makes growing :data:`HOOK_EVENTS` upgradeable.
+    The original whole-file check short-circuited on the marker appearing
+    *anywhere*, so an existing user — whose settings.json already carries the
+    PreToolUse/Stop pair from an earlier install — would re-run ``install`` and
+    get told "already installed", silently never receiving the two MECH-5
+    events. The feature would then be live in the code and dead on the only
+    machine that had ever installed it.
+    """
+    missing = [e for e in HOOK_EVENTS if not event_has_marker(settings, e, marker)]
+    if not missing:
         return settings
 
     updated = dict(settings)
     hooks = dict(updated.get("hooks", {}))
     command = f"{hook_abspath} {marker}"
-    for event in HOOK_EVENTS:
+    for event in missing:
         group = {"hooks": [{"type": "command", "command": command}]}
         hooks[event] = [*hooks.get(event, []), group]
     updated["hooks"] = hooks
     return updated
 
 
+def _is_marked_group(item: object, marker: str) -> bool:
+    """Is `item` a dict whose subtree carries `marker`?
+
+    A named helper rather than an inline ``isinstance(...) and ...`` so the
+    narrowing stays inside it: narrowing `item` in the caller's comprehension
+    would leave every later use of it typed as an element-less ``dict``.
+    """
+    if not isinstance(item, dict):
+        return False
+    return _contains_marker(cast(object, item), marker)
+
+
 def _drop_marked(obj: object, marker: str) -> object:
     """Recursively drop list elements whose subtree contains `marker`."""
     if isinstance(obj, list):
+        items = cast("list[object]", obj)
         return [
             _drop_marked(item, marker)
-            for item in obj
-            if not (isinstance(item, dict) and _contains_marker(item, marker))
+            for item in items
+            if not _is_marked_group(item, marker)
         ]
     if isinstance(obj, dict):
-        return {k: _drop_marked(v, marker) for k, v in obj.items()}
+        pairs = cast("dict[str, object]", obj).items()
+        return {k: _drop_marked(v, marker) for k, v in pairs}
     return obj
 
 
-def remove_marker_entries(settings: dict, marker: str = HOOK_MARKER) -> dict:
+def remove_marker_entries(settings: Settings, marker: str = HOOK_MARKER) -> Settings:
     """Structurally remove every hook-group tagged with `marker`.
 
     Only drops dict elements *of a list* whose subtree contains the marker —
     exactly the shape :func:`add_hook_entries` adds. Sibling entries (other
     hook consumers) and every other key are passed through unchanged.
+
+    An event key we were the *only* consumer of is dropped along with its last
+    group, so uninstall leaves no ``"PermissionRequest": []`` residue behind.
+    Only keys that were non-empty before the drop are removed — a user who
+    keeps a deliberately empty event key gets it back untouched.
     """
-    return _drop_marked(settings, marker)
+    dropped = _drop_marked(settings, marker)
+    if not isinstance(dropped, dict):
+        return settings  # pragma: no cover - _drop_marked preserves dict-ness
+    cleaned = cast(Settings, dropped)
+    before = settings.get("hooks")
+    after = cleaned.get("hooks")
+    if isinstance(before, dict) and isinstance(after, dict):
+        before_events = cast("dict[str, object]", before)
+        after_events = cast("dict[str, object]", after)
+        cleaned = dict(cleaned)
+        cleaned["hooks"] = {
+            event: groups
+            for event, groups in after_events.items()
+            if groups != [] or before_events.get(event) == []
+        }
+    return cleaned
 
 
-def serialize_settings(data: dict) -> str:
+def serialize_settings(data: Settings) -> str:
     return json.dumps(data, indent=2) + "\n"
 
 
-def load_settings(settings_path: Path) -> dict:
+def load_settings(settings_path: Path) -> Settings:
     if not settings_path.exists():
         return {}
     text = settings_path.read_text(encoding="utf-8")
@@ -185,7 +280,7 @@ def load_settings(settings_path: Path) -> dict:
     return json.loads(text)
 
 
-def write_settings_atomic(settings_path: Path, data: dict) -> None:
+def write_settings_atomic(settings_path: Path, data: Settings) -> None:
     settings_path.parent.mkdir(parents=True, exist_ok=True)
     tmp = settings_path.with_suffix(settings_path.suffix + ".tmp")
     tmp.write_text(serialize_settings(data), encoding="utf-8")
@@ -404,7 +499,7 @@ def install(
     settings = load_settings(settings_path)
     updated = add_hook_entries(settings, hook_abspath)
     if updated is settings:
-        print("hook already installed in settings.json (marker present); left untouched")
+        print("hook already installed in settings.json for every event; left untouched")
     else:
         write_settings_atomic(settings_path, updated)
         print(f"added hook entries to {settings_path}")

@@ -44,6 +44,7 @@ fn with_agent(mut p: Project, who: &str, event: &str, at: &str) -> Project {
         last_event: Some(event.to_string()),
         last_event_at: Some(ts(at)),
         session_id: Some("s1".to_string()),
+        waiting_since: None,
     };
     p
 }
@@ -438,6 +439,7 @@ fn feed_is_capped_at_feed_capacity_dropping_the_oldest() {
             last_event: Some("Stop".to_string()),
             last_event_at: Some(at),
             session_id: None,
+            waiting_since: None,
         };
         let next = Radar {
             schema_version: 1,
@@ -508,4 +510,75 @@ fn agent_detail_suffix_follows_the_count_not_the_dirty_flag() {
         ..GitState::not_a_repo()
     };
     assert_eq!(agent_detail(&p), "claude-code stop");
+}
+
+// --- MECH-5: the waiting transition as a feed row ---------------------------
+
+#[test]
+fn a_new_waiting_latch_emits_one_feed_row() {
+    let prev = radar_at("2026-09-04T10:00:00Z", vec![project("p1", "alpha", StatusBucket::Active)]);
+    let mut next_p = project("p1", "alpha", StatusBucket::Active);
+    next_p.agent.waiting_since = Some(ts("2026-09-04T10:00:30Z"));
+    let next = radar_at("2026-09-04T10:01:00Z", vec![next_p]);
+
+    let mut feed = FeedState::default();
+    feed.ingest(&prev, &next);
+
+    let rows: Vec<_> = feed.events().iter().filter(|e| e.kind == FeedKind::Waiting).collect();
+    assert_eq!(rows.len(), 1, "one row for the transition, got {:?}", feed.events());
+    assert_eq!(rows[0].project, "alpha");
+    assert_eq!(
+        rows[0].at,
+        ts("2026-09-04T10:00:30Z"),
+        "the row is stamped when the wait began, not when the scan noticed it"
+    );
+    assert!(rows[0].detail.contains("waiting on you"), "got {:?}", rows[0].detail);
+}
+
+#[test]
+fn a_carried_forward_latch_does_not_re_emit_every_tick() {
+    // The latch is carried forward unchanged for as long as the human takes to answer — the
+    // exact period the feed is most likely to be read. An `is_some()` test here would fill
+    // the whole block with copies of one event.
+    let since = ts("2026-09-04T10:00:30Z");
+    let mut p1 = project("p1", "alpha", StatusBucket::Active);
+    p1.agent.waiting_since = Some(since);
+    let prev = radar_at("2026-09-04T10:01:00Z", vec![p1.clone()]);
+    let next = radar_at("2026-09-04T10:02:00Z", vec![p1]);
+
+    let mut feed = FeedState::default();
+    feed.ingest(&prev, &next);
+
+    assert!(
+        feed.events().iter().all(|e| e.kind != FeedKind::Waiting),
+        "an unchanged latch is not news, got {:?}", feed.events()
+    );
+}
+
+#[test]
+fn a_second_wait_after_the_first_was_answered_emits_a_second_row() {
+    // Answer, then get asked again: two distinct waits, two rows. This is the case the
+    // "don't re-emit" rule above must not over-suppress.
+    let mut p_wait1 = project("p1", "alpha", StatusBucket::Active);
+    p_wait1.agent.waiting_since = Some(ts("2026-09-04T10:00:30Z"));
+    let answered = project("p1", "alpha", StatusBucket::Active); // latch released
+    let mut p_wait2 = project("p1", "alpha", StatusBucket::Active);
+    p_wait2.agent.waiting_since = Some(ts("2026-09-04T10:05:00Z"));
+
+    let mut feed = FeedState::default();
+    feed.ingest(
+        &radar_at("2026-09-04T10:00:00Z", vec![project("p1", "alpha", StatusBucket::Active)]),
+        &radar_at("2026-09-04T10:01:00Z", vec![p_wait1]),
+    );
+    feed.ingest(
+        &radar_at("2026-09-04T10:01:00Z", vec![answered.clone()]),
+        &radar_at("2026-09-04T10:02:00Z", vec![answered]),
+    );
+    feed.ingest(
+        &radar_at("2026-09-04T10:04:00Z", vec![project("p1", "alpha", StatusBucket::Active)]),
+        &radar_at("2026-09-04T10:05:30Z", vec![p_wait2]),
+    );
+
+    let rows: Vec<_> = feed.events().iter().filter(|e| e.kind == FeedKind::Waiting).collect();
+    assert_eq!(rows.len(), 2, "two separate waits -> two rows, got {:?}", feed.events());
 }

@@ -27,6 +27,7 @@ from petridish.schema import Project, Radar, read_json, utcnow, HOOK_MARKER
 from petridish.installer import (
     DEFAULT_MENUBAR_PLUGIN_FILENAME,
     InstallError,
+    HOOK_EVENTS,
     add_hook_entries,
     backup_settings,
     check_platform,
@@ -107,12 +108,18 @@ def test_add_hook_entries_appends_preserving_existing():
     updated = add_hook_entries(OTHER_CONSUMER_SETTINGS, "/abs/path/swab-hook")
 
     assert updated is not OTHER_CONSUMER_SETTINGS
-    # Existing consumers untouched.
-    assert updated["hooks"]["Notification"] == OTHER_CONSUMER_SETTINGS["hooks"]["Notification"]
+    # Existing consumers untouched — including under `Notification`, which we now
+    # register on too (MECH-5): ours is *appended*, the pixtuoid group stays first.
+    assert (
+        updated["hooks"]["Notification"][0]
+        == OTHER_CONSUMER_SETTINGS["hooks"]["Notification"][0]
+    )
+    assert len(updated["hooks"]["Notification"]) == 2  # pixtuoid + ours
     assert len(updated["hooks"]["PreToolUse"]) == 3  # rtk + notchbar + ours
     assert len(updated["hooks"]["Stop"]) == 2  # notchbar + ours
+    assert len(updated["hooks"]["PermissionRequest"]) == 1  # ours alone; new key
     assert has_marker(updated)
-    for event in ("PreToolUse", "Stop"):
+    for event in HOOK_EVENTS:
         commands = [
             h["command"]
             for group in updated["hooks"][event]
@@ -382,7 +389,10 @@ def test_install_never_touches_other_consumers(tmp_path, monkeypatch):
     install(home=home, claude_dir=claude_dir, launch_agents_dir=launch_agents_dir, uid=501, runner=runner)
 
     settings = json.loads((claude_dir / "settings.json").read_text(encoding="utf-8"))
-    assert settings["hooks"]["Notification"] == OTHER_CONSUMER_SETTINGS["hooks"]["Notification"]
+    # Every pre-existing group survives, in its original position, on every event
+    # we register on — the `Notification` key now holds ours *after* pixtuoid's.
+    for event, groups in OTHER_CONSUMER_SETTINGS["hooks"].items():
+        assert settings["hooks"][event][: len(groups)] == groups
     rtk_entry = settings["hooks"]["PreToolUse"][0]
     assert rtk_entry == OTHER_CONSUMER_SETTINGS["hooks"]["PreToolUse"][0]
 

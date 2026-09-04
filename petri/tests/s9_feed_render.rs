@@ -46,6 +46,7 @@ fn with_agent(mut p: Project, who: &str, event: &str, at: &str) -> Project {
         last_event: Some(event.to_string()),
         last_event_at: Some(ts(at)),
         session_id: Some("s1".to_string()),
+        waiting_since: None,
     };
     p
 }

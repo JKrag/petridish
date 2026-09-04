@@ -83,9 +83,18 @@ impl ScanPaths {
 fn derive_agent(
     signal: Option<&schema::AgentSignal>,
     now: chrono::DateTime<chrono::Utc>,
+    waiting_since: Option<chrono::DateTime<chrono::Utc>>,
 ) -> AgentState {
     match signal {
-        None => AgentState::idle_unknown(),
+        // No signal at all — but a `MECH-5` latch can outlive its signal (the claude sensor
+        // stops reporting a root past `DEFAULT_COLD_CUTOFF_HOURS`, and a project blocked on
+        // a permission prompt is by definition producing no new transcript activity). So the
+        // latch is spread onto the idle-unknown default rather than dropped with it: release
+        // must be a decision `resolve_waiting` made, never a side effect of a sensor cutoff.
+        None => AgentState {
+            waiting_since,
+            ..AgentState::idle_unknown()
+        },
         Some(s) => {
             let age_s = (now - s.at).num_seconds(); // can be negative if clock jumped forward
             let state = schema::agent_state_for_silence(age_s);
@@ -95,8 +104,61 @@ fn derive_agent(
                 last_event: s.event.clone(),
                 last_event_at: Some(s.at),
                 session_id: s.session_id.clone(),
+                waiting_since,
             }
         }
+    }
+}
+
+/// `resolve_waiting` plus the agent guard — the whole `MECH-5` decision for one root.
+///
+/// Guarded on the fold's winning signal being claude-code, mirroring `run_scan`'s §4b
+/// event-name guard and for the same reason: `events.ndjson` is written only by Claude
+/// Code's hooks, so a root whose most recent activity is copilot must not be labelled
+/// `copilot` and simultaneously flagged as waiting on the strength of a Claude session.
+/// Blank-not-false is the designed outcome for copilot here (`petri/IDEAS.md` MECH-5) — it
+/// has no equivalent signal to read, so its rows are honestly empty rather than wrong.
+fn waiting_for_root(
+    signal: Option<&schema::AgentSignal>,
+    previous: Option<chrono::DateTime<chrono::Utc>>,
+    delta: Option<bool>,
+    now: chrono::DateTime<chrono::Utc>,
+) -> Option<chrono::DateTime<chrono::Utc>> {
+    match signal {
+        Some(sig) if sig.agent != "claude-code" => None,
+        _ => resolve_waiting(previous, delta, now),
+    }
+}
+
+/// Resolve this tick's `MECH-5` waiting latch for one root: the previous tick's value, this
+/// tick's hook observation (`events::WaitingDeltas`), and `now`.
+///
+/// Three inputs, because the latch is durable state and `events.ndjson` is not: it is a
+/// hand-off buffer that `read_and_compact` truncates every tick, so "no news this tick" is
+/// the *normal* case for a project that is still blocked and must mean "keep the latch",
+/// while an absent latch and a cleared one must stay distinguishable. The rules:
+///
+/// - a set event (`Notification`/`PermissionRequest`) starts a latch, but does **not**
+///   restart one already running — the age of a wait is measured from when it began, not
+///   from the last reminder, or a repeating notification would defeat the expiry below;
+/// - a clear event (`PreToolUse`/`Stop`, both already registered) releases it — the human
+///   answered;
+/// - no event carries the previous value forward, until `WAITING_MAX_LATCH_S` expires it.
+///   That backstop is what stops a killed session, a closed terminal or a sleeping machine
+///   from latching a project on screen forever.
+fn resolve_waiting(
+    previous: Option<chrono::DateTime<chrono::Utc>>,
+    delta: Option<bool>,
+    now: chrono::DateTime<chrono::Utc>,
+) -> Option<chrono::DateTime<chrono::Utc>> {
+    match delta {
+        Some(true) => match previous {
+            Some(started) if schema::waiting_latch_live(Some(started), now) => Some(started),
+            _ => Some(now),
+        },
+        Some(false) => None,
+        None if schema::waiting_latch_live(previous, now) => previous,
+        None => None,
     }
 }
 
@@ -134,6 +196,18 @@ fn status_bucket(
     // when the last git commit landed (invariant #6 of ARCHITECTURE.md: git-only
     // bucketing loses when an agent is actively working in it).
     if matches!(agent.state, AgentActivity::Working | AgentActivity::Recent) {
+        return StatusBucket::Active;
+    }
+
+    // `MECH-5`: a live "waiting on you" latch is also Active, and this is the point of the
+    // whole feature rather than a rendering detail. Every other agent state is derived from
+    // *silence*, so a run blocked on a permission prompt decays exactly like one that
+    // finished cleanly — it slides Working -> Recent -> Idle and out of Active, and the one
+    // project actually waiting for a human gets demoted for waiting. Deciding it here rather
+    // than in `petri`'s membership filter means `petripy`, the menubar and `swab list` all
+    // get the corrected bucket too; a capability added to the schema that only one frontend
+    // honours is not a schema capability.
+    if schema::waiting_latch_live(agent.waiting_since, now) {
         return StatusBucket::Active;
     }
 
@@ -180,6 +254,7 @@ fn build_project(
     thresholds_stale_h: f64,
     prev_agent_activity: Option<&Vec<u32>>,
     events_count_this_tick: u32,
+    waiting_since: Option<chrono::DateTime<chrono::Utc>>,
 ) -> schema::Project {
     let resolved_str = resolved.to_string_lossy().into_owned();
 
@@ -202,7 +277,7 @@ fn build_project(
     let foreign = discovery::is_foreign(resolved, config);
     let git_state = crate::git::scan(resolved, &config.author_patterns, &config.author_since);
 
-    let agent = derive_agent(signal, now);
+    let agent = derive_agent(signal, now, waiting_since);
 
     let last_activity_at = last_activity_at(&git_state, signal);
     let status_bucket = status_bucket(
@@ -333,13 +408,26 @@ pub fn run_scan(config: &Config, paths: &ScanPaths, previous: Option<&Radar>) ->
     )
     .unwrap_or_default();
 
-    let (events_signals, events_counts): (
+    let (events_signals, events_counts, waiting_deltas): (
         HashMap<String, schema::AgentSignal>,
         HashMap<String, u32>,
+        crate::events::WaitingDeltas,
     ) = std::panic::catch_unwind(AssertUnwindSafe(|| {
         crate::events::read_and_compact(&paths.events_path, config, EVENTS_MAX_BYTES)
     }))
     .unwrap_or_default();
+
+    // Previous tick's `MECH-5` waiting latches, keyed by resolved path (== `Project::path`),
+    // for the same reason the activity rings below are: `events.ndjson` is truncated on read,
+    // so the only durable home for cross-tick state is the file we just wrote last tick.
+    let prev_waiting: HashMap<String, chrono::DateTime<chrono::Utc>> = previous
+        .map(|r| {
+            r.projects
+                .iter()
+                .filter_map(|p| p.agent.waiting_since.map(|w| (p.path.clone(), w)))
+                .collect()
+        })
+        .unwrap_or_default();
 
     // Previous tick's agent-activity rings, keyed by resolved path (== `Project::path`) so
     // they can be carried forward regardless of any other field changing.
@@ -424,6 +512,12 @@ pub fn run_scan(config: &Config, paths: &ScanPaths, previous: Option<&Radar>) ->
             let resolved = PathBuf::from(&root);
             let signal = merged.get(&root);
             let events_count_this_tick = events_counts.get(&root).copied().unwrap_or(0);
+            let waiting_since = waiting_for_root(
+                signal,
+                prev_waiting.get(&root).copied(),
+                waiting_deltas.get(&root).copied(),
+                now,
+            );
             // `build_project` computes `is_foreign` itself (matches Python's `_build_project`,
             // which also calls `is_foreign` fresh per project with no precomputed cache).
             build_project(
@@ -436,6 +530,7 @@ pub fn run_scan(config: &Config, paths: &ScanPaths, previous: Option<&Radar>) ->
                 t_stale,
                 prev_activity.get(&root),
                 events_count_this_tick,
+                waiting_since,
             )
         })
         .collect();
@@ -1394,7 +1489,7 @@ mod tests {
         let mut full_ring = vec![0u32; schema::AGENT_ACTIVITY_WINDOW];
         full_ring[0] = 99;
         let mut seeded_project = build_project(
-            &repo.canonicalize().unwrap(), &config, None, chrono::Utc::now(), 48.0, 336.0, 1440.0, None, 0,
+            &repo.canonicalize().unwrap(), &config, None, chrono::Utc::now(), 48.0, 336.0, 1440.0, None, 0, None,
         );
         seeded_project.agent_activity = full_ring;
         let previous = Radar {
@@ -1416,5 +1511,268 @@ mod tests {
             "oldest sample (99) must have been evicted once the ring exceeded the cap: {:?}",
             ring
         );
+    }
+
+    // ═══ MECH-5 — "waiting on you" ═════════════════════════════════════════════════════
+
+    /// The pure latch-resolution rule, as a table. Each row is a state the scanner will
+    /// really be in; the interesting ones are the two that are NOT "do what the event says":
+    /// a repeated set must not restart the clock (or a notification that re-fires every few
+    /// minutes would never expire), and no-news must preserve, because "no news" is the
+    /// normal state of a project that is still blocked — `events.ndjson` is truncated every
+    /// tick, so a blocked project produces exactly one set event and then silence.
+    #[test]
+    fn resolve_waiting_rule_table() {
+        let now = chrono::Utc::now();
+        let recent = now - chrono::Duration::minutes(5);
+        let expired = now - chrono::Duration::seconds(schema::WAITING_MAX_LATCH_S + 60);
+
+        assert_eq!(resolve_waiting(None, Some(true), now), Some(now), "set with no latch starts one at now");
+        assert_eq!(
+            resolve_waiting(Some(recent), Some(true), now),
+            Some(recent),
+            "a repeated set must NOT restart a live latch — the wait began when it began"
+        );
+        assert_eq!(
+            resolve_waiting(Some(expired), Some(true), now),
+            Some(now),
+            "a set against an already-expired latch starts a fresh one"
+        );
+        assert_eq!(resolve_waiting(Some(recent), Some(false), now), None, "clear releases");
+        assert_eq!(resolve_waiting(None, Some(false), now), None, "clear with no latch stays released");
+        assert_eq!(
+            resolve_waiting(Some(recent), None, now),
+            Some(recent),
+            "no news carries a live latch forward"
+        );
+        assert_eq!(
+            resolve_waiting(Some(expired), None, now),
+            None,
+            "no news releases an expired latch — the backstop for a session that was killed"
+        );
+        assert_eq!(resolve_waiting(None, None, now), None);
+    }
+
+    /// A latch is durable across ticks even though `events.ndjson` is not. This is the
+    /// integration-level version of the row above: tick 1 sees the hook event, tick 2 sees
+    /// an empty events file (because tick 1 truncated it) and must still report waiting.
+    #[test]
+    fn waiting_latch_survives_the_next_tick_with_no_events() {
+        let fixture = Tmp::new("waiting_survives_tick");
+        let repo = fixture.path.join("repo");
+        std::fs::create_dir_all(&repo).expect("mkdir repo");
+        std::fs::create_dir_all(repo.join(".git")).expect("mkdir .git");
+
+        let events = fixture.path.join(".petridish/events.ndjson");
+        std::fs::create_dir_all(events.parent().unwrap()).expect("mkdir .petridish");
+        std::fs::write(
+            &events,
+            format!(
+                "{{\"cwd\":\"{}\",\"at\":\"{}\",\"event\":\"PermissionRequest\"}}\n",
+                repo.to_str().unwrap(),
+                chrono::Utc::now().format("%Y-%m-%dT%H:%M:%SZ"),
+            ),
+        )
+        .expect("write events");
+
+        let paths = ScanPaths::for_home(&fixture.path);
+        let config = test_config(vec![repo.clone()]);
+
+        let first = run_scan(&config, &paths, None);
+        assert!(
+            first.projects[0].agent.waiting_since.is_some(),
+            "PermissionRequest must set the latch on the tick that reads it"
+        );
+
+        // `read_and_compact` truncated the file, so this tick has no events at all.
+        assert_eq!(std::fs::read_to_string(&events).unwrap(), "");
+        let second = run_scan(&config, &paths, Some(&first));
+        assert_eq!(
+            second.projects[0].agent.waiting_since,
+            first.projects[0].agent.waiting_since,
+            "the latch must carry forward unchanged, including its start time"
+        );
+    }
+
+    /// The clearing half, end to end: a `Stop` on the tick after the latch was set releases
+    /// it. This is the rule that matters most — a waiting indicator that can latch on and
+    /// never release is worse than none at all.
+    #[test]
+    fn clearing_event_releases_a_carried_latch() {
+        let fixture = Tmp::new("waiting_cleared_next_tick");
+        let repo = fixture.path.join("repo");
+        std::fs::create_dir_all(&repo).expect("mkdir repo");
+        std::fs::create_dir_all(repo.join(".git")).expect("mkdir .git");
+
+        let events = fixture.path.join(".petridish/events.ndjson");
+        std::fs::create_dir_all(events.parent().unwrap()).expect("mkdir .petridish");
+        let write_event = |name: &str| {
+            std::fs::write(
+                &events,
+                format!(
+                    "{{\"cwd\":\"{}\",\"at\":\"{}\",\"event\":\"{name}\"}}\n",
+                    repo.to_str().unwrap(),
+                    chrono::Utc::now().format("%Y-%m-%dT%H:%M:%SZ"),
+                ),
+            )
+            .expect("write events");
+        };
+
+        let paths = ScanPaths::for_home(&fixture.path);
+        let config = test_config(vec![repo.clone()]);
+
+        write_event("Notification");
+        let first = run_scan(&config, &paths, None);
+        assert!(first.projects[0].agent.waiting_since.is_some());
+
+        write_event("Stop");
+        let second = run_scan(&config, &paths, Some(&first));
+        assert_eq!(
+            second.projects[0].agent.waiting_since, None,
+            "a Stop after a Notification means the human answered"
+        );
+    }
+
+    /// The point of the whole feature: a blocked run must not decay out of `Active` the way
+    /// a finished one does. Old git history, no agent signal at all, latch carried from the
+    /// previous tick — and it still buckets Active, so every frontend (not just `petri`)
+    /// keeps it in view.
+    #[test]
+    fn waiting_latch_pins_status_bucket_active_against_cold_history() {
+        let fixture = Tmp::new("waiting_pins_active");
+        let repo = fixture.path.join("repo");
+        git_init_at(&repo);
+        git_add_and_commit_at(&repo, "old.txt", "data", "2023-01-01T00:00:00+00:00");
+
+        let paths = ScanPaths::for_home(&fixture.path);
+        let config = test_config(vec![repo.clone()]);
+
+        let baseline = run_scan(&config, &paths, None);
+        assert_eq!(
+            baseline.projects[0].status_bucket,
+            StatusBucket::Cold,
+            "a 2023 commit and no agent activity is Cold — the state this test contrasts with"
+        );
+
+        // Hand the next tick a previous Radar carrying a live latch, exactly as the
+        // carry-forward path would.
+        let mut previous = baseline.clone();
+        previous.projects[0].agent.waiting_since = Some(chrono::Utc::now() - chrono::Duration::minutes(10));
+
+        let radar = run_scan(&config, &paths, Some(&previous));
+        assert!(radar.projects[0].agent.waiting_since.is_some(), "latch carried forward");
+        assert_eq!(
+            radar.projects[0].status_bucket,
+            StatusBucket::Active,
+            "a project waiting on a human is Active regardless of how silent it has been"
+        );
+        assert_eq!(
+            radar.projects[0].agent.state,
+            AgentActivity::Idle,
+            "the silence-derived state is untouched — `waiting` is a separate axis, not a \
+             fourth AgentActivity variant (an unknown variant would hard-fail older readers)"
+        );
+    }
+
+    /// An expired latch is released by the tick that notices, and the bucket goes back to
+    /// what the evidence says. Without this the backstop would exist in `resolve_waiting`
+    /// and be unreachable from a real scan.
+    #[test]
+    fn expired_latch_is_released_and_bucket_returns_to_cold() {
+        let fixture = Tmp::new("waiting_expires");
+        let repo = fixture.path.join("repo");
+        git_init_at(&repo);
+        git_add_and_commit_at(&repo, "old.txt", "data", "2023-01-01T00:00:00+00:00");
+
+        let paths = ScanPaths::for_home(&fixture.path);
+        let config = test_config(vec![repo.clone()]);
+        let baseline = run_scan(&config, &paths, None);
+
+        let mut previous = baseline.clone();
+        previous.projects[0].agent.waiting_since =
+            Some(chrono::Utc::now() - chrono::Duration::seconds(schema::WAITING_MAX_LATCH_S + 60));
+
+        let radar = run_scan(&config, &paths, Some(&previous));
+        assert_eq!(radar.projects[0].agent.waiting_since, None, "expired latch released");
+        assert_eq!(radar.projects[0].status_bucket, StatusBucket::Cold);
+    }
+
+    /// A latch outlives its signal. The claude sensor stops reporting a root past the cold
+    /// cutoff, and a project blocked on a prompt is by definition producing no new
+    /// transcript activity — so `derive_agent`'s no-signal arm has to carry the latch rather
+    /// than returning the plain idle-unknown default. Release must be a decision, never a
+    /// side effect of a sensor going quiet.
+    #[test]
+    fn latch_survives_a_root_with_no_agent_signal_at_all() {
+        let fixture = Tmp::new("waiting_no_signal");
+        let repo = fixture.path.join("repo");
+        std::fs::create_dir_all(&repo).expect("mkdir repo");
+        std::fs::create_dir_all(repo.join(".git")).expect("mkdir .git");
+
+        let paths = ScanPaths::for_home(&fixture.path);
+        let config = test_config(vec![repo.clone()]);
+        let baseline = run_scan(&config, &paths, None);
+        assert_eq!(
+            baseline.projects[0].agent.active_agent, None,
+            "fixture precondition: no sensor reports this root"
+        );
+
+        let mut previous = baseline.clone();
+        let since = chrono::Utc::now() - chrono::Duration::minutes(3);
+        previous.projects[0].agent.waiting_since = Some(since);
+
+        let radar = run_scan(&config, &paths, Some(&previous));
+        assert_eq!(radar.projects[0].agent.waiting_since, Some(since));
+    }
+
+    /// The copilot guard, mirroring §4b's: `events.ndjson` is written only by Claude Code's
+    /// hooks, so a root whose most recent activity is copilot must not be labelled `copilot`
+    /// and simultaneously flagged as waiting on the strength of a Claude session.
+    #[test]
+    fn waiting_is_not_carried_when_the_winning_signal_is_not_claude_code() {
+        let now = chrono::Utc::now();
+        let latch = Some(now - chrono::Duration::minutes(2));
+        let signal = |agent: &str| schema::AgentSignal {
+            root: "/tmp/whatever".to_string(),
+            at: now,
+            agent: agent.to_string(),
+            session_id: None,
+            event: None,
+            raw_cwd: None,
+        };
+
+        assert_eq!(
+            waiting_for_root(Some(&signal("copilot")), latch, None, now),
+            None,
+            "a copilot-won root must not render a latch derived from a Claude session"
+        );
+        assert_eq!(
+            waiting_for_root(Some(&signal("claude-code")), latch, None, now),
+            latch,
+            "the same latch on a claude-code-won root is carried — the guard is about WHO \
+             won the fold, not about suppressing the feature"
+        );
+        assert_eq!(
+            waiting_for_root(None, latch, None, now),
+            latch,
+            "no signal at all is not a non-claude-code signal: the latch outlives the sensor"
+        );
+    }
+
+    /// `SPEC.md` §4.6: a `projects.json` written before this field existed must still parse.
+    /// Every writer we ship emits the field, so nothing else in the suite exercises its
+    /// absence — which is exactly why the `#[serde(default)]` it depends on could rot
+    /// unnoticed.
+    #[test]
+    fn agent_state_without_waiting_since_still_deserializes() {
+        let json = r#"{
+            "state": "idle",
+            "active_agent": "claude-code",
+            "last_event": "Bash",
+            "last_event_at": "2026-08-05T22:44:12Z",
+            "session_id": "s1"
+        }"#;
+        let agent: AgentState = serde_json::from_str(json).expect("older payload must parse");
+        assert_eq!(agent.waiting_since, None);
     }
 }

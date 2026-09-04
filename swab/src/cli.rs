@@ -325,11 +325,33 @@ pub fn cmd_doctor(
         let text = std::fs::read_to_string(&settings_path).map_err(|e| {
             format!("cannot read settings.json: {e}")
         })?;
-        let _: serde_json::Value = serde_json::from_str(&text).map_err(|e| {
+        let settings: serde_json::Value = serde_json::from_str(&text).map_err(|e| {
             format!("settings.json not valid JSON: {e}")
         })?;
         if !text.contains(crate::config::HOOK_MARKER) {
             return Err("swab-hook marker not found in ~/.claude/settings.json".to_string());
+        }
+        // Per-event, not "the marker appears somewhere". A substring check passes on a
+        // machine that was set up before an event was added to the list — reporting the hook
+        // healthy while the events it is missing (today: the `MECH-5` pair) silently do
+        // nothing. Re-running `petridish install` is the fix, and this is what tells the
+        // user to; the installer's own idempotency is per-event for the same reason.
+        let missing: Vec<&str> = crate::config::HOOK_EVENTS
+            .iter()
+            .copied()
+            .filter(|event| {
+                !settings
+                    .get("hooks")
+                    .and_then(|h| h.get(event))
+                    .map(|groups| groups.to_string().contains(crate::config::HOOK_MARKER))
+                    .unwrap_or(false)
+            })
+            .collect();
+        if !missing.is_empty() {
+            return Err(format!(
+                "swab-hook not registered on: {} (re-run `petridish install`)",
+                missing.join(", ")
+            ));
         }
         Ok(true)
     });
@@ -338,7 +360,18 @@ pub fn cmd_doctor(
         if *ok {
             let _ = writeln!(out, "ok: {key}");
         } else {
-            let _ = writeln!(out, "fail: {key}");
+            // Print the reason, not just the verdict. `fail: hook` alone leaves the user to
+            // guess between "not installed at all" and "installed, but missing the events
+            // added since" — and the second one is now the common case, with a one-line fix
+            // (`petridish install`) the message can just name.
+            match problems.iter().find(|p| p.starts_with(&format!("{key}: "))) {
+                Some(problem) => {
+                    let _ = writeln!(out, "fail: {problem}");
+                }
+                None => {
+                    let _ = writeln!(out, "fail: {key}");
+                }
+            }
         }
     }
 
@@ -1019,10 +1052,20 @@ mod tests {
         let radar = test_radar(vec![]);
         write_fixture_radar(&dir.join(".petridish").join("projects.json"), radar);
 
-        // settings.json with the HOOK_MARKER somewhere in it.
+        // settings.json with a marked hook group under EVERY registered event — the shape
+        // `installer.py` actually writes. It used to be enough to drop the marker anywhere
+        // in the file; that let `doctor` report "ok: hook" on a machine registered on only
+        // some of `HOOK_EVENTS`, which is the exact state every pre-MECH-5 install is in.
+        let marked_groups = crate::config::HOOK_EVENTS
+            .iter()
+            .map(|event| format!(
+                "\"{event}\": [{{\"hooks\": [{{\"type\": \"command\", \"command\": \"/bin/swab-hook # petridish\"}}]}}]"
+            ))
+            .collect::<Vec<_>>()
+            .join(", ");
         std::fs::write(
             dir.join(".claude").join("settings.json"),
-            "{\"hooks\": {\"command\": \"# petridish echo hello\"}}",
+            format!("{{\"hooks\": {{{marked_groups}}}}}"),
         )
         .unwrap();
 
@@ -1041,6 +1084,41 @@ mod tests {
         assert!(captured.contains("ok: hook"), "hook should be ok: {captured}");
 
         unsafe { std::env::set_var("HOME", &real_home) };
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Regression (MECH-5): `doctor` used to answer the hook question with
+    /// `text.contains(HOOK_MARKER)`, so a settings.json registered on only *some* of
+    /// `HOOK_EVENTS` reported healthy. Every machine installed before `Notification`/
+    /// `PermissionRequest` joined the list is in exactly that state, and the symptom is a
+    /// feature that is silently dead rather than visibly broken — the one thing `doctor`
+    /// exists to catch.
+    #[test]
+    fn doctor_fails_when_the_hook_is_registered_on_only_some_events() {
+        let dir = std::env::temp_dir().join(format!("swab_test_doctor_partial_hook_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join(".petridish")).unwrap();
+        std::fs::create_dir_all(dir.join(".claude")).unwrap();
+        std::fs::create_dir_all(dir.join("repos")).unwrap();
+        std::fs::write(dir.join(".petridish").join("config.toml"), "roots = [\"$HOME/repos\"]").unwrap();
+        write_fixture_radar(&dir.join(".petridish").join("projects.json"), test_radar(vec![]));
+
+        // The pre-MECH-5 shape: PreToolUse and Stop only.
+        std::fs::write(
+            dir.join(".claude").join("settings.json"),
+            "{\"hooks\": {             \"PreToolUse\": [{\"hooks\": [{\"type\": \"command\", \"command\": \"/bin/swab-hook # petridish\"}]}],              \"Stop\": [{\"hooks\": [{\"type\": \"command\", \"command\": \"/bin/swab-hook # petridish\"}]}]}}",
+        )
+        .unwrap();
+
+        let real_home = std::env::var("HOME").unwrap_or_else(|_| "~".into());
+        unsafe { std::env::set_var("HOME", dir.to_str().unwrap()) };
+        let mut cap = Capture::new();
+        let code = cmd_doctor(&dir.join(".petridish").join("projects.json"), &mut cap).unwrap();
+        unsafe { std::env::set_var("HOME", &real_home) };
+
+        let captured = cap.as_str();
+        assert_eq!(code, 1, "a partially registered hook must fail doctor: {captured}");
+        assert!(captured.contains("fail: hook"), "got: {captured}");
         let _ = std::fs::remove_dir_all(&dir);
     }
 

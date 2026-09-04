@@ -124,6 +124,12 @@ live log tail in a corner — not for "press `g`, look at the graph, come back,"
 ---
 
 ### MECH-5 — "Waiting on you" as a state the schema can express
+**DONE** (slice 6, §12) — `AgentState::waiting_since` in `petridish-core/src/schema.rs`,
+`events::WaitingDeltas` + `scan::resolve_waiting`/`waiting_for_root` in `swab`, and
+`dashboard::is_waiting` in `petri`. Kept because `SURF-2` leans on it, and because the
+sketch below turned out to be right about the *design* and silent about the one thing that
+made it work — the latch has to live in `projects.json`, since the file the events come from
+is truncated every tick (see §12 finding 1).
 
 **Today it cannot, and the reason is structural.** Every agent state is derived from
 *silence*: `agent_state_for_silence` maps seconds-since-last-event onto
@@ -513,11 +519,11 @@ than deleted, because what they *predicted* turned out to be worth keeping.
 2. ~~**`SPACE-1`, the event feed.**~~ **Done — slice 4 (§10).** The payoff prediction
    held; the mechanism prediction did not (§10 finding 1).
 
-3. **`MECH-5` — a real "waiting on you" state.** The strongest remaining item, and the
-   only one on this list that adds a signal rather than a rendering. Everything else here
-   presents facts `projects.json` already holds; this one closes a hole in what the file
-   can express at all — today a blocked run is indistinguishable from a busy one and then
-   decays like a finished one, which inverts the whole point of an attention monitor.
+3. ~~**`MECH-5` — a real "waiting on you" state.**~~ **Done — slice 6 (§12).** The
+   prediction held: it was the only item on this list that added a *signal* rather than a
+   rendering, and the only one so far whose payoff showed up in a frontend nobody edited —
+   `swab list` prints `claude-code (waiting)` purely because the shared `present::
+   agent_label` learned the field.
 
 Two cheaper things worth doing before or alongside it:
 
@@ -851,3 +857,110 @@ lengthening a list.
 Implementation note for whoever extends this: `sensors/copilot.rs` still hardcodes
 `event: None` and has no event source at all, so its ~14 projects keep reading
 `"copilot activity"`. That is untouched scope, not an oversight.
+
+## 12. Slice 6 — `MECH-5`, "waiting on you"
+
+Landed 2026-09-04. `projects.json` can now say *why* a project is silent, in the one case
+where the answer is "because it is waiting for you". `swab scan` sets
+`agent.waiting_since` from Claude Code's `Notification`/`PermissionRequest` hooks, clears it
+on the `PreToolUse`/`Stop` that means the human answered, and buckets a waiting project
+`active` so it cannot decay out of view while still blocked. `SPEC.md` §3.2/§4.6 have the
+behaviour.
+
+- **`installer.py`** — `HOOK_EVENTS` gains the two events; `add_hook_entries` is now
+  idempotent *per event*.
+- **`events.rs`** — `WAITING_SET_EVENTS`/`WAITING_CLEAR_EVENTS`, `WaitingDeltas`, and a
+  third accumulator in `read_and_compact` alongside the fold and the count tally.
+- **`scan.rs`** — `resolve_waiting` (the latch rule), `waiting_for_root` (rule + agent
+  guard), the carry-forward map, and the `status_bucket` override.
+- **`schema.rs`** — `AgentState::waiting_since`, `WAITING_MAX_LATCH_S`,
+  `waiting_latch_live`; `present.rs` — `agent_label_at`.
+- **`dashboard.rs`** — `is_waiting`, the leading sort key, and the card/row indicator;
+  **`feed.rs`** — `FeedKind::Waiting`.
+
+Eight things worth keeping:
+
+1. **The signal is durable; the file it arrives in is not.** `MECH-5`'s sketch (§1) reads as
+   set-here/clear-there, which quietly assumes a state you can *hold*. `events.ndjson` is
+   truncated on every scan by design, so "no waiting event this tick" is the **normal**
+   condition of a project that is still blocked — a naive reading of the events file
+   releases every latch one tick after setting it. The latch therefore lives in
+   `projects.json` and is carried forward from the previous `Radar`, exactly like
+   `agent_activity`'s ring and for exactly the same reason. Worth generalising: **before
+   building on an event source, check its retention, not just its contents.**
+
+2. **Absent and `false` had to stay different answers.** Following from finding 1: a
+   `WaitingDeltas` entry means "a relevant event was seen this tick", and its absence means
+   "no news, keep what you had". Collapsing those into a `bool` — the obvious shape — makes
+   an ordinary liveness tick indistinguishable from the human answering, and the feature
+   dies silently. It is a three-valued question wearing a two-valued type's clothes.
+
+3. **File order beats timestamp order here, and the existing tie rule was the wrong one to
+   copy.** `format_at` writes whole seconds, so a `Notification` and the `PreToolUse` that
+   answers it routinely land in the same second; `O_APPEND` order is then the only truthful
+   chronology. The signal fold two lines away resolves ties by *keeping the earlier* entry,
+   which for this question would mean a permission prompt outliving its own answer. Two
+   accumulators over one loop, two opposite tie conventions — both correct, neither
+   transferable.
+
+4. **The release rule needed a backstop the sketch didn't ask for.** Hook-clearing is
+   correct and insufficient: a killed session, a closed terminal or a sleeping machine
+   simply never sends one, and a latch that also *pins* its project to `Active` would then
+   hold the top of the Dashboard forever. `WAITING_MAX_LATCH_S` (3h, matching
+   `RUNNING_ATTENTION_CEILING_S` on the same "past this it means forgotten" reasoning) is
+   what makes the pin safe to grant. A repeated set deliberately does **not** restart the
+   clock, or a notification that re-fires would defeat the expiry it is supposed to obey.
+
+5. **Fixing the sort in `petri` alone would have been the wrong half of the fix.**
+   `running_membership` filters on `status_bucket == Active`, and a decayed waiting project
+   is not Active — so there was nothing in RUNNING to sort to the top. Making `swab`'s
+   `status_bucket` honour the latch fixes it for `petripy`, the menubar and `swab list` at
+   the same time. **A capability added to the schema that only one frontend honours is not a
+   schema capability**, and the sort key alone would have shipped exactly that.
+
+6. **`swab doctor` had the same bug one layer up, and it was the more dangerous half.**
+   Its hook check was `settings.json.contains("# petridish")` — a substring test that
+   reports "ok: hook" on every machine registered on only *some* of the events, which after
+   this slice is every machine that ever ran `install`. An installer that quietly skips the
+   new events is bad; a health check that then certifies the result is worse, because it
+   spends the user's one mechanism for noticing. Now checked per event, with the missing
+   names and the fix in the message (`fail: hook: swab-hook not registered on:
+   Notification, PermissionRequest (re-run petridish install)`) — which also meant making
+   `doctor` print its *reasons* rather than a bare `fail: <check>`, something it had never
+   done for any check. **Generalisable: when you widen a list something is installed from,
+   grep for every other place that answers "is it installed?"** — they were all written
+   against the old list.
+
+7. **Growing `HOOK_EVENTS` was a no-op until the installer's idempotency changed shape.**
+   `add_hook_entries` short-circuited on the marker appearing *anywhere* in settings.json,
+   so the only machine that had ever run `install` would have been told "already installed"
+   and never received the two new events — the feature live in the code and dead in the
+   only place it matters. The per-event check is what makes the list growable at all.
+   (It also surfaced an old latent bug: uninstall left a `"PermissionRequest": []` key
+   behind, because nothing dropped an event key we were the sole consumer of.)
+
+8. **A test that re-implements the branch it is testing proves nothing.** The copilot guard
+   was first "tested" by copying its `match` into the test body and asserting on the copy —
+   green, meaningless, and it would have survived deleting the guard from `scan.rs`
+   entirely. Extracting `waiting_for_root` so the test could call the real thing was the
+   fix, and it is the same move as slice 2's `run_action`: **when a test is awkward to
+   reach, the shape of the code is usually the thing to change.** The render and sort tests
+   were verified the other way round — by stubbing `is_waiting` to `false` and confirming
+   all four fail — because a test that cannot fail is the same defect in a different place.
+
+Three things left open, deliberately:
+
+- **The menubar does not show it.** `menubar.py` selects its live list on
+  `agent.state == "working"`, and a waiting project is by definition not working — so the
+  ambient surface where "waiting on you" arguably matters most is the one place it is
+  invisible. That is a menubar change, not a MECH-5 one, and it was left out rather than
+  smuggled in; `schema.py` carries the field so it is a small change when someone wants it.
+
+- **`SURF-2` (notifications) is the obvious next step and is not in this slice.** Entering
+  `waiting` is now a transition worth interrupting someone for, which is precisely what
+  `SURF-2` was missing.
+- **The end-to-end path has not been observed on a real blocked session yet.** Every layer
+  is tested against real fixtures, and both hook names are verified live in this machine's
+  `~/.claude/settings.json` (Claude Code 2.1.236) — but nobody has yet watched a real
+  permission prompt light up the Dashboard, because that needs a re-run of `install` and a
+  session that actually blocks. Same standing caveat as slice 1's `Background` editor path.
