@@ -49,6 +49,31 @@ fn with_agent(mut p: Project, who: &str, event: &str, at: &str) -> Project {
     p
 }
 
+/// A radar whose `updated_at` is *now*, for tests that go through
+/// `dashboard::render`.
+///
+/// Load-bearing, and it cost a day to learn why. `render` compares the radar's
+/// `updated_at` against the real `chrono::Utc::now()` to decide whether to draw
+/// the stale banner (`dashboard.rs`'s `elapsed_secs > 86400`). A fixture pinned
+/// to an absolute past date is therefore a time bomb: every test here used
+/// `2026-09-03T20:00:00Z`, which passed all day and then began failing at
+/// exactly 20:00 UTC the following day, when the fixture crossed 24 hours old
+/// and the banner appeared — consuming the row the feed needed in a 14-row
+/// terminal.
+///
+/// Tests that call `feed_block_lines` directly are unaffected: they are handed
+/// `now` explicitly and are genuinely deterministic. Only the ones that render
+/// need this.
+fn fresh_radar(projects: Vec<Project>) -> Radar {
+    Radar {
+        schema_version: 1,
+        updated_at: chrono::Utc::now(),
+        scan_duration_ms: 0,
+        projects,
+        quota: None,
+    }
+}
+
 fn radar_at(updated_at: &str, projects: Vec<Project>) -> Radar {
     Radar {
         schema_version: 1,
@@ -479,7 +504,7 @@ fn absorb_accumulates_across_several_reloads() {
 
 #[test]
 fn a_tall_dashboard_draws_the_feed() {
-    let radar = radar_at("2026-09-03T20:00:00Z", fleet(4));
+    let radar = fresh_radar(fleet(4));
     let screen = joined(&render_rows(&radar, &feed_of(6), 100, 44));
     assert!(
         screen.contains("ACTIVITY"),
@@ -496,7 +521,7 @@ fn a_short_dashboard_still_spends_its_leftover_on_the_feed() {
     // Retired premise: this used to assert the compact tier never draws a feed. Four
     // projects fit in a 14-row terminal with rows to spare, and those rows were blank —
     // a small terminal has no more use for a blank row than a tall one does.
-    let radar = radar_at("2026-09-03T20:00:00Z", fleet(4));
+    let radar = fresh_radar(fleet(4));
     let screen = joined(&render_rows(&radar, &feed_of(6), 100, 14));
     assert!(
         screen.contains("ACTIVITY"),
@@ -514,7 +539,7 @@ fn a_short_dashboard_still_spends_its_leftover_on_the_feed() {
 fn a_full_dashboard_draws_no_feed() {
     // The case that actually matters: when the fleet consumes the budget there is nothing
     // left, and the feed must not take a row from it.
-    let radar = radar_at("2026-09-03T20:00:00Z", fleet(40));
+    let radar = fresh_radar(fleet(40));
     let rows = render_rows(&radar, &feed_of(6), 100, 14);
     assert!(
         !joined(&rows).contains("ACTIVITY"),
@@ -524,7 +549,7 @@ fn a_full_dashboard_draws_no_feed() {
 
 #[test]
 fn the_feed_sits_below_the_fleet_not_above_it() {
-    let radar = radar_at("2026-09-03T20:00:00Z", fleet(4));
+    let radar = fresh_radar(fleet(4));
     let rows = render_rows(&radar, &feed_of(6), 100, 44);
     let activity = rows
         .iter()
@@ -544,7 +569,7 @@ fn the_feed_sits_below_the_fleet_not_above_it() {
 
 #[test]
 fn rendering_with_a_feed_does_not_panic_at_hostile_sizes() {
-    let radar = radar_at("2026-09-03T20:00:00Z", fleet(30));
+    let radar = fresh_radar(fleet(30));
     for (w, h) in [(40u16, 10u16), (1, 1), (80, 24), (200, 60), (40, 44)] {
         let _ = render_rows(&radar, &feed_of(8), w, h);
     }
