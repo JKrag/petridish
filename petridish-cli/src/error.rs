@@ -18,6 +18,10 @@ pub enum InstallError {
         bootstrap_stderr: String,
         load_stderr: String,
     },
+    /// `settings.json` parsed, but has a shape we did not write and cannot
+    /// safely edit around. Better to stop than to normalise away data belonging
+    /// to another consumer (ARCHITECTURE.md §8.3 D4).
+    UnexpectedSettingsShape(String),
     Io(std::io::Error),
     Json(serde_json::Error),
 }
@@ -60,6 +64,12 @@ impl fmt::Display for InstallError {
                 "launchctl failed to load the job:\n  bootstrap: {}\n  load -w:   {}",
                 bootstrap_stderr.trim(),
                 load_stderr.trim()
+            ),
+            InstallError::UnexpectedSettingsShape(what) => write!(
+                f,
+                "refusing to edit ~/.claude/settings.json: {what}. \
+                 Fix or move the file and re-run; petridish will not rewrite a \
+                 shape it did not create."
             ),
             InstallError::Io(e) => write!(f, "{e}"),
             InstallError::Json(e) => write!(f, "{e}"),

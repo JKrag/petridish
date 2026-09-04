@@ -27,6 +27,14 @@ installers = ["homebrew"]
 tap = "JKrag/homebrew-tap"
 publish-jobs = ["homebrew"]
 
+# Publish the formula for prereleases too. Without this, cargo-dist's generated
+# workflow skips `publish-homebrew-formula` whenever the version has a
+# prerelease suffix — so tagging `v1.0.0-beta.1` would upload tarballs, cut a
+# GitHub Release, and push nothing to the tap, leaving the documented
+# `brew install jkrag/tap/petridish` a 404. A beta nobody can install is not a
+# beta.
+publish-prereleases = true
+
 # macOS only, and that is the product rather than a limitation: launchd and
 # ~/Library are load-bearing, and `petridish install` refuses to run anywhere
 # else (ARCHITECTURE.md §8.3 D5). Both architectures, because Intel Macs are

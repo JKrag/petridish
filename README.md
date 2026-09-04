@@ -163,7 +163,9 @@ make check     # fmt-check + clippy -D warnings + the full test suite
 make fmt       # reformat
 ```
 
-`make check` is exactly what CI runs, so green locally means green in CI.
+`make check` is the fast loop. `make check-all` adds the gates that need extra
+tooling (cargo-deny, an MSRV toolchain, node) and is what CI runs in full — run it
+before opening a PR.
 
 This repo uses `.git-blame-ignore-revs` to keep `git blame` readable across the bulk
 formatting commit. Configure it once:

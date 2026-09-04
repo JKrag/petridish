@@ -90,8 +90,10 @@ Prefer a parameter over an environment read. `petridish-cli` takes `home`, `uid`
 `claude_dir` and the `PATH` string as arguments precisely so its tests never mutate
 process-global state.
 
-**The gate:** `make check` (fmt-check + clippy `-D warnings` + tests) must exit 0. It is
-exactly what CI runs.
+**The gate:** `make check` (fmt-check + clippy `-D warnings` + tests) must exit 0. That is
+the fast loop; `make check-all` adds the three CI jobs that need extra tooling —
+`cargo-deny`, an MSRV toolchain, and node for the Raycast extension. Run
+`check-all` before opening a PR.
 
 **`--test-threads=1` is required.** The reason is *not* the one this file used to give:
 it is not a Python artifact, and the Python is gone. Three tests in `swab/src/cli.rs`

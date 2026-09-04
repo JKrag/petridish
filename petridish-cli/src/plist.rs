@@ -61,8 +61,15 @@ pub fn render_plist(swab_abspath: &str, log_path: &str, label: &str) -> String {
 /// `exec petridish menubar` passes every terminal test and then shows nothing
 /// on a real machine. This is the same reason the Python plugin substituted an
 /// absolute interpreter path into its shebang.
+/// The substituted path is shell-quoted, not dropped into `BIN="..."` raw. A
+/// path may contain `$`, a backtick, a double quote or a backslash, all of which
+/// the shell would otherwise interpret — silently running the wrong thing rather
+/// than failing loudly.
 pub fn render_menubar_wrapper(petridish_abspath: &str) -> String {
-    MENUBAR_WRAPPER_TEMPLATE.replace("__PETRIDISH_PATH__", petridish_abspath)
+    MENUBAR_WRAPPER_TEMPLATE.replace(
+        "__PETRIDISH_PATH__",
+        &crate::shell::single_quote(petridish_abspath),
+    )
 }
 
 #[cfg(test)]
@@ -123,6 +130,22 @@ mod tests {
         assert!(
             out.contains("-x"),
             "missing the executable-exists guard:\n{out}"
+        );
+    }
+
+    /// The wrapper is shell. A path containing `$` or a backtick dropped into
+    /// `BIN="..."` would be expanded, running something other than what was
+    /// installed.
+    #[test]
+    fn the_wrapper_shell_quotes_the_path_it_embeds() {
+        let out = render_menubar_wrapper("/Users/x/$HOME `id`/bin/petridish");
+        assert!(
+            out.contains("BIN='/Users/x/$HOME `id`/bin/petridish'"),
+            "path must be single-quoted:\n{out}"
+        );
+        assert!(
+            !out.contains("BIN=\""),
+            "a double-quoted path would still expand $ and backticks:\n{out}"
         );
     }
 }

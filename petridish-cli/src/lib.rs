@@ -16,6 +16,7 @@ pub mod menubar;
 pub mod paths;
 pub mod plist;
 pub mod settings;
+pub mod shell;
 
 #[cfg(test)]
 pub mod testutil;

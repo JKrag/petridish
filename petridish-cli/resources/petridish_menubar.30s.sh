@@ -11,7 +11,7 @@
 #
 # Never exit non-zero and never print nothing: xbar disables a plugin that
 # errors, so every failure degrades to a visible line instead.
-BIN="__PETRIDISH_PATH__"
+BIN=__PETRIDISH_PATH__
 
 if [ ! -x "$BIN" ]; then
     echo "🧫 ?/?"

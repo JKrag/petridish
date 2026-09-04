@@ -10,7 +10,7 @@
 # returns only the LAST command's exit status, so a formatting failure would
 # report success. Verified empirically — keep them as prerequisites.
 
-.PHONY: help fmt fmt-check clippy test check clean
+.PHONY: help fmt fmt-check clippy test deny msrv raycast check check-all clean
 
 .DEFAULT_GOAL := help
 
@@ -40,7 +40,32 @@ clippy:         ## Lint, warnings are errors.
 test:           ## Run the Rust workspace tests.
 	cargo test --locked --workspace -- --test-threads=1
 
-check: fmt-check clippy test   ## Full gate: formatting + lints + tests.
+deny:           ## Licence + advisory audit (needs `cargo install cargo-deny`).
+	cargo deny check licenses advisories
+
+msrv:           ## Build on the declared rust-version floor (needs that toolchain).
+	cargo +$(shell grep '^rust-version' Cargo.toml | head -1 | sed 's/.*= *"//;s/".*//') \
+		check --locked --workspace --all-targets
+
+# Uses whatever is already in node_modules rather than `npm ci`. CI does the
+# clean install; locally, reinstalling from scratch on every check is slow and
+# fails outright if the npm cache has permission problems, which is not a
+# signal about this code. Run `npm ci` in integrations/raycast yourself if the
+# lockfile changed.
+raycast:        ## Check the Raycast extension (needs node; run `npm ci` there first).
+	cd integrations/raycast && ./node_modules/.bin/tsc --noEmit && npm test \
+		&& ./node_modules/.bin/eslint . \
+		&& ./node_modules/.bin/prettier --check "src/**/*.{ts,tsx}" "tests/**/*.ts"
+
+# The everyday gate: everything that needs nothing but a Rust toolchain.
+check: fmt-check clippy test   ## Fast gate: formatting + lints + tests.
+
+# Everything CI runs. Kept separate because `deny`, `msrv` and `raycast` each
+# need a tool a contributor may not have installed — cargo-deny, a second
+# toolchain, and node respectively — and a gate that fails on a missing tool
+# trains people to ignore it. Run this before opening a PR; run `check` while
+# iterating.
+check-all: check deny msrv raycast   ## Everything CI runs.
 
 clean:          ## Remove build output.
 	cargo clean

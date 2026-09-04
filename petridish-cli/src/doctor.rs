@@ -45,11 +45,24 @@ impl Check {
 ///
 /// A deliberately small parser rather than a plist dependency: we wrote this
 /// file from our own template, so the only question is which path is baked in.
-fn program_path_from_plist(text: &str) -> Option<&str> {
+fn program_path_from_plist(text: &str) -> Option<String> {
     let after = text.split("<array>").nth(1)?;
     let open = after.find("<string>")? + "<string>".len();
     let close = after[open..].find("</string>")?;
-    Some(after[open..open + close].trim())
+    Some(xml_unescape(after[open..open + close].trim()))
+}
+
+/// Undo `plist::xml_escape`.
+///
+/// Load-bearing rather than cosmetic: the plist stores `/Users/a&b/bin/swab` as
+/// `/Users/a&amp;b/bin/swab`, and comparing that against the filesystem would
+/// report a perfectly healthy install as broken — `doctor` telling a user to
+/// re-run `install`, which would produce the identical plist and the identical
+/// complaint. `&amp;` is expanded last so `&amp;lt;` does not become `<`.
+fn xml_unescape(s: &str) -> String {
+    s.replace("&lt;", "<")
+        .replace("&gt;", ">")
+        .replace("&amp;", "&")
 }
 
 /// Run every install-surface check. Pure over the filesystem it is handed, so
@@ -80,7 +93,7 @@ pub fn checks(layout: &Layout, path_var: &str) -> Vec<Check> {
     } else {
         match std::fs::read_to_string(&plist_path) {
             Ok(text) => match program_path_from_plist(&text) {
-                Some(prog) if Path::new(prog).exists() => {
+                Some(prog) if Path::new(&prog).exists() => {
                     out.push(Check::pass("plist", format!("runs {prog}")))
                 }
                 Some(prog) => out.push(Check::fail(
@@ -176,8 +189,32 @@ mod tests {
         let text = plist::render_plist("/opt/homebrew/bin/swab", "/tmp/l.log", PLIST_LABEL);
         assert_eq!(
             program_path_from_plist(&text),
-            Some("/opt/homebrew/bin/swab")
+            Some("/opt/homebrew/bin/swab".to_string())
         );
+    }
+
+    /// `render_plist` XML-escapes what it writes, so reading it back without
+    /// decoding compares `/Users/a&amp;b/...` against the filesystem and reports
+    /// a healthy install as stale — sending the user to re-run `install`, which
+    /// writes the identical plist and produces the identical complaint.
+    #[test]
+    fn the_program_path_is_xml_decoded_before_it_is_used_as_a_path() {
+        let text = plist::render_plist("/Users/a&b/<bin>/swab", "/tmp/l.log", PLIST_LABEL);
+        assert!(
+            text.contains("&amp;"),
+            "precondition: the plist really is escaped"
+        );
+        assert_eq!(
+            program_path_from_plist(&text),
+            Some("/Users/a&b/<bin>/swab".to_string())
+        );
+    }
+
+    #[test]
+    fn xml_unescape_expands_ampersand_last() {
+        // Naive ordering turns `&amp;lt;` into `<`.
+        assert_eq!(xml_unescape("&amp;lt;"), "&lt;");
+        assert_eq!(xml_unescape("a &amp; &lt;b&gt;"), "a & <b>");
     }
 
     #[test]

@@ -9,16 +9,28 @@ not break, and which mistakes this codebase has already made so you don't repeat
 make check
 ```
 
-That is the whole gate: formatting, lints, and the test suite. CI runs the identical
-command set, so a green `make check` locally means a green CI run. Run it before proposing
-any change.
+Formatting, lints and the test suite — everything that needs nothing but a Rust
+toolchain, so it stays fast enough to run constantly.
+
+```sh
+make check-all
+```
+
+Adds the three CI gates that need extra tooling: `cargo-deny`, a second toolchain for
+the MSRV job, and node for the Raycast extension. **This is what CI runs in full**, so
+run it before opening a PR. They are split because a gate that fails on a missing tool
+trains people to ignore it.
 
 ```
 make fmt        # cargo fmt --all
 make fmt-check  # cargo fmt --all --check
 make clippy     # cargo clippy --workspace --all-targets --all-features -- -D warnings
 make test       # cargo test --locked --workspace -- --test-threads=1
-make check      # all of the above — this is the gate
+make check      # fmt-check + clippy + test
+make deny       # cargo-deny (licences + advisories)
+make msrv       # build on the rust-version floor
+make raycast    # the TypeScript extension
+make check-all  # everything CI runs
 ```
 
 The gates in `check` are **prerequisites, not one recipe line**. That is load-bearing: a

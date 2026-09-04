@@ -162,7 +162,7 @@ pub fn install(
 
     let current = load_settings(&settings_path)?;
     let hook = bins.swab_hook.to_string_lossy();
-    match settings::add_hook_entries(&current, &hook, settings::default_marker()) {
+    match settings::add_hook_entries(&current, &hook, settings::default_marker())? {
         Some(updated) => {
             write_settings_atomic(&settings_path, &updated)?;
             let _ = writeln!(out, "added hook entries to {}", settings_path.display());
