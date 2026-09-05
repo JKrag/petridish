@@ -23,7 +23,7 @@ path = "src/bin/swab-hook.rs"
 [dependencies]
 chrono.workspace = true
 clap = { version = "4", features = ["derive"] }
-gix = { version = "0.86.0", features = ["status", "revision"] }
+gix = { version = "0.87.1", features = ["status", "revision"] }
 petridish-core.workspace = true
 regex = "1.13.1"
 serde.workspace = true
