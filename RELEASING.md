@@ -25,6 +25,25 @@ is **generated** — never hand-edit it; change `dist-workspace.toml` and run
    *Settings → Secrets and variables → Actions* in **this** repo, named
    `HOMEBREW_TAP_TOKEN`.
 
+## The release workflow is generated — don't edit it
+
+`.github/workflows/release.yml` is produced by `dist generate`, and the `plan`
+job checks on every PR that the file on disk still matches what cargo-dist would
+generate. Editing it by hand fails that check.
+
+This is also why `.github/dependabot.yml` has no `github-actions` ecosystem.
+Dependabot scopes by directory, not by file, so it cannot bump the actions in the
+hand-written `ci.yml` without also bumping them in the generated `release.yml` —
+which fails `plan`, and which `dist generate` would revert anyway. It fired on the
+first Dependabot batch (PR #6). The consequence is that action versions in
+`ci.yml` are now bumped by hand; in `release.yml` they move when you upgrade
+cargo-dist:
+
+```sh
+cargo install cargo-dist --locked   # newer dist
+dist init --yes                     # updates cargo-dist-version, regenerates
+```
+
 ## Cutting a release
 
 1. Bump `version` in `[workspace.package]` in the root `Cargo.toml`. All crates
