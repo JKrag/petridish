@@ -17,7 +17,21 @@ updates:
       interval: weekly
     open-pull-requests-limit: 3
 
-  - package-ecosystem: github-actions
-    directory: "/"
-    schedule:
-      interval: weekly
+  # No `github-actions` ecosystem, deliberately.
+  #
+  # `.github/workflows/` holds two very different files: `ci.yml`, which is
+  # hand-written, and `release.yml`, which is *generated* by cargo-dist. The
+  # `plan` job verifies that the generated file still matches what `dist
+  # generate` would produce — so a Dependabot bump to `actions/checkout` inside
+  # release.yml fails CI, and regenerating reverts the bump. It is a loop, and it
+  # fired on the very first Dependabot batch (PR #6).
+  #
+  # Dependabot scopes by ecosystem and directory, not by file, so it cannot be
+  # told to manage one of these and not the other.
+  #
+  # The tradeoff, stated plainly: action versions no longer update automatically
+  # anywhere. In release.yml that is correct — they are cargo-dist's to choose,
+  # and `cargo install cargo-dist` then `dist generate` is how they move. In
+  # ci.yml it means bumping `actions/checkout`, `actions/setup-node` and
+  # `Swatinem/rust-cache` by hand now and then. That is a small, visible cost;
+  # a permanently red release workflow is not.
