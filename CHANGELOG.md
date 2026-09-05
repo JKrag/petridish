@@ -49,11 +49,14 @@ First public release. Everything before this lived only in git history.
   first-output budget from 5s to 1.5s.
 - `.gitignore`'s Node rules were path-anchored and silently stopped matching when
   the Raycast extension moved.
+- `cargo test` no longer requires `--test-threads=1`. Three tests in
+  `swab/src/cli.rs` used to mutate `$HOME`, and `swab-hook`'s tests mutated
+  `$PETRIDISH_EVENTS_PATH`, both process-global; `cmd_doctor`, `config::load_config`
+  and `handle_hook_input`/`run_hook` now take `home`/`events_path` as parameters
+  instead. See issue #20.
 
 ### Known issues
 
-- `cargo test` requires `--test-threads=1`. Three tests in `swab/src/cli.rs`
-  mutate `$HOME`, which is process-global.
 - The Raycast extension cannot be published to the Raycast Store: the Store
   requires MIT and this project is GPL-3.0-or-later. See
   `integrations/raycast/README.md`.
