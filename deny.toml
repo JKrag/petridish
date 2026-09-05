@@ -12,12 +12,11 @@ version = 2
 # whole check.
 ignore = []
 
-# Expect one standing warning here: `bisync 0.3.0`, reached via
-# gix-protocol -> gix, is yanked from crates.io. That is precisely why every
-# `cargo install` in this project must pass `--locked` (README.md,
-# ARCHITECTURE.md §8.1) — an unlocked resolve fails outright. It is a warning
-# rather than an error on purpose: the lockfile pins a working set, and this
-# resolves itself when gix next bumps the dependency.
+# This used to carry a standing warning for `bisync 0.3.0`, reached via
+# gix-protocol -> gix and yanked from crates.io — the reason `--locked` was
+# mandatory on every `cargo install` here. `gix` 0.87 dropped that dependency
+# and the warning is gone, exactly as predicted. If a yanked crate reappears,
+# prefer bumping the dependency that pulls it in over adding an ignore.
 
 [licenses]
 version = 2

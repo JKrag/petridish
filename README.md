@@ -45,10 +45,13 @@ cargo install --path petri --locked           # petri
 petridish install
 ```
 
-**`--locked` is required, not optional.** `cargo install` ignores `Cargo.lock` by default
-and re-resolves from scratch; a transitive `gix` dependency (`bisync`) has had its matching
-versions yanked from crates.io, so the default resolution fails outright. The lockfile pins
-a working set.
+**Use `--locked`.** `cargo install` ignores `Cargo.lock` by default and re-resolves from
+scratch, so without it you get whatever is newest rather than the versions CI tested.
+
+It used to be strictly mandatory: a transitive `gix` dependency (`bisync`) had its matching
+versions yanked from crates.io, and an unlocked resolve failed outright. `gix` 0.87 dropped
+that dependency, so the hard failure is gone — but reproducibility is still the reason to
+pass it.
 </details>
 
 ## Commands
