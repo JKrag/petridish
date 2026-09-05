@@ -71,10 +71,10 @@ fn parse_transcript(file_path: &Path, size: u64) -> TranscriptFacts {
                 continue;
             };
             // `session_id` from the FIRST line that carries one (Python: freeze after first).
-            if facts.session_id.is_none() {
-                if let Some(Value::String(s)) = obj.get("sessionId") {
-                    facts.session_id = Some(s.clone());
-                }
+            if facts.session_id.is_none()
+                && let Some(Value::String(s)) = obj.get("sessionId")
+            {
+                facts.session_id = Some(s.clone());
             }
             // `cwd` always takes the LAST line that carries one (F9).
             if let Some(Value::String(s)) = obj.get("cwd") {
@@ -87,11 +87,11 @@ fn parse_transcript(file_path: &Path, size: u64) -> TranscriptFacts {
             // reports "assistant message", which is the shape of nearly every turn. An
             // unrecognized record leaves `event` untouched either way, so a stretch of
             // internal bookkeeping records can't erase the last real event name.
-            if let Some(ev) = event_name_for(obj) {
-                if !ev.weak || facts.event.is_none() || facts.event_is_weak {
-                    facts.event = Some(ev.name);
-                    facts.event_is_weak = ev.weak;
-                }
+            if let Some(ev) = event_name_for(obj)
+                && (!ev.weak || facts.event.is_none() || facts.event_is_weak)
+            {
+                facts.event = Some(ev.name);
+                facts.event_is_weak = ev.weak;
             }
         }
     }
@@ -167,10 +167,11 @@ fn event_name_for(obj: &serde_json::Map<String, Value>) -> Option<DerivedEvent> 
     // assistant's final action). No `tool_use` but a non-empty array → "assistant message"; a
     // string content is the same. Missing, null, or empty content yields nothing.
     if obj.get("type").and_then(Value::as_str) == Some("assistant") {
-        if let Some(Value::Array(items)) = obj.get("message")
-            .and_then(|m| m.get("content")) {
+        if let Some(Value::Array(items)) = obj.get("message").and_then(|m| m.get("content")) {
             for item in items.iter().rev() {
-                let Some(map) = item.as_object() else { continue };
+                let Some(map) = item.as_object() else {
+                    continue;
+                };
                 if map.get("type").and_then(Value::as_str) != Some("tool_use") {
                     continue;
                 }
@@ -180,16 +181,20 @@ fn event_name_for(obj: &serde_json::Map<String, Value>) -> Option<DerivedEvent> 
             }
             // Array had no tool_use — but it may be empty, which per the rules is None.
             if !items.is_empty() {
-                return Some(DerivedEvent { name: "assistant message".to_string(), weak: true });
+                return Some(DerivedEvent {
+                    name: "assistant message".to_string(),
+                    weak: true,
+                });
             }
             return None;
         }
         // A string content is still a message; a missing or null one carries nothing to
         // report and must not be reported as activity that didn't happen.
         return match obj.get("message").and_then(|m| m.get("content")) {
-            Some(Value::String(_)) => {
-                Some(DerivedEvent { name: "assistant message".to_string(), weak: true })
-            }
+            Some(Value::String(_)) => Some(DerivedEvent {
+                name: "assistant message".to_string(),
+                weak: true,
+            }),
             _ => None,
         };
     }
@@ -207,7 +212,10 @@ fn event_name_for(obj: &serde_json::Map<String, Value>) -> Option<DerivedEvent> 
         if echoes_a_tool {
             return None;
         }
-        return Some(DerivedEvent { name: "user prompt".to_string(), weak: false });
+        return Some(DerivedEvent {
+            name: "user prompt".to_string(),
+            weak: false,
+        });
     }
 
     // Case C — anything else (attachment, mode, permission-mode, atis-latch, bridge-session,
@@ -300,8 +308,14 @@ pub fn scan(
                 continue;
             };
             let mtime_as_dt = match DateTime::from_timestamp(
-                mtime.duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_secs() as i64,
-                mtime.duration_since(std::time::UNIX_EPOCH).unwrap_or_default().subsec_nanos(),
+                mtime
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap_or_default()
+                    .as_secs() as i64,
+                mtime
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap_or_default()
+                    .subsec_nanos(),
             ) {
                 Some(dt) => dt,
                 None => continue, // timestamp out of range — degrade to skip.
@@ -334,10 +348,10 @@ pub fn scan(
 
             // Two transcripts resolving to the same root: the one with the NEWER file mtime
             // wins (Python's `if existing is not None and existing.at >= file_mtime: continue`).
-            if let Some(existing) = signals.get(&root_key) {
-                if existing.at >= file_mtime {
-                    continue;
-                }
+            if let Some(existing) = signals.get(&root_key)
+                && existing.at >= file_mtime
+            {
+                continue;
             }
 
             signals.insert(
@@ -366,11 +380,12 @@ mod tests {
     use std::time::{Duration, SystemTime};
 
     fn test_config(roots: Vec<std::path::PathBuf>) -> Config {
-        let mut cfg = Config::default();
-        cfg.roots = roots;
-        cfg.extra_paths = vec![];
-        cfg.ignore_dirs = HashSet::new();
-        cfg
+        Config {
+            roots,
+            extra_paths: vec![],
+            ignore_dirs: HashSet::new(),
+            ..Config::default()
+        }
     }
 
     /// Fresh temp dir, cleaned on drop.
@@ -379,7 +394,10 @@ mod tests {
     }
     impl Tmp {
         fn new(suffix: &str) -> Self {
-            let path = std::env::temp_dir().join(format!("swab_claude_sensor_{suffix}_{}", std::process::id()));
+            let path = std::env::temp_dir().join(format!(
+                "swab_claude_sensor_{suffix}_{}",
+                std::process::id()
+            ));
             let _ = fs::remove_dir_all(&path);
             fs::create_dir_all(&path).expect("mktemp");
             Self { path }
@@ -465,8 +483,14 @@ mod tests {
 
         assert_eq!(signals.len(), 1);
         let root = signals.keys().next().unwrap();
-        assert!(root.contains("realrepo"), "root must come from JSONL cwd, got {root:?}");
-        assert!(!root.contains("decoy"), "root must not be derived from the slug dirname");
+        assert!(
+            root.contains("realrepo"),
+            "root must come from JSONL cwd, got {root:?}"
+        );
+        assert!(
+            !root.contains("decoy"),
+            "root must not be derived from the slug dirname"
+        );
     }
 
     // 3. `cwd` changes mid-file -> the LAST value wins (F9).
@@ -494,7 +518,10 @@ mod tests {
 
         assert_eq!(signals.len(), 1);
         let root = signals.keys().next().unwrap();
-        assert!(root.contains("repo_b"), "last cwd (repo_b) must win, got {root:?}");
+        assert!(
+            root.contains("repo_b"),
+            "last cwd (repo_b) must win, got {root:?}"
+        );
     }
 
     // 4. Monorepo: cwd points at a subdir -> resolves to the repo root via resolve_root.
@@ -544,7 +571,11 @@ mod tests {
         let cfg = test_config(vec![tmp.path.clone()]);
         let signals = scan(&projects_dir, &cfg, DEFAULT_COLD_CUTOFF_HOURS);
 
-        assert_eq!(signals.len(), 1, "the valid line before the truncated one must still count");
+        assert_eq!(
+            signals.len(),
+            1,
+            "the valid line before the truncated one must still count"
+        );
     }
 
     // 6. A cold file (mtime older than the cutoff) is skipped entirely.
@@ -593,7 +624,11 @@ mod tests {
 
         assert_eq!(signals.len(), 1);
         let sig = signals.values().next().unwrap();
-        assert_eq!(sig.session_id.as_deref(), Some("sess-new"), "newer mtime must win");
+        assert_eq!(
+            sig.session_id.as_deref(),
+            Some("sess-new"),
+            "newer mtime must win"
+        );
     }
 
     // 8. Empty claude_projects_dir (exists, no subdirs) -> empty map, no panic.
@@ -659,7 +694,11 @@ mod tests {
         let cfg = test_config(vec![tmp.path.clone()]);
         let signals = scan(&projects_dir, &cfg, DEFAULT_COLD_CUTOFF_HOURS);
 
-        assert_eq!(signals.len(), 1, "stray non-.jsonl file must not produce a signal or crash the scan");
+        assert_eq!(
+            signals.len(),
+            1,
+            "stray non-.jsonl file must not produce a signal or crash the scan"
+        );
     }
 
     /// Builds one typed transcript record: `{"type": <record_type>, "cwd": ..., "message":
@@ -716,7 +755,11 @@ mod tests {
     fn assistant_tool_use_yields_the_tool_name() {
         let event = event_from(
             "ev_tool_use",
-            &[typed_line(Some("__CWD__"), "assistant", Some(tool_use("Bash")))],
+            &[typed_line(
+                Some("__CWD__"),
+                "assistant",
+                Some(tool_use("Bash")),
+            )],
         );
         assert_eq!(event.as_deref(), Some("Bash"));
     }
@@ -877,7 +920,11 @@ mod tests {
     fn the_length_limit_counts_characters_not_bytes() {
         let forty_wide: String = "あ".repeat(40);
         assert_eq!(forty_wide.chars().count(), 40);
-        assert_eq!(forty_wide.len(), 120, "fixture must be multi-byte per character");
+        assert_eq!(
+            forty_wide.len(),
+            120,
+            "fixture must be multi-byte per character"
+        );
 
         let event = event_from(
             "ev_multibyte_name",

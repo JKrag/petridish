@@ -4,6 +4,21 @@
 //! sharing code between integration-test binaries without it being treated as
 //! its own test binary).
 //!
+//! `dead_code` is allowed for the whole module, and that is not blanket
+//! silencing: `mod pty_support;` compiles a *separate copy* of this file into
+//! every PTY test binary, and each of those uses a different subset of the
+//! harness. `wait_with_timeout` has nine callers and `screen_retry` seven, yet
+//! each is "never used" from the point of view of the binaries that happen not
+//! to call it. Without this, a green `-D warnings` build would demand deleting
+//! helpers that are demonstrably in use.
+//!
+//! The one genuinely uncalled item today is `spawn_and_settle_nonempty` (the
+//! ambient-`$HOME` variant). It is kept as the documented counterpart to
+//! `spawn_and_settle_nonempty_with_home`, which `s6_pty.rs`'s module docs
+//! explicitly contrast against when explaining why they use the scratch-`HOME`
+//! form.
+#![allow(dead_code)]
+
 //! Extracted from S4's `s4_pty.rs` once S5 needed the identical harness — see
 //! that module's git history for the two real bugs found and fixed here:
 //! 1. A dedicated background thread drains the pty for the ENTIRE session
@@ -28,7 +43,6 @@ use std::time::{Duration, Instant};
 pub fn fixture_path(name: &str) -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join("..")
-        .join("tests")
         .join("fixtures")
         .join(name)
 }
@@ -121,19 +135,37 @@ impl Session {
     /// (and therefore its own env), so this is safe under `--test-threads=1`
     /// without the shared-`HOME`-mutation hazard CLAUDE.md documents for
     /// same-process fixture tests.
-    pub fn spawn_with_home(state_path: &std::path::Path, cols: u16, rows: u16, home: &std::path::Path) -> Self {
+    pub fn spawn_with_home(
+        state_path: &std::path::Path,
+        cols: u16,
+        rows: u16,
+        home: &std::path::Path,
+    ) -> Self {
         Self::spawn_inner(state_path, cols, rows, Some(home))
     }
 
-    fn spawn_inner(state_path: &std::path::Path, cols: u16, rows: u16, home: Option<&std::path::Path>) -> Self {
+    fn spawn_inner(
+        state_path: &std::path::Path,
+        cols: u16,
+        rows: u16,
+        home: Option<&std::path::Path>,
+    ) -> Self {
         let pty_system = native_pty_system();
         let pair = pty_system
-            .openpty(PtySize { rows, cols, pixel_width: 0, pixel_height: 0 })
+            .openpty(PtySize {
+                rows,
+                cols,
+                pixel_width: 0,
+                pixel_height: 0,
+            })
             .expect("openpty must succeed");
 
         // Reader + drain thread set up BEFORE spawning the child — see this
         // module's doc comment, bug 2.
-        let mut reader = pair.master.try_clone_reader().expect("clone reader must succeed");
+        let mut reader = pair
+            .master
+            .try_clone_reader()
+            .expect("clone reader must succeed");
         let writer = pair.master.take_writer().expect("take writer must succeed");
 
         let (tx, rx) = mpsc::channel::<Vec<u8>>();
@@ -160,19 +192,44 @@ impl Session {
             cmd.env("HOME", home);
         }
 
-        let child = pair.slave.spawn_command(cmd).expect("spawn petri must succeed");
+        let child = pair
+            .slave
+            .spawn_command(cmd)
+            .expect("spawn petri must succeed");
         // Drop the slave end in this process once spawned — otherwise our own
         // held fd keeps the pty "open" from the reader's perspective and EOF
         // (Ok(0)) never arrives after the child actually exits.
         drop(pair.slave);
 
-        Session { _master: pair.master, writer, child, chunks: rx, accumulated: Vec::new() }
+        Session {
+            _master: pair.master,
+            writer,
+            child,
+            chunks: rx,
+            accumulated: Vec::new(),
+        }
     }
 
     /// Pull everything the drain thread has produced so far into `accumulated`,
     /// blocking up to `timeout` total, and returning once nothing new has
     /// arrived for `quiet_for`. Never blocks longer than `timeout` even if the
     /// child is still alive and producing output.
+    ///
+    /// `quiet_for` is a *trailing* quiet period: it only applies once at least
+    /// one byte has arrived. Before then the only bound is `timeout`.
+    ///
+    /// That distinction is the whole point, and getting it wrong made
+    /// `s10_pty_reload` fail roughly half the time under `cargo test
+    /// --workspace` while passing every time under `cargo test -p petri`.
+    /// Applying `quiet_for` to a still-empty buffer conflates "the child has
+    /// finished painting" with "the child has not started yet", so a caller
+    /// asking for `settle(5s, 300ms)` actually got a 300ms budget for first
+    /// output — and `screen_retry`'s five attempts made that a 1.5s budget in
+    /// total, not the 5s the call site plainly reads as. In a workspace run
+    /// petri's first spawn follows swab's ~45s suite, and a cold 2.3MB debug
+    /// binary does not reliably paint that fast. The failure signature was an
+    /// all-blank grid at a near-constant 1.52-1.53s, which is that arithmetic
+    /// rather than anything the test was asserting about.
     pub fn settle(&mut self, timeout: Duration, quiet_for: Duration) -> String {
         let start = Instant::now();
         loop {
@@ -180,9 +237,16 @@ impl Session {
             if remaining.is_zero() {
                 break;
             }
-            match self.chunks.recv_timeout(remaining.min(quiet_for)) {
+            // Wait the full remaining budget while we have nothing at all; once
+            // bytes are flowing, fall back to the trailing quiet window.
+            let wait = if self.accumulated.is_empty() {
+                remaining
+            } else {
+                remaining.min(quiet_for)
+            };
+            match self.chunks.recv_timeout(wait) {
                 Ok(bytes) => self.accumulated.extend_from_slice(&bytes),
-                Err(mpsc::RecvTimeoutError::Timeout) => break, // quiet_for elapsed with nothing new
+                Err(mpsc::RecvTimeoutError::Timeout) => break, // quiet window elapsed with nothing new
                 Err(mpsc::RecvTimeoutError::Disconnected) => break, // drain thread exited (EOF)
             }
         }
@@ -215,7 +279,13 @@ impl Session {
     /// handling); acceptable because no PTY test asserts against a fixture
     /// with CJK/emoji names (`hostile.json`'s exist only for JSON-parsing
     /// coverage in other layers).
-    pub fn screen(&mut self, cols: u16, rows: u16, timeout: Duration, quiet_for: Duration) -> Vec<String> {
+    pub fn screen(
+        &mut self,
+        cols: u16,
+        rows: u16,
+        timeout: Duration,
+        quiet_for: Duration,
+    ) -> Vec<String> {
         let raw = self.settle(timeout, quiet_for);
         let (cols, rows) = (cols as usize, rows as usize);
         let mut grid: Vec<Vec<char>> = vec![vec![' '; cols]; rows];
@@ -238,7 +308,10 @@ impl Session {
                 let raw_params: String = chars[start_params..j].iter().collect();
                 let is_private = raw_params.starts_with('?');
                 let params_str = raw_params.trim_start_matches('?');
-                let params: Vec<i64> = params_str.split(';').filter_map(|s| s.parse::<i64>().ok()).collect();
+                let params: Vec<i64> = params_str
+                    .split(';')
+                    .filter_map(|s| s.parse::<i64>().ok())
+                    .collect();
 
                 match final_byte {
                     'H' | 'f' => {
@@ -258,7 +331,8 @@ impl Session {
                     'K' if row < rows => {
                         let mode = params.first().copied().unwrap_or(0);
                         match mode {
-                            1 => (0..=col.min(cols.saturating_sub(1))).for_each(|cc| grid[row][cc] = ' '),
+                            1 => (0..=col.min(cols.saturating_sub(1)))
+                                .for_each(|cc| grid[row][cc] = ' '),
                             2 => (0..cols).for_each(|cc| grid[row][cc] = ' '),
                             _ => (col..cols).for_each(|cc| grid[row][cc] = ' '),
                         }
@@ -287,7 +361,9 @@ impl Session {
             i += 1;
         }
 
-        grid.into_iter().map(|line| line.into_iter().collect()).collect()
+        grid.into_iter()
+            .map(|line| line.into_iter().collect())
+            .collect()
     }
 
     /// Like `screen`, but retries the settle+parse step (NOT a respawn — the
@@ -303,12 +379,21 @@ impl Session {
     /// window per call narrows the race window further. Returns the LAST
     /// (possibly still blank) grid if every attempt comes back blank, so a
     /// genuine regression still fails loudly.
-    pub fn screen_retry(&mut self, cols: u16, rows: u16, timeout: Duration, quiet_for: Duration, attempts: u32) -> Vec<String> {
+    pub fn screen_retry(
+        &mut self,
+        cols: u16,
+        rows: u16,
+        timeout: Duration,
+        quiet_for: Duration,
+        attempts: u32,
+    ) -> Vec<String> {
         let mut grid = self.screen(cols, rows, timeout, quiet_for);
         let mut attempt = 1;
         while grid.iter().all(|line| line.trim().is_empty()) && attempt < attempts {
             attempt += 1;
-            eprintln!("screen_retry attempt {attempt}/{attempts}: blank grid (suspected PTY race), retrying");
+            eprintln!(
+                "screen_retry attempt {attempt}/{attempts}: blank grid (suspected PTY race), retrying"
+            );
             grid = self.screen(cols, rows, timeout, quiet_for);
         }
         grid

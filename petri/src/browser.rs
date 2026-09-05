@@ -3,16 +3,14 @@
 //! contract — read it in full before touching this file.
 
 use crate::theme;
-use petridish_core::present as present;
+use petridish_core::present;
 use petridish_core::schema::{AgentActivity, Project, Radar, StatusBucket};
 use ratatui::{
+    Frame,
     layout::{Constraint, Layout, Rect},
     style::{Color, Modifier, Style},
     text::{Line, Span},
-    widgets::{
-        Block, Borders, Paragraph, Scrollbar, ScrollbarOrientation, ScrollbarState, Wrap,
-    },
-    Frame,
+    widgets::{Block, Borders, Paragraph, Scrollbar, ScrollbarOrientation, ScrollbarState, Wrap},
 };
 
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -25,8 +23,12 @@ use std::time::{SystemTime, UNIX_EPOCH};
 /// the Dashboard's headers ARE stops (§3.2), which needs its own cursor type
 /// — do not reuse `BrowserState` for it. See browser::render for how a
 /// header is drawn without being reachable by move_selection.
-pub const SECTION_ORDER: [StatusBucket; 4] =
-    [StatusBucket::Active, StatusBucket::InFlight, StatusBucket::Stale, StatusBucket::Cold];
+pub const SECTION_ORDER: [StatusBucket; 4] = [
+    StatusBucket::Active,
+    StatusBucket::InFlight,
+    StatusBucket::Stale,
+    StatusBucket::Cold,
+];
 
 /// Section header labels per spec §3.1, in the same order as `SECTION_ORDER`.
 /// The Dashboard's collapsed-section headers share these values (S6).
@@ -72,7 +74,12 @@ impl BrowserState {
     pub fn new(radar: &Radar) -> Self {
         let visible = grouped_visible_indices(radar, "");
         let selected = if visible.is_empty() { None } else { Some(0) };
-        Self { visible, selected, filter_query: String::new(), filter_input: false }
+        Self {
+            visible,
+            selected,
+            filter_query: String::new(),
+            filter_input: false,
+        }
     }
 
     /// Move the selection by `delta` (negative = up, positive = down) within
@@ -103,9 +110,8 @@ impl BrowserState {
     /// to the first available row (`Some(0)`), or `None` if the new `visible`
     /// is empty. Must not panic in either case.
     pub fn apply_filter(&mut self, radar: &Radar, query: &str) {
-        let previously_selected_project = self.selected.and_then(|pos| {
-            self.visible.get(pos).copied()
-        });
+        let previously_selected_project =
+            self.selected.and_then(|pos| self.visible.get(pos).copied());
 
         let new_visible = grouped_visible_indices(radar, query);
         self.filter_query = query.to_string();
@@ -118,7 +124,11 @@ impl BrowserState {
                 } else if self.visible.is_empty() || self.selected.is_none() {
                     // Project was filtered out — reset to first row, or stay
                     // None if the new list is empty too.
-                    self.selected = if self.visible.is_empty() { None } else { Some(0) };
+                    self.selected = if self.visible.is_empty() {
+                        None
+                    } else {
+                        Some(0)
+                    };
                 }
             }
             None => {
@@ -155,9 +165,7 @@ fn grouped_visible_indices(radar: &Radar, query: &str) -> Vec<usize> {
             if project.status_bucket != *bucket {
                 continue;
             }
-            if !query.is_empty()
-                && !project.name.to_lowercase().contains(&query.to_lowercase())
-            {
+            if !query.is_empty() && !project.name.to_lowercase().contains(&query.to_lowercase()) {
                 continue;
             }
             result.push(idx);
@@ -168,8 +176,8 @@ fn grouped_visible_indices(radar: &Radar, query: &str) -> Vec<usize> {
 
 /// Width threshold (inclusive): the detail pane is shown whenever the full
 /// terminal width is at least this many columns. 65 leaves ~40 cols for the
-/// detail pane after the list takes ~25, which is enough to read path + branch
-/// + one field per row without squeezing — matching petri/SPEC.md §3.1's
+/// detail pane after the list takes ~25, which is enough to read path, branch
+/// and one field per row without squeezing — matching petri/SPEC.md §3.1's
 /// "If the window is too narrow to give it a usable width, hide it entirely."
 /// The acceptance test asserts this at 40 cols (must be absent), so any value
 /// > 40 is acceptable; 65 gives a generous margin.
@@ -222,16 +230,25 @@ pub fn render(frame: &mut Frame, radar: &Radar, state: &BrowserState) {
     // the filter chip when a filter is live (`ACT-10`).
     let mut header_spans = vec![Span::styled(
         " petri · browser ",
-        Style::default().fg(Color::Black).bg(theme::ACCENT).add_modifier(Modifier::BOLD),
+        Style::default()
+            .fg(Color::Black)
+            .bg(theme::ACCENT)
+            .add_modifier(Modifier::BOLD),
     )];
     // The badge is 17 columns; the chip gets what is left of the header row.
-    header_spans.extend(filter_chip_spans(radar, state, area.width.saturating_sub(17)));
+    header_spans.extend(filter_chip_spans(
+        radar,
+        state,
+        area.width.saturating_sub(17),
+    ));
     let header = Paragraph::new(Line::from(header_spans)).wrap(Wrap { trim: false });
     frame.render_widget(header, chunks[0]);
 
     let rule = Paragraph::new(Line::from(Span::styled(
         "═".repeat(area.width as usize),
-        Style::default().fg(theme::ACCENT).add_modifier(Modifier::BOLD),
+        Style::default()
+            .fg(theme::ACCENT)
+            .add_modifier(Modifier::BOLD),
     )));
     frame.render_widget(rule, chunks[1]);
 
@@ -321,8 +338,7 @@ pub fn render(frame: &mut Frame, radar: &Radar, state: &BrowserState) {
             width: 1,
             height: detail_area.height,
         };
-        let mut sb_state = ScrollbarState::new(state.visible.len())
-            .position(scroll_offset);
+        let mut sb_state = ScrollbarState::new(state.visible.len()).position(scroll_offset);
         let scrollbar = Scrollbar::new(ScrollbarOrientation::VerticalRight)
             .begin_symbol(Some("▲"))
             .end_symbol(Some("▼"));
@@ -384,7 +400,9 @@ fn compute_scroll_offset(
         None => return 0,
     };
     let max_scroll = list_len - visible_rows;
-    selected_line.saturating_sub(visible_rows - 1).min(max_scroll)
+    selected_line
+        .saturating_sub(visible_rows - 1)
+        .min(max_scroll)
 }
 
 /// The header's filter chip (`ACT-10`): the spans that follow the title badge
@@ -417,11 +435,16 @@ fn filter_chip_spans(radar: &Radar, state: &BrowserState, avail: u16) -> Vec<Spa
 
     let (query_style, count_style) = if state.filter_input {
         (
-            Style::default().fg(theme::ACCENT).add_modifier(Modifier::BOLD),
+            Style::default()
+                .fg(theme::ACCENT)
+                .add_modifier(Modifier::BOLD),
             Style::default().fg(theme::DIM),
         )
     } else {
-        (Style::default().fg(theme::DIM), Style::default().fg(theme::DIMMER))
+        (
+            Style::default().fg(theme::DIM),
+            Style::default().fg(theme::DIMMER),
+        )
     };
 
     let cursor = if state.filter_input { "\u{2588}" } else { "" };
@@ -501,10 +524,12 @@ fn render_list_lines(radar: &Radar, state: &BrowserState) -> (Vec<Line<'static>>
             .iter()
             .skip_while(|&s| *s != *target)
             .any(|&s| {
-                radar.projects.iter().any(|p| p.status_bucket == s && !p.is_foreign)
+                radar
+                    .projects
+                    .iter()
+                    .any(|p| p.status_bucket == s && !p.is_foreign)
                     && state.visible.iter().any(|&idx| {
-                        idx < radar.projects.len()
-                            && radar.projects[idx].status_bucket == s
+                        idx < radar.projects.len() && radar.projects[idx].status_bucket == s
                     })
             })
     };
@@ -580,7 +605,10 @@ fn render_project_row(radar: &Radar, proj_idx: usize, is_selected: bool) -> Line
     // same reason `not-selected` uses `FG` (near-white) rather than a color
     // close enough to `ACCENT` to blur the two states together.
     let style = if is_selected {
-        Style::default().fg(Color::Black).bg(theme::ACCENT).add_modifier(Modifier::BOLD)
+        Style::default()
+            .fg(Color::Black)
+            .bg(theme::ACCENT)
+            .add_modifier(Modifier::BOLD)
     } else {
         Style::default().fg(theme::FG)
     };
@@ -631,12 +659,7 @@ fn silence_display(last_activity_at: Option<chrono::DateTime<chrono::Utc>>) -> S
 /// Detail pane: path (abbreviated), branch, dirty count, commit times, github
 /// url, agent state + active agent, session id, last activity. Rendered only
 /// when the detail area is wide enough (caller enforces `DETAIL_PANE_DETAIL_MIN`).
-fn render_detail_pane(
-    frame: &mut Frame,
-    area: Rect,
-    radar: &Radar,
-    state: &BrowserState,
-) {
+fn render_detail_pane(frame: &mut Frame, area: Rect, radar: &Radar, state: &BrowserState) {
     let (title, body_lines): (&str, Vec<Line<'static>>) = match state.selected_project(radar) {
         Some(project) => (" Detail ", render_detail_lines(project)),
         None => (
@@ -649,7 +672,9 @@ fn render_detail_pane(
     };
 
     let detail_block = Block::default().title(title).borders(Borders::ALL);
-    let para = Paragraph::new(body_lines).block(detail_block).wrap(Wrap { trim: false });
+    let para = Paragraph::new(body_lines)
+        .block(detail_block)
+        .wrap(Wrap { trim: false });
     frame.render_widget(para, area);
 }
 
@@ -675,10 +700,7 @@ fn render_detail_lines(project: &Project) -> Vec<Line<'static>> {
     // Dirty / uncommitted count.
     let dirty_line = if project.git.is_dirty {
         Line::from(Span::styled(
-            format!(
-                "  Dirty: {} uncommitted",
-                project.git.uncommitted_files
-            ),
+            format!("  Dirty: {} uncommitted", project.git.uncommitted_files),
             Style::default().fg(theme::DANGER),
         ))
     } else {
@@ -690,7 +712,10 @@ fn render_detail_lines(project: &Project) -> Vec<Line<'static>> {
     lines.push(dirty_line);
 
     // Last commit time (plus `mine_last_commit_at` when it differs).
-    match (&project.git.last_commit_at, &project.git.mine_last_commit_at) {
+    match (
+        &project.git.last_commit_at,
+        &project.git.mine_last_commit_at,
+    ) {
         (Some(last), Some(mines)) if last != mines => {
             lines.push(Line::from(Span::styled(
                 format!("  Last commit: {}", format_commit(*last)),
@@ -765,17 +790,50 @@ fn format_commit(dt: chrono::DateTime<chrono::Utc>) -> String {
 /// Abbreviate `$HOME/...` to `~/...` for display. Returns the input unchanged
 /// when `$HOME` is unset or the path doesn't start with it.
 fn abbreviate_home(path: &str) -> String {
-    if let Ok(home) = std::env::var("HOME") {
-        if let Ok(p) = std::path::Path::new(path).strip_prefix(&home) {
-            let remainder = p.to_string_lossy().to_string();
-            if remainder.is_empty() {
-                return home;
-            }
-            let start = if remainder.starts_with('/') { "" } else { "/" };
-            return format!("~{}{}", start, remainder);
+    if let Ok(home) = std::env::var("HOME")
+        && let Ok(p) = std::path::Path::new(path).strip_prefix(&home)
+    {
+        let remainder = p.to_string_lossy().to_string();
+        if remainder.is_empty() {
+            return home;
         }
+        let start = if remainder.starts_with('/') { "" } else { "/" };
+        return format!("~{}{}", start, remainder);
     }
     path.to_string()
+}
+
+/// A one-line transient message over the Browser — "nothing installed that can
+/// open in editor", "thing has no remote" (`ACT-9`).
+///
+/// Deliberately a thin bar rather than a dialog: it is informational, needs no
+/// answer, and is dismissed by the next keystroke. A modal would demand an
+/// acknowledgement the user has no decision to make about.
+pub fn render_notice(frame: &mut Frame, text: &str) {
+    use ratatui::widgets::Clear;
+
+    let area = frame.area();
+    if area.height < 3 {
+        return;
+    }
+    let width = (text.chars().count() as u16 + 4).min(area.width);
+    let bar = Rect {
+        x: area.width.saturating_sub(width) / 2,
+        y: area.height.saturating_sub(2),
+        width,
+        height: 1,
+    };
+    frame.render_widget(Clear, bar);
+    frame.render_widget(
+        Paragraph::new(Line::from(Span::styled(
+            format!("  {text}  "),
+            Style::default()
+                .fg(Color::Black)
+                .bg(crate::theme::AGING)
+                .add_modifier(Modifier::BOLD),
+        ))),
+        bar,
+    );
 }
 
 #[cfg(test)]
@@ -829,11 +887,19 @@ mod tests {
         // Line 0 is the "RUNNING [3]" header, so the first project row (the
         // default selection) must be line 1, not line 0.
         let (_, selected_line) = render_list_lines(&radar, &state);
-        assert_eq!(selected_line, Some(1), "the header line must be accounted for");
+        assert_eq!(
+            selected_line,
+            Some(1),
+            "the header line must be accounted for"
+        );
 
         state.move_selection(1);
         let (_, selected_line) = render_list_lines(&radar, &state);
-        assert_eq!(selected_line, Some(2), "moving selection by one project row must move the line index by one, not reset relative to the header");
+        assert_eq!(
+            selected_line,
+            Some(2),
+            "moving selection by one project row must move the line index by one, not reset relative to the header"
+        );
 
         state.move_selection(1);
         let (_, selected_line) = render_list_lines(&radar, &state);
@@ -850,10 +916,18 @@ mod tests {
     fn scroll_offset_can_reach_the_tail_of_a_multi_section_list() {
         let mut projects = Vec::new();
         for i in 0..3 {
-            projects.push(project(&format!("r{i}"), &format!("running-{i}"), StatusBucket::Active));
+            projects.push(project(
+                &format!("r{i}"),
+                &format!("running-{i}"),
+                StatusBucket::Active,
+            ));
         }
         for i in 0..10 {
-            projects.push(project(&format!("f{i}"), &format!("flight-{i}"), StatusBucket::InFlight));
+            projects.push(project(
+                &format!("f{i}"),
+                &format!("flight-{i}"),
+                StatusBucket::InFlight,
+            ));
         }
         let radar = radar_of(projects);
         let mut state = BrowserState::new(&radar);
@@ -892,12 +966,18 @@ mod tests {
     /// so it fails the way the original bug actually manifested.
     #[test]
     fn last_selected_row_is_actually_visible_in_the_rendered_buffer() {
-        use ratatui::{backend::TestBackend, Terminal};
+        use ratatui::{Terminal, backend::TestBackend};
 
         // Enough project rows that a small terminal can't show them all at
         // once, so a scroll-lag bug has room to manifest.
         let projects: Vec<Project> = (0..20)
-            .map(|i| project(&format!("p{i}"), &format!("project-{i}"), StatusBucket::Active))
+            .map(|i| {
+                project(
+                    &format!("p{i}"),
+                    &format!("project-{i}"),
+                    StatusBucket::Active,
+                )
+            })
             .collect();
         let radar = radar_of(projects);
         let mut state = BrowserState::new(&radar);
@@ -913,7 +993,9 @@ mod tests {
         let height = 15u16; // short enough that not all 20 rows fit
         let backend = TestBackend::new(width, height);
         let mut terminal = Terminal::new(backend).expect("TestBackend terminal must construct");
-        terminal.draw(|frame| render(frame, &radar, &state)).expect("draw must not error");
+        terminal
+            .draw(|frame| render(frame, &radar, &state))
+            .expect("draw must not error");
         let buffer = terminal.backend().buffer();
         let whole: String = (0..height)
             .map(|y| {
@@ -956,10 +1038,18 @@ mod tests {
     fn scroll_offset_stays_zero_while_the_selection_already_fits_in_view() {
         let mut projects = Vec::new();
         for i in 0..3 {
-            projects.push(project(&format!("r{i}"), &format!("running-{i}"), StatusBucket::Active));
+            projects.push(project(
+                &format!("r{i}"),
+                &format!("running-{i}"),
+                StatusBucket::Active,
+            ));
         }
         for i in 0..10 {
-            projects.push(project(&format!("f{i}"), &format!("flight-{i}"), StatusBucket::InFlight));
+            projects.push(project(
+                &format!("f{i}"),
+                &format!("flight-{i}"),
+                StatusBucket::InFlight,
+            ));
         }
         let radar = radar_of(projects);
         let mut state = BrowserState::new(&radar);
@@ -970,44 +1060,12 @@ mod tests {
         for _ in 0..2 {
             state.move_selection(1);
             let (list_lines, selected_line) = render_list_lines(&radar, &state);
-            let scroll_offset = compute_scroll_offset(selected_line, list_lines.len(), visible_rows);
+            let scroll_offset =
+                compute_scroll_offset(selected_line, list_lines.len(), visible_rows);
             assert_eq!(
                 scroll_offset, 0,
                 "selection at line {selected_line:?} still fits within {visible_rows} visible rows — must not scroll yet"
             );
         }
     }
-}
-
-/// A one-line transient message over the Browser — "nothing installed that can
-/// open in editor", "thing has no remote" (`ACT-9`).
-///
-/// Deliberately a thin bar rather than a dialog: it is informational, needs no
-/// answer, and is dismissed by the next keystroke. A modal would demand an
-/// acknowledgement the user has no decision to make about.
-pub fn render_notice(frame: &mut Frame, text: &str) {
-    use ratatui::widgets::Clear;
-
-    let area = frame.area();
-    if area.height < 3 {
-        return;
-    }
-    let width = (text.chars().count() as u16 + 4).min(area.width);
-    let bar = Rect {
-        x: area.width.saturating_sub(width) / 2,
-        y: area.height.saturating_sub(2),
-        width,
-        height: 1,
-    };
-    frame.render_widget(Clear, bar);
-    frame.render_widget(
-        Paragraph::new(Line::from(Span::styled(
-            format!("  {text}  "),
-            Style::default()
-                .fg(Color::Black)
-                .bg(crate::theme::AGING)
-                .add_modifier(Modifier::BOLD),
-        ))),
-        bar,
-    );
 }

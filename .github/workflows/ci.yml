@@ -5,92 +5,45 @@ on:
     branches: [main, master]
   pull_request:
 
+# A newer push to the same branch makes an in-flight run pointless.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+
 jobs:
-  test:
-    # The full `make check` gate. Stays macOS-only because this is the job that
-    # exercises the macOS-only surface: the launchd plist, the `launchctl` argv,
-    # and the xbar plugin dir. Per ARCHITECTURE.md D5 the *installer* is
-    # darwin-gated while the scanner deliberately is not — which is what the
-    # `rust-linux` job below now actually verifies, rather than asserting.
-    # (D5 moved: it's ARCHITECTURE.md now, not DESIGN.md, which is archived.)
-    runs-on: macos-14
+  # Formatting and lints once, on the cheapest runner — they are
+  # platform-independent, so running them in the OS matrix would just buy the
+  # same answer twice.
+  lint:
+    runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-
-      - name: Set up Python 3.12
-        uses: actions/setup-python@v5
+      - uses: dtolnay/rust-toolchain@stable
         with:
-          # Pinned to the declared floor, not "latest" — two shipped bugs
-          # (__replace__, url2pathname(require_scheme=)) were 3.13+/3.14-only
-          # APIs that passed locally on a newer interpreter while violating
-          # requires-python >=3.12. A real 3.12 job is the only complete check.
-          python-version: "3.12"
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo fmt --all --check
+      - run: cargo clippy --workspace --all-targets --all-features -- -D warnings
 
-      - name: Install uv
-        uses: astral-sh/setup-uv@v5
-
-      # `swab` (and now `petridish-core`) had never been in CI before this —
-      # that gap predates the Rust port and is closed here (petri/SPEC.md §8).
-      - name: Set up Rust
-        uses: dtolnay/rust-toolchain@stable
-
-      - name: Install package + dev extras
-        run: uv sync --extra dev
-
-      # One gate, identical to what a contributor runs locally, so the two
-      # cannot drift: `make check` = pytest + the Rust workspace tests
-      # (petridish-core, swab) + the pyright ratchet + the post-3.12 API
-      # check (scripts/check_pyver.py) — every one a prerequisite of `check`,
-      # none dropped here.
-      - name: make check
-        run: make check
-
-      - name: Build wheel + sdist
-        run: python3 -m pip install build && python3 -m build
-
-      # Checks that every console script pyproject DECLARES actually lands in
-      # the wheel's bin/ — the names are read from pyproject rather than
-      # hardcoded here, because a hardcoded list is how this step spent four
-      # days red: it kept invoking `bin/swab` long after `swab` became a Rust
-      # binary and left [project.scripts]. Reading the source of truth means a
-      # rename (petri -> petripy, say) can't desync the two.
-      - name: Verify entry points resolve from the built wheel
-        run: |
-          python3 -m venv /tmp/petridish-ci-install
-          /tmp/petridish-ci-install/bin/pip install dist/*.whl
-          python3 - <<'EOF'
-          import pathlib, sys, tomllib
-          scripts = tomllib.loads(
-              pathlib.Path("pyproject.toml").read_text()
-          )["project"]["scripts"]
-          assert scripts, "pyproject declares no console scripts"
-          missing = [
-              name for name in scripts
-              if not pathlib.Path(f"/tmp/petridish-ci-install/bin/{name}").exists()
-          ]
-          if missing:
-              sys.exit(f"declared but absent from the wheel: {missing}")
-          print(f"all {len(scripts)} declared entry points present: {sorted(scripts)}")
-          EOF
-          /tmp/petridish-ci-install/bin/python3 -c "from petridish.installer import render_plist; render_plist(swab_abspath='/x/swab', log_path='/x/daemon.log')"
-
-  rust-linux:
-    # ARCHITECTURE.md D5 asserts the Rust CLI is *not* macOS-bound: its sensors
-    # degrade to null/empty per CLAUDE.md invariant 5, so a Linux box finding no
-    # `workspaceStorage/` is that invariant working rather than a bug. That
-    # claim went unverified for the repo's whole life — CI was a single
-    # macos-14 job, so no line of this code had ever been executed on Linux.
-    # This job is what checks it.
+  test:
+    # Both platforms, deliberately. macOS is where the product runs — launchd,
+    # ~/Library, the xbar plugin directory. Linux is what verifies
+    # ARCHITECTURE.md D5's claim that only the *installer* is macOS-bound and
+    # the scanner is not: its sensors degrade to null/empty per CLAUDE.md
+    # invariant 5, so a Linux box finding no `workspaceStorage/` is that
+    # invariant working rather than a bug. That claim went unverified for the
+    # repo's whole life, when CI was a single macOS job.
     #
-    # Verified before landing, not aspirational: the whole workspace (461 tests,
-    # 0 ignored) passes unmodified on Linux in a `rust:latest` container. No
-    # production code needed changing to get here.
+    # `petridish-cli` compiles here too, which is exactly why its
+    # `check_platform` takes the OS as a parameter instead of being a
+    # `#[cfg(target_os)]` gate — otherwise its tests would be unrunnable on the
+    # Linux leg.
     #
-    # Rust only, deliberately. The Python side really is macOS-only (launchd,
-    # ~/Library, xbar), so widening this to `make check` would only re-run a
-    # gate that cannot pass here.
-    #
-    # Reproducing this locally on Apple Silicon — two traps, both measured:
+    # Reproducing the Linux leg locally on Apple Silicon — two traps, both
+    # measured:
     #   1. Use a NATIVE linux/arm64 container, not an emulated linux/amd64 one.
     #      Under QEMU, `Command::spawn()` on a nonexistent program returns Ok
     #      instead of Err(NotFound) (the child is created, then fails to exec
@@ -102,19 +55,71 @@ jobs:
     #   2. Keep CARGO_TARGET_DIR *inside* the container. A bind-mounted target
     #      dir on Docker Desktop corrupts the build with a spurious
     #      "can't find crate for `bstr`" in gix-submodule.
-    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-14, ubuntu-latest]
+    runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
-
       - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
 
-      # `cargo` directly rather than `make rust-test`: that target prepends a
-      # hardcoded ~/.rustup/toolchains/stable-aarch64-apple-darwin/bin, which is
-      # both macOS- and Apple-Silicon-specific.
-      #
       # `--locked` so a stale Cargo.lock fails loudly here instead of being
       # silently re-resolved — the same reasoning ARCHITECTURE.md §8.1 gives for
       # pinning it on `cargo install`.
       #
-      # `--test-threads=1` matches CLAUDE.md's documented invocation.
+      # `--test-threads=1` because three tests in swab/src/cli.rs mutate $HOME,
+      # which is process-global. See the Makefile's `test` target.
       - run: cargo test --locked --workspace -- --test-threads=1
+
+  # The floor declared in [workspace.package].rust-version. Without a job that
+  # actually builds on it, that field is a claim rather than a guarantee.
+  msrv:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - id: msrv
+        run: echo "version=$(grep '^rust-version' Cargo.toml | head -1 | sed 's/.*= *"//;s/".*//')" >> "$GITHUB_OUTPUT"
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ steps.msrv.outputs.version }}
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo check --locked --workspace --all-targets
+
+  # Licence compatibility and RUSTSEC advisories. This ships GPL-3.0-or-later
+  # binaries, so a dependency arriving under an incompatible licence is a
+  # release blocker, not a style note.
+  deny:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: EmbarkStudios/cargo-deny-action@v2
+        with:
+          command: check licenses advisories
+
+  # The Raycast extension has never been in any gate. It is TypeScript, has its
+  # own lockfile, and reads `projects.json` through a hand-maintained mirror of
+  # the schema — precisely the thing that rots silently when nothing checks it.
+  raycast:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: integrations/raycast
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: integrations/raycast/package-lock.json
+      - run: npm ci
+      - run: npx tsc --noEmit
+      - run: npm test
+      # eslint and prettier directly, not `npm run lint` (`ray lint`). That
+      # wrapper calls Raycast's API to validate the `author` field in
+      # package.json, which 404s for an unregistered handle and would make this
+      # job permanently red for a reason that has nothing to do with the code.
+      # Its genuinely useful checks are these two, and they run offline.
+      - run: npx eslint .
+      - run: npx prettier --check "src/**/*.{ts,tsx}" "tests/**/*.ts"

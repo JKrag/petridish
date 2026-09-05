@@ -29,7 +29,6 @@ use std::path::PathBuf;
 fn fixture_path(name: &str) -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join("..")
-        .join("tests")
         .join("fixtures")
         .join(name)
 }
@@ -37,13 +36,18 @@ fn fixture_path(name: &str) -> PathBuf {
 fn load(name: &str) -> Radar {
     let text = std::fs::read_to_string(fixture_path(name))
         .unwrap_or_else(|e| panic!("failed to read fixture {name}: {e}"));
-    serde_json::from_str(&text).unwrap_or_else(|e| panic!("fixture {name} failed to deserialize into Radar: {e}"))
+    serde_json::from_str(&text)
+        .unwrap_or_else(|e| panic!("fixture {name} failed to deserialize into Radar: {e}"))
 }
 
 #[test]
 fn minimal_has_exactly_one_project() {
     let radar = load("minimal.json");
-    assert_eq!(radar.projects.len(), 1, "minimal.json must contain exactly one project");
+    assert_eq!(
+        radar.projects.len(),
+        1,
+        "minimal.json must contain exactly one project"
+    );
 }
 
 #[test]
@@ -117,16 +121,25 @@ fn hostile_updated_at_is_stale() {
 #[test]
 fn hostile_quota_is_absent() {
     let radar = load("hostile.json");
-    assert!(radar.quota.is_none(), "hostile.json must have absent quota (quota: null)");
+    assert!(
+        radar.quota.is_none(),
+        "hostile.json must have absent quota (quota: null)"
+    );
 }
 
 #[test]
 fn hostile_all_projects_are_cold() {
     // See the module doc comment above for why this, not a literal empty `projects: []`.
     let radar = load("hostile.json");
-    assert!(!radar.projects.is_empty(), "hostile.json must contain projects to exercise per-project traits");
     assert!(
-        radar.projects.iter().all(|p| p.status_bucket == StatusBucket::Cold),
+        !radar.projects.is_empty(),
+        "hostile.json must contain projects to exercise per-project traits"
+    );
+    assert!(
+        radar
+            .projects
+            .iter()
+            .all(|p| p.status_bucket == StatusBucket::Cold),
         "hostile.json must be all-cold — every project's status_bucket must be Cold"
     );
 }
@@ -162,7 +175,10 @@ fn hostile_has_a_two_hundred_char_name() {
 fn hostile_has_a_cjk_or_emoji_name() {
     let radar = load("hostile.json");
     assert!(
-        radar.projects.iter().any(|p| p.name.chars().any(|c| c as u32 > 0x2E80)),
+        radar
+            .projects
+            .iter()
+            .any(|p| p.name.chars().any(|c| c as u32 > 0x2E80)),
         "hostile.json must contain a project with a CJK or emoji name (a codepoint above U+2E80)"
     );
 }
@@ -173,10 +189,65 @@ fn hostile_has_a_worktree_with_an_absent_parent() {
     let all_paths: std::collections::HashSet<&str> =
         radar.projects.iter().map(|p| p.path.as_str()).collect();
     assert!(
-        radar
-            .projects
-            .iter()
-            .any(|p| p.parent_path.as_deref().is_some_and(|pp| !all_paths.contains(pp))),
+        radar.projects.iter().any(|p| p
+            .parent_path
+            .as_deref()
+            .is_some_and(|pp| !all_paths.contains(pp))),
         "hostile.json must contain a worktree project whose parent_path does not match any project's own path"
     );
+}
+
+// ── The golden fixture: the cross-frontend wire contract ──────────────────
+//
+// These replace `tests/test_schema.py`'s golden-fixture tests, which went with
+// the Python read-side. They previously had a Rust counterpart only in
+// `swab/examples/golden_probe.rs` — an *example*, which nothing ever ran, so
+// the contract had no live gate on this side at all.
+
+/// Reserializing the golden fixture must reproduce it key-for-key, in order.
+///
+/// Order matters beyond tidiness: `projects.json` is read by eye during
+/// debugging and diffed between ticks, and a serializer that reordered keys
+/// would make every diff unreadable even when nothing changed.
+#[test]
+fn the_golden_fixture_round_trips_with_identical_key_order() {
+    let raw = std::fs::read_to_string(fixture_path("projects.golden.json"))
+        .expect("golden fixture must be readable");
+    let radar: Radar = serde_json::from_str(&raw).expect("golden fixture must deserialize");
+    let produced = serde_json::to_string_pretty(&radar).expect("must reserialize");
+
+    let key_order = |text: &str| -> Vec<String> {
+        text.lines()
+            .filter_map(|l| {
+                let t = l.trim();
+                t.strip_prefix('"')
+                    .and_then(|r| r.split_once("\":"))
+                    .map(|(k, _)| k.to_string())
+            })
+            .collect()
+    };
+
+    assert_eq!(
+        key_order(&produced),
+        key_order(&raw),
+        "serializer key order drifted from the golden fixture:\n{produced}"
+    );
+}
+
+/// Value-identical round trip, independent of whitespace and key order.
+#[test]
+fn the_golden_fixture_round_trips_value_identically() {
+    let raw = std::fs::read_to_string(fixture_path("projects.golden.json")).unwrap();
+    let radar: Radar = serde_json::from_str(&raw).unwrap();
+    let reserialized: serde_json::Value =
+        serde_json::from_str(&serde_json::to_string(&radar).unwrap()).unwrap();
+    let original: serde_json::Value = serde_json::from_str(&raw).unwrap();
+
+    assert_eq!(reserialized, original);
+}
+
+#[test]
+fn schema_version_is_one() {
+    let radar = load("minimal.json");
+    assert_eq!(radar.schema_version, 1);
 }

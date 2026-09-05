@@ -84,10 +84,16 @@ const RENDER_MODULES: &[&str] = &[
 /// `unicode_width::UnicodeWidthChar::width`, not just asserted here.
 const ALLOWED: &[(char, &str)] = &[
     ('\u{00B7}', "separator in header/footer lines"),
-    ('\u{00D7}', "multiplication sign, e.g. \"×10\" fast-jump hint"),
+    (
+        '\u{00D7}',
+        "multiplication sign, e.g. \"×10\" fast-jump hint",
+    ),
     ('\u{2014}', "em dash, prose only"),
     ('\u{2026}', "truncation marker (\"… +N more\")"),
-    ('\u{2192}', "bucket-transition arrow in a feed row (\"active → stale\")"),
+    (
+        '\u{2192}',
+        "bucket-transition arrow in a feed row (\"active → stale\")",
+    ),
     ('\u{2500}', "light section rule"),
     ('\u{2502}', "browser pane divider / grid column gutter"),
     ('\u{2550}', "heavy header rule"),
@@ -105,7 +111,10 @@ const ALLOWED: &[(char, &str)] = &[
          4.0), which rendered as a blank cell on the macOS 14 CI runner under \
          petripy/ncurses — see this file's module doc comment.",
     ),
-    ('\u{258C}', "block cursor after the picker's custom-path input"),
+    (
+        '\u{258C}',
+        "block cursor after the picker's custom-path input",
+    ),
     ('\u{25BC}', "scrollbar end symbol"),
     ('\u{25CB}', "agent glyph: idle or finished"),
     ('\u{25CF}', "agent glyph: working"),

@@ -1,6 +1,17 @@
 # `petri` verification: four layers, no parity oracle
 
-**Status:** accepted
+**Status:** accepted. Partially superseded by ADR-0004 — see the note below.
+
+> **Note (ADR-0004).** This ADR's framing refers to the Python implementation and
+> `swab/scripts/diff_check.sh` in the present tense. Both are gone. The differential
+> oracle described below had in fact stopped working long before it was deleted:
+> `py_probe.py` imported `petridish.config`/`.discovery`/`.git`/`.sensors.*`, all
+> removed when the scanner was ported, so the scripts could not have run at all.
+>
+> The *decision* this ADR records — four verification layers for `petri`, and
+> deliberately no parity oracle — stands, and those layers are what
+> `petri/tests/s*_snapshot.rs` and `s*_pty*.rs` still implement. Only the
+> description of the alternative is historical.
 
 The Python→Rust scanner port was verified against a differential oracle:
 `swab/scripts/diff_check.sh` ran both implementations and compared output, which is

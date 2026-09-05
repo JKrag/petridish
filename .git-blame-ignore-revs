@@ -1,0 +1,5 @@
+# Bulk mechanical reformats. Add with:
+#   git config blame.ignoreRevsFile .git-blame-ignore-revs
+
+# style: cargo fmt --all
+6984b4b0630fe06c79c18090e7ffce3fe061e70a

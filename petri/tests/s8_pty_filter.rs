@@ -23,7 +23,13 @@ fn scratch_home(name: &str) -> std::path::PathBuf {
 }
 
 fn settle(session: &mut Session) -> Vec<String> {
-    session.screen_retry(90, 40, Duration::from_secs(5), Duration::from_millis(300), 5)
+    session.screen_retry(
+        90,
+        40,
+        Duration::from_secs(5),
+        Duration::from_millis(300),
+        5,
+    )
 }
 
 fn send(session: &mut Session, bytes: &[u8]) {
@@ -80,7 +86,11 @@ fn the_typed_query_appears_on_screen_and_survives_enter() {
 
     send(&mut session, b"q");
     let status = session.wait_with_timeout(Duration::from_secs(5));
-    assert_eq!(status.exit_code(), 0, "`q` must still exit 0 after filtering");
+    assert_eq!(
+        status.exit_code(),
+        0,
+        "`q` must still exit 0 after filtering"
+    );
 }
 
 #[test]
@@ -129,5 +139,9 @@ fn backspace_deletes_the_last_character_and_refilters() {
 
     send(&mut session, b"q");
     let status = session.wait_with_timeout(Duration::from_secs(5));
-    assert_eq!(status.exit_code(), 0, "`q` must still exit 0 after backspacing");
+    assert_eq!(
+        status.exit_code(),
+        0,
+        "`q` must still exit 0 after backspacing"
+    );
 }

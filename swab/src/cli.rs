@@ -56,10 +56,10 @@ const DAEMON_LOG_MAX_BYTES: u64 = 5 * 1024 * 1024;
 /// never fails loudly: a missing log is fine (not every install runs under launchd),
 /// and the actual truncation is one `truncate` syscall — cheap.
 fn rotate_daemon_log(log_path: &std::path::Path) {
-    if let Ok(meta) = std::fs::metadata(log_path) {
-        if meta.len() > DAEMON_LOG_MAX_BYTES {
-            let _ = std::fs::File::create(log_path);
-        }
+    if let Ok(meta) = std::fs::metadata(log_path)
+        && meta.len() > DAEMON_LOG_MAX_BYTES
+    {
+        let _ = std::fs::File::create(log_path);
     }
 }
 
@@ -68,7 +68,9 @@ fn rotate_daemon_log(log_path: &std::path::Path) {
 /// helper) so tests can override it without touching HOME.
 pub fn default_state_path() -> PathBuf {
     let home = std::env::var("HOME").expect("HOME must be set");
-    PathBuf::from(&home).join(".petridish").join("projects.json")
+    PathBuf::from(&home)
+        .join(".petridish")
+        .join("projects.json")
 }
 
 // ── Subcommand handlers. Each returns a `u8` exit code (0 = OK) and writes
@@ -101,7 +103,11 @@ pub fn cmd_scan(state_path: &std::path::Path, out: &mut dyn Write) -> std::io::R
         Ok(radar) => {
             let n = radar.projects.len();
             let ms = radar.scan_duration_ms;
-            let _ = writeln!(out, "scanned {n} projects in {ms}ms -> {}", state_path.display());
+            let _ = writeln!(
+                out,
+                "scanned {n} projects in {ms}ms -> {}",
+                state_path.display()
+            );
             Ok(0)
         }
         Err(e) => {
@@ -206,7 +212,8 @@ pub fn cmd_path(
     // several (duplicate names — shouldn't happen, but Python is defensive about it too),
     // fall through to the tiered substring search below, which still finds exact-name
     // matches at rank 0 (an exact match trivially contains itself as a substring).
-    let exact: Vec<&crate::schema::Project> = radar.projects.iter().filter(|p| p.name == query).collect();
+    let exact: Vec<&crate::schema::Project> =
+        radar.projects.iter().filter(|p| p.name == query).collect();
     if exact.len() == 1 {
         let _ = writeln!(out, "{}", exact[0].path);
         return Ok(0);
@@ -238,7 +245,10 @@ pub fn cmd_path(
         return Ok(1);
     }
 
-    candidates.sort_by(|a, b| a.0.cmp(&b.0).then_with(|| b.1.last_activity_at.cmp(&a.1.last_activity_at)));
+    candidates.sort_by(|a, b| {
+        a.0.cmp(&b.0)
+            .then_with(|| b.1.last_activity_at.cmp(&a.1.last_activity_at))
+    });
 
     let _ = writeln!(out, "{}", candidates[0].1.path);
     Ok(0)
@@ -253,10 +263,7 @@ pub fn cmd_path(
 /// - every path in `roots` exists on disk (dir),
 /// - state file exists and is fresh (<24h old),
 /// - `~/.claude/settings.json` contains the HOOK_MARKER string.
-pub fn cmd_doctor(
-    state_path: &std::path::Path,
-    out: &mut dyn Write,
-) -> std::io::Result<u8> {
+pub fn cmd_doctor(state_path: &std::path::Path, out: &mut dyn Write) -> std::io::Result<u8> {
     let mut problems: Vec<String> = Vec::new();
     let mut report: Vec<(String, bool /* ok or not */)> = Vec::new();
 
@@ -302,12 +309,10 @@ pub fn cmd_doctor(
         if !state_path.is_file() {
             return Err(format!("state file missing: {}", state_path.display()));
         }
-        let data = std::fs::read(state_path).map_err(|e| {
-            format!("state file invalid JSON: {e}")
-        })?;
-        let radar: crate::schema::Radar = serde_json::from_slice(&data).map_err(|e| {
-            format!("state file invalid JSON: {e}")
-        })?;
+        let data =
+            std::fs::read(state_path).map_err(|e| format!("state file invalid JSON: {e}"))?;
+        let radar: crate::schema::Radar =
+            serde_json::from_slice(&data).map_err(|e| format!("state file invalid JSON: {e}"))?;
         let now = chrono::Utc::now();
         let age_h = (now - radar.updated_at).num_seconds() as f64 / 3_600.0;
         if age_h >= 24.0 {
@@ -318,16 +323,19 @@ pub fn cmd_doctor(
 
     check!("hook", {
         let home = std::env::var("HOME").unwrap_or_else(|_| "~".to_string());
-        let settings_path = std::path::PathBuf::from(home).join(".claude").join("settings.json");
+        let settings_path = std::path::PathBuf::from(home)
+            .join(".claude")
+            .join("settings.json");
         if !settings_path.is_file() {
-            return Err(format!("settings.json not found: {}", settings_path.display()));
+            return Err(format!(
+                "settings.json not found: {}",
+                settings_path.display()
+            ));
         }
-        let text = std::fs::read_to_string(&settings_path).map_err(|e| {
-            format!("cannot read settings.json: {e}")
-        })?;
-        let settings: serde_json::Value = serde_json::from_str(&text).map_err(|e| {
-            format!("settings.json not valid JSON: {e}")
-        })?;
+        let text = std::fs::read_to_string(&settings_path)
+            .map_err(|e| format!("cannot read settings.json: {e}"))?;
+        let settings: serde_json::Value = serde_json::from_str(&text)
+            .map_err(|e| format!("settings.json not valid JSON: {e}"))?;
         if !text.contains(crate::config::HOOK_MARKER) {
             return Err("swab-hook marker not found in ~/.claude/settings.json".to_string());
         }
@@ -383,13 +391,34 @@ pub fn cmd_doctor(
 /// printed only the field name + default, dropping the description Python always prints).
 const CONFIG_FIELD_HELP: &[(&str, &str)] = &[
     ("roots", "Directories crawled for projects"),
-    ("extra_paths", "Individual extra project paths, for anything outside roots"),
-    ("author_patterns", "Regex(es) matched against \"git log --author=\" to decide \"did I write this\""),
-    ("author_since", "How far back git log looks when computing authorship"),
-    ("ignore_dirs", "Directory basenames hard-skipped during crawl"),
-    ("bucket_thresholds", "Hour cutoffs for the active/in_flight/stale/cold status buckets"),
-    ("category_overrides", "{path_glob_or_pattern: category_label} manual recategorisation"),
-    ("max_depth", "How deep the crawl descends into roots before giving up on a subtree"),
+    (
+        "extra_paths",
+        "Individual extra project paths, for anything outside roots",
+    ),
+    (
+        "author_patterns",
+        "Regex(es) matched against \"git log --author=\" to decide \"did I write this\"",
+    ),
+    (
+        "author_since",
+        "How far back git log looks when computing authorship",
+    ),
+    (
+        "ignore_dirs",
+        "Directory basenames hard-skipped during crawl",
+    ),
+    (
+        "bucket_thresholds",
+        "Hour cutoffs for the active/in_flight/stale/cold status buckets",
+    ),
+    (
+        "category_overrides",
+        "{path_glob_or_pattern: category_label} manual recategorisation",
+    ),
+    (
+        "max_depth",
+        "How deep the crawl descends into roots before giving up on a subtree",
+    ),
 ];
 
 /// `config`: print the config file location + every `Config` field, one at a time in
@@ -398,7 +427,11 @@ const CONFIG_FIELD_HELP: &[(&str, &str)] = &[
 /// and a manual list can't drift silently the way a parallel dict would.
 pub fn cmd_config(out: &mut dyn Write) -> std::io::Result<u8> {
     let cfg = crate::config::Config::default();
-    writeln!(out, "Config file: {}", crate::config::default_path().display())?;
+    writeln!(
+        out,
+        "Config file: {}",
+        crate::config::default_path().display()
+    )?;
     writeln!(
         out,
         "Optional TOML file — every field below has a default, so a missing \
@@ -411,14 +444,30 @@ pub fn cmd_config(out: &mut dyn Write) -> std::io::Result<u8> {
     for (name, default) in &[
         ("roots", format_toml_path_list(&cfg.roots)),
         ("extra_paths", format_toml_path_list(&cfg.extra_paths)),
-        ("author_patterns", format_toml_string_list(&cfg.author_patterns)),
+        (
+            "author_patterns",
+            format_toml_string_list(&cfg.author_patterns),
+        ),
         ("author_since", format_toml_string(&cfg.author_since)),
-        ("ignore_dirs", format_toml_sorted_string_set(&cfg.ignore_dirs)),
-        ("bucket_thresholds", format_toml_bucket_thresholds(&cfg.bucket_thresholds)),
-        ("category_overrides", format_toml_string_map(&cfg.category_overrides)),
+        (
+            "ignore_dirs",
+            format_toml_sorted_string_set(&cfg.ignore_dirs),
+        ),
+        (
+            "bucket_thresholds",
+            format_toml_bucket_thresholds(&cfg.bucket_thresholds),
+        ),
+        (
+            "category_overrides",
+            format_toml_string_map(&cfg.category_overrides),
+        ),
         ("max_depth", cfg.max_depth.to_string()),
     ] {
-        let help_text = CONFIG_FIELD_HELP.iter().find(|(n, _)| n == name).map(|(_, h)| *h).unwrap_or("");
+        let help_text = CONFIG_FIELD_HELP
+            .iter()
+            .find(|(n, _)| n == name)
+            .map(|(_, h)| *h)
+            .unwrap_or("");
         writeln!(out, "  {name}")?;
         writeln!(out, "      {help_text}")?;
         writeln!(out, "      default: {default}")?;
@@ -442,7 +491,10 @@ pub fn cmd_config(out: &mut dyn Write) -> std::io::Result<u8> {
 /// syntax, and — since `HashMap`/`HashSet` iteration order is unspecified — the SAME config
 /// could legitimately print its keys in a different order across two runs).
 fn format_toml_path_list(items: &[std::path::PathBuf]) -> String {
-    let quoted: Vec<String> = items.iter().map(|p| format!("\"{}\"", p.display())).collect();
+    let quoted: Vec<String> = items
+        .iter()
+        .map(|p| format!("\"{}\"", p.display()))
+        .collect();
     format!("[{}]", quoted.join(", "))
 }
 
@@ -480,7 +532,10 @@ fn format_toml_bucket_thresholds(map: &std::collections::HashMap<String, f64>) -
             parts.push(format!("{key} = {v:?}")); // {:?} forces "48.0", not "48" — matches Python's str(48.0).
         }
     }
-    let mut extra: Vec<&String> = map.keys().filter(|k| !known_order.contains(&k.as_str())).collect();
+    let mut extra: Vec<&String> = map
+        .keys()
+        .filter(|k| !known_order.contains(&k.as_str()))
+        .collect();
     extra.sort();
     for key in extra {
         parts.push(format!("{key} = {:?}", map[key]));
@@ -540,7 +595,11 @@ fn _print_table(projects: &[&crate::schema::Project], out: &mut dyn Write) -> st
     let _ = writeln!(
         out,
         "{}",
-        widths.iter().map(|w| "-".repeat(*w)).collect::<Vec<_>>().join("  ")
+        widths
+            .iter()
+            .map(|w| "-".repeat(*w))
+            .collect::<Vec<_>>()
+            .join("  ")
     );
 
     for row in &rows {
@@ -563,14 +622,9 @@ pub fn run_command(args: Cli, out: &mut dyn Write) -> std::io::Result<i32> {
     let state = args.state.clone().unwrap_or_else(default_state_path);
     match args.command {
         Scan => cmd_scan(&state, out).map(|c| c as i32),
-        List { bucket, all, json } => cmd_list(
-            &state,
-            bucket.as_deref(),
-            all,
-            json,
-            out,
-        )
-        .map(|c| c as i32),
+        List { bucket, all, json } => {
+            cmd_list(&state, bucket.as_deref(), all, json, out).map(|c| c as i32)
+        }
         Path { query } => cmd_path(&state, &query, out).map(|c| c as i32),
         Doctor => cmd_doctor(&state, out).map(|c| c as i32),
         Config => cmd_config(out).map(|c| c as i32),
@@ -599,14 +653,14 @@ pub fn main() {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::schema::{Radar, Project as SchemaProject, StatusBucket};
+    use crate::schema::{Project as SchemaProject, Radar, StatusBucket};
     use chrono::Utc;
-    use std::path::PathBuf;
+    use std::path::Path;
 
     // ── Helpers ────────────────────────────────────────────────────────
 
     /// Write a fixture `Radar` to a temp path and return its location.
-    fn write_fixture_radar(path: &PathBuf, radar: Radar) {
+    fn write_fixture_radar(path: &Path, radar: Radar) {
         crate::schema::write_atomic(path, &radar).expect("write fixture state");
     }
 
@@ -621,10 +675,6 @@ mod tests {
             Capture {
                 bytes: std::sync::Mutex::new(Vec::new()),
             }
-        }
-
-        fn as_bytes(&self) -> Vec<u8> {
-            self.bytes.lock().unwrap().clone()
         }
 
         fn as_str(&self) -> String {
@@ -654,7 +704,12 @@ mod tests {
         }
     }
 
-    fn test_project(name: &str, path: &str, bucket: StatusBucket, is_foreign: bool) -> SchemaProject {
+    fn test_project(
+        name: &str,
+        path: &str,
+        bucket: StatusBucket,
+        is_foreign: bool,
+    ) -> SchemaProject {
         SchemaProject {
             id: format!("id_{name}"),
             name: name.to_string(),
@@ -689,14 +744,16 @@ mod tests {
         write_fixture_radar(&state_path, radar);
 
         let mut cap = Capture::new();
-        let code = cmd_list(&state_path, None, false, false, &mut cap)
-            .unwrap();
+        let code = cmd_list(&state_path, None, false, false, &mut cap).unwrap();
         assert_eq!(code, 0);
         // project-c must be excluded (foreign, --all not set).
         let captured = cap.as_str();
         assert!(captured.contains("project-a"));
         assert!(captured.contains("project-b"));
-        assert!(!captured.contains("project-c"), "foreign project must be hidden: {captured}");
+        assert!(
+            !captured.contains("project-c"),
+            "foreign project must be hidden: {captured}"
+        );
 
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -704,7 +761,8 @@ mod tests {
     /// Test 2: `List --bucket stale` -> only stale projects returned.
     #[test]
     fn list_bucket_filter() {
-        let dir = std::env::temp_dir().join(format!("swab_test_list_bucket_{}", std::process::id()));
+        let dir =
+            std::env::temp_dir().join(format!("swab_test_list_bucket_{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         let state_path = dir.join("projects.json");
@@ -717,14 +775,22 @@ mod tests {
         write_fixture_radar(&state_path, radar);
 
         let mut cap = Capture::new();
-        let code = cmd_list(&state_path, Some("stale"), false, false, &mut cap)
-            .unwrap();
+        let code = cmd_list(&state_path, Some("stale"), false, false, &mut cap).unwrap();
         assert_eq!(code, 0);
 
         let captured = cap.as_str();
-        assert!(captured.contains("stale-p"), "must contain stale project: {captured}");
-        assert!(!captured.contains("active-p"), "must exclude active: {captured}");
-        assert!(!captured.contains("cold-p"), "must exclude cold: {captured}");
+        assert!(
+            captured.contains("stale-p"),
+            "must contain stale project: {captured}"
+        );
+        assert!(
+            !captured.contains("active-p"),
+            "must exclude active: {captured}"
+        );
+        assert!(
+            !captured.contains("cold-p"),
+            "must exclude cold: {captured}"
+        );
 
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -732,7 +798,8 @@ mod tests {
     /// Test 3: `List` without `--all` excludes foreign projects.
     #[test]
     fn list_excludes_foreign_without_all() {
-        let dir = std::env::temp_dir().join(format!("swab_test_list_foreign_{}", std::process::id()));
+        let dir =
+            std::env::temp_dir().join(format!("swab_test_list_foreign_{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         let state_path = dir.join("projects.json");
@@ -759,7 +826,10 @@ mod tests {
         let code = cmd_list(&state_path, None, true, false, &mut cap).unwrap();
         assert_eq!(code, 0);
         let captured = cap.as_str();
-        assert!(captured.contains("foreign-proj"), "with --all must include foreign: {captured}");
+        assert!(
+            captured.contains("foreign-proj"),
+            "with --all must include foreign: {captured}"
+        );
 
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -767,7 +837,8 @@ mod tests {
     /// Test 3.5: table 'name' column formats worktree projects with parent_path.
     #[test]
     fn list_table_name_cell_shows_worktree_parent() {
-        let dir = std::env::temp_dir().join(format!("swab_test_list_name_cell_{}", std::process::id()));
+        let dir =
+            std::env::temp_dir().join(format!("swab_test_list_name_cell_{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         let state_path = dir.join("projects.json");
@@ -827,8 +898,18 @@ mod tests {
         let state_path = dir.join("projects.json");
 
         let radar = test_radar(vec![
-            test_project("my-project", "/tmp/xyz/my-project", StatusBucket::Active, false),
-            test_project("other-proj", "/tmp/xyz/other-proj", StatusBucket::Active, false),
+            test_project(
+                "my-project",
+                "/tmp/xyz/my-project",
+                StatusBucket::Active,
+                false,
+            ),
+            test_project(
+                "other-proj",
+                "/tmp/xyz/other-proj",
+                StatusBucket::Active,
+                false,
+            ),
         ]);
         write_fixture_radar(&state_path, radar);
 
@@ -836,8 +917,12 @@ mod tests {
         let code = cmd_path(&state_path, "my-project", &mut cap).unwrap();
         assert_eq!(code, 0);
 
-        let cap_str = cap.as_str(); let captured = cap_str.trim();
-        assert_eq!(captured, "/tmp/xyz/my-project", "exact name must print its path");
+        let cap_str = cap.as_str();
+        let captured = cap_str.trim();
+        assert_eq!(
+            captured, "/tmp/xyz/my-project",
+            "exact name must print its path"
+        );
 
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -845,7 +930,8 @@ mod tests {
     /// Test 5: `Path` with a substring matching two projects -> most recent `last_activity_at` wins.
     #[test]
     fn path_substring_tiebreak_by_recency() {
-        let dir = std::env::temp_dir().join(format!("swab_test_path_substring_{}", std::process::id()));
+        let dir =
+            std::env::temp_dir().join(format!("swab_test_path_substring_{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         let state_path = dir.join("projects.json");
@@ -886,7 +972,8 @@ mod tests {
         let code = cmd_path(&state_path, "project", &mut cap).unwrap();
         assert_eq!(code, 0);
 
-        let cap_str = cap.as_str(); let captured = cap_str.trim();
+        let cap_str = cap.as_str();
+        let captured = cap_str.trim();
         assert_eq!(captured, "/tmp/beta", "newest project wins the tie-break");
 
         let _ = std::fs::remove_dir_all(&dir);
@@ -895,21 +982,26 @@ mod tests {
     /// Test 6: `Path` with no match -> non-zero exit, nothing on stdout.
     #[test]
     fn path_no_match() {
-        let dir = std::env::temp_dir().join(format!("swab_test_path_nomatch_{}", std::process::id()));
+        let dir =
+            std::env::temp_dir().join(format!("swab_test_path_nomatch_{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         let state_path = dir.join("projects.json");
 
-        let radar = test_radar(vec![
-            test_project("alpha", "/tmp/a", StatusBucket::Active, false),
-        ]);
+        let radar = test_radar(vec![test_project(
+            "alpha",
+            "/tmp/a",
+            StatusBucket::Active,
+            false,
+        )]);
         write_fixture_radar(&state_path, radar);
 
         let mut cap = Capture::new();
         let code = cmd_path(&state_path, "zzz_no_match_zzz", &mut cap).unwrap();
         assert_eq!(code, 1, "must exit non-zero on no match");
 
-        let cap_str = cap.as_str(); let captured = cap_str.trim();
+        let cap_str = cap.as_str();
+        let captured = cap_str.trim();
         assert!(
             captured.is_empty() || !captured.starts_with('/'),
             "stdout must stay clean for no-match — got {captured:?}"
@@ -923,20 +1015,34 @@ mod tests {
     /// substring-of-path fallback tier; an earlier Rust version had no such tier at all.
     #[test]
     fn path_matches_via_path_substring_not_name() {
-        let dir = std::env::temp_dir().join(format!("swab_test_path_via_path_{}", std::process::id()));
+        let dir =
+            std::env::temp_dir().join(format!("swab_test_path_via_path_{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         let state_path = dir.join("projects.json");
 
         let radar = test_radar(vec![
-            test_project("frontend", "/tmp/xyz/special-repo-name/frontend", StatusBucket::Active, false),
-            test_project("backend", "/tmp/xyz/other/backend", StatusBucket::Active, false),
+            test_project(
+                "frontend",
+                "/tmp/xyz/special-repo-name/frontend",
+                StatusBucket::Active,
+                false,
+            ),
+            test_project(
+                "backend",
+                "/tmp/xyz/other/backend",
+                StatusBucket::Active,
+                false,
+            ),
         ]);
         write_fixture_radar(&state_path, radar);
 
         let mut cap = Capture::new();
         let code = cmd_path(&state_path, "special-repo-name", &mut cap).unwrap();
-        assert_eq!(code, 0, "a query matching only the path (not any project name) must still resolve");
+        assert_eq!(
+            code, 0,
+            "a query matching only the path (not any project name) must still resolve"
+        );
 
         let cap_str = cap.as_str();
         assert_eq!(cap_str.trim(), "/tmp/xyz/special-repo-name/frontend");
@@ -948,14 +1054,20 @@ mod tests {
     /// `cli.py::_cmd_path`'s `query.lower() in p.name.lower()`.
     #[test]
     fn path_name_match_is_case_insensitive() {
-        let dir = std::env::temp_dir().join(format!("swab_test_path_case_insensitive_{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!(
+            "swab_test_path_case_insensitive_{}",
+            std::process::id()
+        ));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         let state_path = dir.join("projects.json");
 
-        let radar = test_radar(vec![
-            test_project("MyProject", "/tmp/xyz/MyProject", StatusBucket::Active, false),
-        ]);
+        let radar = test_radar(vec![test_project(
+            "MyProject",
+            "/tmp/xyz/MyProject",
+            StatusBucket::Active,
+            false,
+        )]);
         write_fixture_radar(&state_path, radar);
 
         let mut cap = Capture::new();
@@ -994,7 +1106,8 @@ mod tests {
     /// as failed, overall non-zero exit.
     #[test]
     fn doctor_with_broken_config() {
-        let dir = std::env::temp_dir().join(format!("swab_test_doctor_broken_{}", std::process::id()));
+        let dir =
+            std::env::temp_dir().join(format!("swab_test_doctor_broken_{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
 
@@ -1033,7 +1146,8 @@ mod tests {
         //   <dir>/.petridish/projects.json — fresh state
         //   <dir>/.claude/settings.json  — contains the HOOK_MARKER
         //   <dir>/repos                    — real directory (resolved from $HOME/repos)
-        let dir = std::env::temp_dir().join(format!("swab_test_doctor_healthy_{}", std::process::id()));
+        let dir =
+            std::env::temp_dir().join(format!("swab_test_doctor_healthy_{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::create_dir_all(dir.join(".petridish")).unwrap();
@@ -1078,10 +1192,22 @@ mod tests {
         assert_eq!(code, 0, "doctor should pass on a healthy fixture");
 
         let captured = cap.as_str();
-        assert!(captured.contains("ok: config"), "config should be ok: {captured}");
-        assert!(captured.contains("ok: roots"), "roots should be ok: {captured}");
-        assert!(captured.contains("ok: state"), "state should be ok: {captured}");
-        assert!(captured.contains("ok: hook"), "hook should be ok: {captured}");
+        assert!(
+            captured.contains("ok: config"),
+            "config should be ok: {captured}"
+        );
+        assert!(
+            captured.contains("ok: roots"),
+            "roots should be ok: {captured}"
+        );
+        assert!(
+            captured.contains("ok: state"),
+            "state should be ok: {captured}"
+        );
+        assert!(
+            captured.contains("ok: hook"),
+            "hook should be ok: {captured}"
+        );
 
         unsafe { std::env::set_var("HOME", &real_home) };
         let _ = std::fs::remove_dir_all(&dir);
@@ -1095,13 +1221,23 @@ mod tests {
     /// exists to catch.
     #[test]
     fn doctor_fails_when_the_hook_is_registered_on_only_some_events() {
-        let dir = std::env::temp_dir().join(format!("swab_test_doctor_partial_hook_{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!(
+            "swab_test_doctor_partial_hook_{}",
+            std::process::id()
+        ));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(dir.join(".petridish")).unwrap();
         std::fs::create_dir_all(dir.join(".claude")).unwrap();
         std::fs::create_dir_all(dir.join("repos")).unwrap();
-        std::fs::write(dir.join(".petridish").join("config.toml"), "roots = [\"$HOME/repos\"]").unwrap();
-        write_fixture_radar(&dir.join(".petridish").join("projects.json"), test_radar(vec![]));
+        std::fs::write(
+            dir.join(".petridish").join("config.toml"),
+            "roots = [\"$HOME/repos\"]",
+        )
+        .unwrap();
+        write_fixture_radar(
+            &dir.join(".petridish").join("projects.json"),
+            test_radar(vec![]),
+        );
 
         // The pre-MECH-5 shape: PreToolUse and Stop only.
         std::fs::write(
@@ -1117,7 +1253,10 @@ mod tests {
         unsafe { std::env::set_var("HOME", &real_home) };
 
         let captured = cap.as_str();
-        assert_eq!(code, 1, "a partially registered hook must fail doctor: {captured}");
+        assert_eq!(
+            code, 1,
+            "a partially registered hook must fail doctor: {captured}"
+        );
         assert!(captured.contains("fail: hook"), "got: {captured}");
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -1158,7 +1297,8 @@ mod tests {
         rotate_daemon_log(&small_log);
         // File should still be 4 bytes — unchanged.
         assert_eq!(
-            std::fs::metadata(&small_log).unwrap().len(), 4,
+            std::fs::metadata(&small_log).unwrap().len(),
+            4,
             "small log must not be rotated"
         );
 
@@ -1168,7 +1308,8 @@ mod tests {
     // ── Test 10: daemon.log missing -> rotation is a no-op, never fails ─
     #[test]
     fn daemon_log_missing_no_op() {
-        let dir = std::env::temp_dir().join(format!("swab_test_rotate_missing_{}", std::process::id()));
+        let dir =
+            std::env::temp_dir().join(format!("swab_test_rotate_missing_{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
 
@@ -1177,7 +1318,10 @@ mod tests {
 
         // Must not panic.
         rotate_daemon_log(&log_path);
-        assert!(!log_path.exists(), "rotation must not create a missing file");
+        assert!(
+            !log_path.exists(),
+            "rotation must not create a missing file"
+        );
 
         let _ = std::fs::remove_dir_all(&dir);
     }

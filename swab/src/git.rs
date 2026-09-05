@@ -74,7 +74,10 @@ pub(crate) fn github_url(remote: &str) -> Option<String> {
     let remote = remote.strip_suffix('/').unwrap_or(remote);
 
     if let Some(rest) = remote.strip_prefix("git@github.com:") {
-        return Some(format!("https://github.com/{}", rest.strip_suffix(".git").unwrap_or(rest)));
+        return Some(format!(
+            "https://github.com/{}",
+            rest.strip_suffix(".git").unwrap_or(rest)
+        ));
     }
 
     if remote.starts_with("https://github.com/") {
@@ -109,18 +112,18 @@ pub fn scan(path: &Path, author_patterns: &[String], author_since: &str) -> GitS
     result.is_dirty = !entries.is_empty();
     result.uncommitted_files = entries.len() as u32;
 
-    if let Ok(head_commit) = repo.head_commit() {
-        if let Ok(time) = head_commit.time() {
-            result.last_commit_at = gix_time_to_utc(time);
-        }
+    if let Ok(head_commit) = repo.head_commit()
+        && let Ok(time) = head_commit.time()
+    {
+        result.last_commit_at = gix_time_to_utc(time);
     }
 
     let mut mine_last: Option<DateTime<Utc>> = None;
     for pattern in author_patterns {
-        if let Some(dt) = author_since_revwalk(&repo, pattern, author_since) {
-            if mine_last.is_none_or(|best| dt > best) {
-                mine_last = Some(dt);
-            }
+        if let Some(dt) = author_since_revwalk(&repo, pattern, author_since)
+            && mine_last.is_none_or(|best| dt > best)
+        {
+            mine_last = Some(dt);
         }
     }
     result.mine_last_commit_at = mine_last;
@@ -151,7 +154,9 @@ pub(crate) fn daily_commit_counts(repo: &gix::Repository, now: DateTime<Utc>) ->
     let window = crate::schema::GIT_ACTIVITY_WINDOW_DAYS;
     let mut buckets = vec![0u32; window];
 
-    let Ok(head_id) = repo.head_id() else { return buckets };
+    let Ok(head_id) = repo.head_id() else {
+        return buckets;
+    };
 
     let today = now.date_naive();
     let window_start = today - chrono::Duration::days(window as i64 - 1);
@@ -177,7 +182,9 @@ pub(crate) fn daily_commit_counts(repo: &gix::Repository, now: DateTime<Utc>) ->
     for info in walk.filter_map(|i| i.ok()) {
         let Ok(commit) = info.object() else { continue };
         let Ok(time) = commit.time() else { continue };
-        let Some(commit_time) = gix_time_to_utc(time) else { continue };
+        let Some(commit_time) = gix_time_to_utc(time) else {
+            continue;
+        };
         let commit_date = commit_time.date_naive();
         if commit_date < window_start {
             // `continue`, not `break`: the cutoff bounds how far the traversal goes, and
@@ -239,7 +246,9 @@ fn resolve_remote_fetch_url(repo: &gix::Repository) -> Option<String> {
     let mut best: Option<(usize, String)> = None;
     if let Some(sections) = config.sections_by_name("url") {
         for section in sections {
-            let Some(base) = section.header().subsection_name() else { continue };
+            let Some(base) = section.header().subsection_name() else {
+                continue;
+            };
             let base = base.to_string();
             for prefix in section.values("insteadOf") {
                 let prefix = prefix.to_string();
@@ -292,7 +301,11 @@ pub(crate) fn status_entries(repo: &gix::Repository) -> Vec<String> {
 ///
 /// Also used directly by `discovery::is_foreign`'s authorship check — same query, same
 /// semantics, both need "does any commit within the since-horizon match this author".
-pub(crate) fn author_since_revwalk(repo: &gix::Repository, pattern: &str, since: &str) -> Option<DateTime<Utc>> {
+pub(crate) fn author_since_revwalk(
+    repo: &gix::Repository,
+    pattern: &str,
+    since: &str,
+) -> Option<DateTime<Utc>> {
     let re = regex::Regex::new(pattern).ok()?;
     let head_id = repo.head_id().ok()?;
     let since_dt = parse_since(since)?;
@@ -315,8 +328,10 @@ pub(crate) fn author_since_revwalk(repo: &gix::Repository, pattern: &str, since:
 /// Parses git's `--since=<N> years|months|days|weeks` relative-date grammar into an
 /// absolute cutoff. Only the subset `swab`'s config actually emits is supported.
 fn parse_since(since: &str) -> Option<DateTime<Utc>> {
-    let parts: Vec<&str> = since.trim().split_whitespace().collect();
-    let [n, unit] = parts.as_slice() else { return None };
+    let parts: Vec<&str> = since.split_whitespace().collect();
+    let [n, unit] = parts.as_slice() else {
+        return None;
+    };
     let n: i64 = n.parse().ok()?;
     let unit = unit.trim_end_matches('s');
     let now = Utc::now();
@@ -358,29 +373,49 @@ mod tests {
     }
 
     fn git_init(dir: &Path) {
-        assert!(Command::new("git")
-            .args(["init", dir.to_str().unwrap()])
-            .envs(GIT_ENV.iter().map(|(k, v)| (k, *v)))
-            .spawn().expect("git spawn")
-            .wait().expect("git init wait")
-            .success());
+        assert!(
+            Command::new("git")
+                .args(["init", dir.to_str().unwrap()])
+                .envs(GIT_ENV.iter().map(|(k, v)| (k, *v)))
+                .spawn()
+                .expect("git spawn")
+                .wait()
+                .expect("git init wait")
+                .success()
+        );
     }
 
     fn git_add_and_commit(dir: &Path, filename: &str, content: &str) {
         let path = dir.join(filename);
         fs::write(&path, content).expect("write file");
-        assert!(Command::new("git")
-            .args(["-C", dir.to_str().unwrap(), "add", filename])
-            .envs(GIT_ENV.iter().map(|(k, v)| (k, *v)))
-            .spawn().expect("git spawn")
-            .wait().expect("git add wait")
-            .success());
-        assert!(Command::new("git")
-            .args(["-C", dir.to_str().unwrap(), "commit", "--no-gpg-sign", "-m", "test commit", "--allow-empty"])
-            .envs(GIT_ENV.iter().map(|(k, v)| (k, *v)))
-            .spawn().expect("git spawn")
-            .wait().expect("git commit wait")
-            .success());
+        assert!(
+            Command::new("git")
+                .args(["-C", dir.to_str().unwrap(), "add", filename])
+                .envs(GIT_ENV.iter().map(|(k, v)| (k, *v)))
+                .spawn()
+                .expect("git spawn")
+                .wait()
+                .expect("git add wait")
+                .success()
+        );
+        assert!(
+            Command::new("git")
+                .args([
+                    "-C",
+                    dir.to_str().unwrap(),
+                    "commit",
+                    "--no-gpg-sign",
+                    "-m",
+                    "test commit",
+                    "--allow-empty"
+                ])
+                .envs(GIT_ENV.iter().map(|(k, v)| (k, *v)))
+                .spawn()
+                .expect("git spawn")
+                .wait()
+                .expect("git commit wait")
+                .success()
+        );
     }
 
     fn git_run(dir: &Path, args: &[&str]) -> String {
@@ -388,7 +423,9 @@ mod tests {
             .args(["-C", dir.to_str().unwrap()])
             .args(args)
             .envs(GIT_ENV.iter().map(|(k, v)| (k, *v)))
-            .output().expect("git spawn").stdout;
+            .output()
+            .expect("git spawn")
+            .stdout;
         String::from_utf8_lossy(&out).into_owned()
     }
 
@@ -443,8 +480,15 @@ mod tests {
         fs::write(notes_dir.join("c.md"), "c").expect("write c.md");
 
         let cli_porcelain = git_run(&tmp, &["status", "--porcelain"]);
-        let cli_lines: Vec<&str> = cli_porcelain.lines().filter(|l| !l.trim().is_empty()).collect();
-        assert_eq!(cli_lines.len(), 1, "real git must collapse a wholly-untracked dir to one line: {cli_lines:?}");
+        let cli_lines: Vec<&str> = cli_porcelain
+            .lines()
+            .filter(|l| !l.trim().is_empty())
+            .collect();
+        assert_eq!(
+            cli_lines.len(),
+            1,
+            "real git must collapse a wholly-untracked dir to one line: {cli_lines:?}"
+        );
 
         let state = scan(&tmp, &[], "3 years");
         assert!(state.is_dirty);
@@ -460,20 +504,44 @@ mod tests {
         git_init(&tmp);
         git_add_and_commit(&tmp, "README.md", "hello");
 
-        fs::write(tmp.join(".gitignore"), "dir/\ndir/*\n!dir/keep.txt\n").expect("write .gitignore");
+        fs::write(tmp.join(".gitignore"), "dir/\ndir/*\n!dir/keep.txt\n")
+            .expect("write .gitignore");
         fs::create_dir_all(tmp.join("dir")).expect("mkdir dir");
         fs::write(tmp.join("dir").join("keep.txt"), "should stay ignored").expect("write keep.txt");
-        assert!(Command::new("git")
-            .args(["-C", tmp.to_str().unwrap(), "add", ".gitignore"])
-            .envs(GIT_ENV.iter().map(|(k, v)| (k, *v)))
-            .spawn().unwrap().wait().unwrap().success());
-        assert!(Command::new("git")
-            .args(["-C", tmp.to_str().unwrap(), "commit", "--no-gpg-sign", "-m", "add gitignore", "--allow-empty"])
-            .envs(GIT_ENV.iter().map(|(k, v)| (k, *v)))
-            .spawn().unwrap().wait().unwrap().success());
+        assert!(
+            Command::new("git")
+                .args(["-C", tmp.to_str().unwrap(), "add", ".gitignore"])
+                .envs(GIT_ENV.iter().map(|(k, v)| (k, *v)))
+                .spawn()
+                .unwrap()
+                .wait()
+                .unwrap()
+                .success()
+        );
+        assert!(
+            Command::new("git")
+                .args([
+                    "-C",
+                    tmp.to_str().unwrap(),
+                    "commit",
+                    "--no-gpg-sign",
+                    "-m",
+                    "add gitignore",
+                    "--allow-empty"
+                ])
+                .envs(GIT_ENV.iter().map(|(k, v)| (k, *v)))
+                .spawn()
+                .unwrap()
+                .wait()
+                .unwrap()
+                .success()
+        );
 
         let cli_porcelain = git_run(&tmp, &["status", "--porcelain"]);
-        assert!(cli_porcelain.trim().is_empty(), "real git must treat dir/keep.txt as ignored despite the negation");
+        assert!(
+            cli_porcelain.trim().is_empty(),
+            "real git must treat dir/keep.txt as ignored despite the negation"
+        );
 
         let state = scan(&tmp, &[], "3 years");
         assert!(
@@ -519,10 +587,24 @@ mod tests {
             ("GIT_COMMITTER_NAME", "Jan Krag"),
             ("GIT_COMMITTER_EMAIL", "jan@example.invalid"),
         ];
-        assert!(Command::new("git")
-            .args(["-C", tmp.to_str().unwrap(), "commit", "--no-gpg-sign", "-m", "mine", "--allow-empty"])
-            .envs(env_author.iter().map(|(k, v)| (k, *v)))
-            .spawn().unwrap().wait().unwrap().success());
+        assert!(
+            Command::new("git")
+                .args([
+                    "-C",
+                    tmp.to_str().unwrap(),
+                    "commit",
+                    "--no-gpg-sign",
+                    "-m",
+                    "mine",
+                    "--allow-empty"
+                ])
+                .envs(env_author.iter().map(|(k, v)| (k, *v)))
+                .spawn()
+                .unwrap()
+                .wait()
+                .unwrap()
+                .success()
+        );
 
         let state = scan(&tmp, &["Jan.*Krag".to_string()], "3 years");
         assert!(
@@ -544,14 +626,31 @@ mod tests {
             ("GIT_COMMITTER_NAME", "Jan Krag"),
             ("GIT_COMMITTER_EMAIL", "j@krag.com"),
         ];
-        assert!(Command::new("git")
-            .args(["-C", tmp.to_str().unwrap(), "commit", "--no-gpg-sign", "-m", "mine", "--allow-empty"])
-            .envs(env_author.iter().map(|(k, v)| (k, *v)))
-            .spawn().unwrap().wait().unwrap().success());
+        assert!(
+            Command::new("git")
+                .args([
+                    "-C",
+                    tmp.to_str().unwrap(),
+                    "commit",
+                    "--no-gpg-sign",
+                    "-m",
+                    "mine",
+                    "--allow-empty"
+                ])
+                .envs(env_author.iter().map(|(k, v)| (k, *v)))
+                .spawn()
+                .unwrap()
+                .wait()
+                .unwrap()
+                .success()
+        );
 
         let state = scan(&tmp, &["Jan Krag".to_string()], "3 years");
         assert!(state.mine_last_commit_at.is_some());
-        assert_eq!(state.mine_last_commit_at, Some(parse_date(AUTHOR_DATE).unwrap()));
+        assert_eq!(
+            state.mine_last_commit_at,
+            Some(parse_date(AUTHOR_DATE).unwrap())
+        );
     }
 
     #[test]
@@ -567,10 +666,24 @@ mod tests {
             ("GIT_COMMITTER_NAME", "Other Person"),
             ("GIT_COMMITTER_EMAIL", "o@other.com"),
         ];
-        assert!(Command::new("git")
-            .args(["-C", tmp.to_str().unwrap(), "commit", "--no-gpg-sign", "-m", "mine", "--allow-empty"])
-            .envs(env_author.iter().map(|(k, v)| (k, *v)))
-            .spawn().unwrap().wait().unwrap().success());
+        assert!(
+            Command::new("git")
+                .args([
+                    "-C",
+                    tmp.to_str().unwrap(),
+                    "commit",
+                    "--no-gpg-sign",
+                    "-m",
+                    "mine",
+                    "--allow-empty"
+                ])
+                .envs(env_author.iter().map(|(k, v)| (k, *v)))
+                .spawn()
+                .unwrap()
+                .wait()
+                .unwrap()
+                .success()
+        );
 
         let state = scan(&tmp, &["Jan Krag".to_string()], "3 years");
         assert_eq!(state.mine_last_commit_at, None);
@@ -580,27 +693,52 @@ mod tests {
     fn ssh_remote_normalizes_to_github_https() {
         let tmp = make_tmp_dir("ssh_remote");
         git_init(&tmp);
-        git_run(&tmp, &["remote", "add", "origin", "git@github.com:OWNER/REPO.git"]);
+        git_run(
+            &tmp,
+            &["remote", "add", "origin", "git@github.com:OWNER/REPO.git"],
+        );
 
         let state = scan(&tmp, &[], "3 years");
-        assert_eq!(state.github_url, Some("https://github.com/OWNER/REPO".to_string()));
+        assert_eq!(
+            state.github_url,
+            Some("https://github.com/OWNER/REPO".to_string())
+        );
     }
 
     #[test]
     fn https_remote_normalizes_to_github_https() {
         let tmp = make_tmp_dir("https_remote");
         git_init(&tmp);
-        git_run(&tmp, &["remote", "add", "origin", "https://github.com/OWNER/REPO.git"]);
+        git_run(
+            &tmp,
+            &[
+                "remote",
+                "add",
+                "origin",
+                "https://github.com/OWNER/REPO.git",
+            ],
+        );
 
         let state = scan(&tmp, &[], "3 years");
-        assert_eq!(state.github_url, Some("https://github.com/OWNER/REPO".to_string()));
+        assert_eq!(
+            state.github_url,
+            Some("https://github.com/OWNER/REPO".to_string())
+        );
     }
 
     #[test]
     fn non_github_remote_yields_none() {
         let tmp = make_tmp_dir("gitlab_remote");
         git_init(&tmp);
-        git_run(&tmp, &["remote", "add", "origin", "https://gitlab.com/OWNER/REPO.git"]);
+        git_run(
+            &tmp,
+            &[
+                "remote",
+                "add",
+                "origin",
+                "https://gitlab.com/OWNER/REPO.git",
+            ],
+        );
 
         let state = scan(&tmp, &[], "3 years");
         assert_eq!(state.github_url, None);
@@ -624,9 +762,15 @@ mod tests {
         git_add_and_commit(&tmp, "README.md", "hello");
 
         let head_sha = git_run(&tmp, &["rev-parse", "HEAD"]).trim().to_string();
-        assert!(Command::new("git")
-            .args(["-C", tmp.to_str().unwrap(), "checkout", &head_sha])
-            .spawn().unwrap().wait().unwrap().success());
+        assert!(
+            Command::new("git")
+                .args(["-C", tmp.to_str().unwrap(), "checkout", &head_sha])
+                .spawn()
+                .unwrap()
+                .wait()
+                .unwrap()
+                .success()
+        );
 
         let state = scan(&tmp, &[], "3 years");
         assert!(state.is_repo);
@@ -639,13 +783,22 @@ mod tests {
         let tmp = make_tmp_dir("insteadof_remote");
         git_init(&tmp);
         git_run(&tmp, &["remote", "add", "origin", "gk:"]);
-        assert!(Command::new("git")
-            .args([
-                "-C", tmp.to_str().unwrap(),
-                "config", "--local",
-                "url.https://github.com/eficode-academy/git-katas.git.insteadOf", "gk:",
-            ])
-            .spawn().unwrap().wait().unwrap().success());
+        assert!(
+            Command::new("git")
+                .args([
+                    "-C",
+                    tmp.to_str().unwrap(),
+                    "config",
+                    "--local",
+                    "url.https://github.com/eficode-academy/git-katas.git.insteadOf",
+                    "gk:",
+                ])
+                .spawn()
+                .unwrap()
+                .wait()
+                .unwrap()
+                .success()
+        );
 
         let state = scan(&tmp, &[], "3 years");
         assert_eq!(
@@ -662,15 +815,28 @@ mod tests {
         git_add_and_commit(&tmp, "README.md", "hello");
 
         fs::write(tmp.join("new.txt"), "v1").expect("write new.txt");
-        assert!(Command::new("git")
-            .args(["-C", tmp.to_str().unwrap(), "add", "new.txt"])
-            .envs(GIT_ENV.iter().map(|(k, v)| (k, *v)))
-            .spawn().unwrap().wait().unwrap().success());
+        assert!(
+            Command::new("git")
+                .args(["-C", tmp.to_str().unwrap(), "add", "new.txt"])
+                .envs(GIT_ENV.iter().map(|(k, v)| (k, *v)))
+                .spawn()
+                .unwrap()
+                .wait()
+                .unwrap()
+                .success()
+        );
         fs::write(tmp.join("new.txt"), "v2, modified after staging").expect("rewrite new.txt");
 
         let cli_porcelain = git_run(&tmp, &["status", "--porcelain"]);
-        let cli_lines: Vec<&str> = cli_porcelain.lines().filter(|l| !l.trim().is_empty()).collect();
-        assert_eq!(cli_lines.len(), 1, "real git must report AM as one line: {cli_lines:?}");
+        let cli_lines: Vec<&str> = cli_porcelain
+            .lines()
+            .filter(|l| !l.trim().is_empty())
+            .collect();
+        assert_eq!(
+            cli_lines.len(),
+            1,
+            "real git must report AM as one line: {cli_lines:?}"
+        );
 
         let state = scan(&tmp, &[], "3 years");
         assert_eq!(
@@ -735,18 +901,33 @@ mod tests {
             ("GIT_COMMITTER_NAME", "Test Committer"),
             ("GIT_COMMITTER_EMAIL", "committer@example.com"),
         ];
-        assert!(Command::new("git")
-            .args(["-C", dir.to_str().unwrap(), "add", filename])
-            .envs(env)
-            .spawn().expect("git spawn")
-            .wait().expect("git add wait")
-            .success());
-        assert!(Command::new("git")
-            .args(["-C", dir.to_str().unwrap(), "commit", "--no-gpg-sign", "-m", "dated commit"])
-            .envs(env)
-            .spawn().expect("git spawn")
-            .wait().expect("git commit wait")
-            .success());
+        assert!(
+            Command::new("git")
+                .args(["-C", dir.to_str().unwrap(), "add", filename])
+                .envs(env)
+                .spawn()
+                .expect("git spawn")
+                .wait()
+                .expect("git add wait")
+                .success()
+        );
+        assert!(
+            Command::new("git")
+                .args([
+                    "-C",
+                    dir.to_str().unwrap(),
+                    "commit",
+                    "--no-gpg-sign",
+                    "-m",
+                    "dated commit"
+                ])
+                .envs(env)
+                .spawn()
+                .expect("git spawn")
+                .wait()
+                .expect("git commit wait")
+                .success()
+        );
     }
 
     #[test]
@@ -763,14 +944,24 @@ mod tests {
         let buckets = daily_commit_counts(&repo, Utc::now());
 
         assert_eq!(
-            buckets.len(), crate::schema::GIT_ACTIVITY_WINDOW_DAYS,
+            buckets.len(),
+            crate::schema::GIT_ACTIVITY_WINDOW_DAYS,
             "buckets must always be exactly GIT_ACTIVITY_WINDOW_DAYS long"
         );
         let window = crate::schema::GIT_ACTIVITY_WINDOW_DAYS;
-        assert_eq!(buckets[window - 1], 1, "today's bucket (last) must count the today commit");
-        assert_eq!(buckets[window - 1 - 3], 1, "the 3-days-ago commit must land in its own bucket");
         assert_eq!(
-            buckets.iter().sum::<u32>(), 2,
+            buckets[window - 1],
+            1,
+            "today's bucket (last) must count the today commit"
+        );
+        assert_eq!(
+            buckets[window - 1 - 3],
+            1,
+            "the 3-days-ago commit must land in its own bucket"
+        );
+        assert_eq!(
+            buckets.iter().sum::<u32>(),
+            2,
             "the 20-days-ago commit is outside the window and must not be counted: {buckets:?}"
         );
     }
@@ -782,7 +973,8 @@ mod tests {
         let repo = gix::open(&dir).expect("repo must open");
         let buckets = daily_commit_counts(&repo, Utc::now());
         assert_eq!(
-            buckets, vec![0u32; crate::schema::GIT_ACTIVITY_WINDOW_DAYS],
+            buckets,
+            vec![0u32; crate::schema::GIT_ACTIVITY_WINDOW_DAYS],
             "an unborn-HEAD repo must yield an all-zero window, never panic"
         );
     }
@@ -796,11 +988,13 @@ mod tests {
         let state = scan(&dir, &[], "3 years");
         assert!(state.is_repo);
         assert_eq!(
-            state.daily_commits.len(), crate::schema::GIT_ACTIVITY_WINDOW_DAYS,
+            state.daily_commits.len(),
+            crate::schema::GIT_ACTIVITY_WINDOW_DAYS,
             "scan() must populate daily_commits at the full window length"
         );
         assert_eq!(
-            *state.daily_commits.last().unwrap(), 1,
+            *state.daily_commits.last().unwrap(),
+            1,
             "today's commit must show up in today's (last) bucket"
         );
     }
@@ -808,6 +1002,9 @@ mod tests {
     #[test]
     fn not_a_repo_has_empty_daily_commits() {
         let state = GitState::not_a_repo();
-        assert!(state.daily_commits.is_empty(), "non-repo must have no daily_commits data");
+        assert!(
+            state.daily_commits.is_empty(),
+            "non-repo must have no daily_commits data"
+        );
     }
 }

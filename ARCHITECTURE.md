@@ -1,17 +1,19 @@
 # petridish — Architecture & Findings
 
-Successor to `docs/archive/IMPLEMENTATION_PLAN.md` for everything in that document that's
-still true regardless of implementation language. That plan was written for an all-Python
-build; the scanner is now Rust (`swab/`) and `petri` (the TUI) is slated for a Go or
-Rust rewrite next. This document captures what any implementation — in any language — must
-honor: empirical findings about the real environment, the architecture and its
-single-writer invariant, the `projects.json` wire schema, the discovery/authorship-filter
-design, and forward-looking deferred work. Section numbers below intentionally mirror the
-archived plan's where the content survived unchanged, since several source files still
-reference specific sections by number (e.g. `swab/src/discovery.rs`'s doc comments).
+The authoritative reference for what any implementation must honour: empirical findings
+about the real environment, the architecture and its single-writer invariant, the
+`projects.json` wire schema, the discovery/authorship-filter design, and deferred work.
 
-For current stack/invariants/testing conventions, see `CLAUDE.md`. For the original
-all-Python build history, see `docs/archive/IMPLEMENTATION_PLAN.md`.
+Everything here is now Rust — the scanner (`swab/`), the dashboard (`petri/`), the shared
+schema (`petridish-core/`) and the installer (`petridish-cli/`). The Python original this
+document was first written alongside was deleted in ADR-0004; the reasoning survived the
+implementation, which is why this file is language-neutral in tone.
+
+Section numbers are stable identifiers, not just structure: source files cite them
+(`swab/src/discovery.rs`'s doc comments reference §2, `petridish-cli` references §8.3's
+D-numbers). Renumbering silently breaks those citations.
+
+For current stack, invariants and testing conventions, see `CLAUDE.md`.
 
 ---
 
@@ -232,11 +234,10 @@ claim is retired as written, though the invariant underneath it is untouched: `p
 still never writes `projects.json`, and handing the terminal to another program is not
 the same thing as becoming a writer.
 
-**Superseded:** the archived plan's D6 ("`petri` uses stdlib `curses`, not Textual", chosen
-to keep the Python build's zero-runtime-deps constraint) is moot now that `petri` itself is
-being reimplemented off Python. Rendering engine is now decided: **Rust + ratatui**, its own
-workspace crate (ADR-0002), spec in `petri/SPEC.md`. The stdlib-only rule was always
-`src/petridish/`-specific and never bound the Rust side.
+**Superseded:** the original plan's D6 ("`petri` uses stdlib `curses`, not Textual", chosen
+to keep the Python build's zero-runtime-deps constraint) is moot — `petri` is **Rust +
+ratatui**, its own workspace crate (ADR-0002), spec in `petri/SPEC.md`. The stdlib-only rule
+was always specific to the Python read-side, which no longer exists (ADR-0004).
 
 ---
 
@@ -244,28 +245,26 @@ workspace crate (ADR-0002), spec in `petri/SPEC.md`. The stdlib-only rule was al
 
 **Superseded — see `petri/SPEC.md`.**
 
-This section used to carry a behavior spec "for the next port". It described the
-Python/curses build incompletely (it omitted the quota bars, density switching,
-agent glyphs, silence countdown, worktree tree rollup and the Dashboard/Browser
-split that all actually shipped), and the Rust reimplementation deliberately changes
-some of what it did describe. `petri/SPEC.md` is the authoritative spec; the parity
-baseline is `petripy`'s running code, not any prose here.
+This section used to carry a behaviour spec "for the next port", written before the
+dashboard was built. It described the since-deleted Python/curses build incompletely — it
+omitted the quota bars, density switching, agent glyphs, silence countdown, worktree tree
+rollup and the Dashboard/Browser split that all actually shipped — and the Rust build
+deliberately changed some of what it did describe. `petri/SPEC.md` is authoritative.
 
-Terminology (**Dashboard**, **Browser**, **petripy**, **state file** vs
-**preferences file**) is defined in `CONTEXT.md`. Decisions: ADR-0002 (crate
-layout), ADR-0003 (verification), ADR-0001 (worktree rollup, still current).
+Terminology (**Dashboard**, **Browser**, **state file** vs **preferences file**) is defined
+in `CONTEXT.md`. Decisions: ADR-0002 (crate layout), ADR-0003 (verification), ADR-0001
+(worktree rollup).
 
 ---
 
-## 7. Raycast extension (`raycast/`)
+## 7. Raycast extension (`integrations/raycast/`)
 
 Separate npm project, its own toolchain, already built and functioning — see
-`raycast/README.md` for current details. Read-only consumer of `projects.json`, same
-single-writer invariant as every other frontend. Full historical build notes (toolchain
-quirks, decisions made without the user at the time, what's still placeholder like the
-icon) are preserved in `docs/archive/IMPLEMENTATION_PLAN.md` §9 if needed, but nothing
-there is stale — Raycast wasn't touched by the Python→Rust scanner work and isn't affected
-by the `petri` reimplementation either.
+`integrations/raycast/README.md`. Read-only consumer of `projects.json`, same single-writer
+invariant as every other frontend, and it never shells out to `swab`. It now runs in CI
+(tsc, tests, lint), which it never did before: it mirrors the wire schema in hand-written
+TypeScript, and that is exactly the kind of thing that rots silently when nothing checks
+it.
 
 **Still deferred:** a second command mirroring `swab path <query>` (open the best-matching
 project directly, no list view). Store publishing (`ray publish`) — blocked on the
@@ -276,120 +275,158 @@ the moment Store publishing is on the table) and real icon artwork.
 
 ## 8. Distribution & installer requirements
 
-Extracted verbatim from `docs/archive/DESIGN.md` §7 when that doc was archived — this
-section, unlike the rest of that doc, was and is live: `src/petridish/installer.py`
-cites `D1`–`D6` and `§8.1` by number in real docstrings/comments. Treat the `D`-numbers as
-frozen identifiers, not prose to rephrase — renumbering them silently breaks those
-citations. `installer.py` is now built (this described it before it existed); the
-requirements still describe why it's built the way it is.
+Originally §7 of the archived design doc. The `D`-numbers below are **frozen identifiers**
+cited from real code comments in `petridish-cli` — treat them as stable references, not
+prose to renumber. Where the world moved underneath a requirement, the requirement is
+reinterpreted *in place* rather than dropped or renumbered.
 
 ### 8.1 Install model
 
-**This section described a single-language install and no longer does.** `swab` and
-`swab-hook` were Python console scripts when it was written; they are Rust binaries now,
-and the Python package ships only the read-side (`petripy`, `petridish-installer`). The
-`D`-numbers and the reasoning below survive the change — what moved is *which* toolchain
-places which binary. Leaving the old text would have pointed a reader at an install that
-cannot produce the scanner at all.
+**Superseded twice, and worth knowing both times.** This first described an all-Python
+install; then a two-toolchain one, after `swab`/`swab-hook` became Rust binaries while the
+read-side stayed Python. Neither is true now. ADR-0004 removed Python entirely, so there
+is one toolchain and one install path.
 
-The tool ships as **two halves, installed by their own toolchains, both landing on the
-user's `PATH`**:
+The primary channel is a Homebrew tap:
 
 ```sh
-cargo install --path swab --locked    # swab, swab-hook   -> ~/.cargo/bin
-cargo install --path petri --locked   # petri (the TUI)   -> ~/.cargo/bin
-uv tool install --editable .          # petripy, petridish-installer -> ~/.local/bin
+brew install jkrag/tap/petridish
+petridish install
 ```
 
-`--locked` is load-bearing, not decoration: `cargo install` otherwise ignores
-`Cargo.lock` and re-resolves, and a yanked transitive `gix` dependency makes that
-resolution fail outright. See `README.md`, which carries the same warning where a new
-reader will actually meet it.
+`brew install` places four binaries — `petridish`, `swab`, `swab-hook`, `petri` — on the
+user's `PATH`. `petridish install` is the separate step that wires the tool into the
+machine: the launchd job, the Claude Code hook entries, and the menu-bar plugin.
 
-Neither half is a `pip install` into system or user site-packages, and that part of the
-original reasoning is unchanged: this is an application, not a library, so `uv tool` /
-`pipx` semantics are the right ones for the Python side, and `cargo install`'s own
-per-binary model for the Rust side.
+From a checkout, the equivalent is:
 
-**Development installs use the same mechanism as end-user installs** — the commands above
-are what a developer runs too. This is not just convenience: it means the launchd plist,
-the Claude hook entry, and `swab doctor` are all exercised against the **real production
-layout** during development, rather than a dev-only arrangement that would need
-re-testing after release. It also means `installer.py` resolving `swab-hook` through
-`shutil.which` is exercising the same lookup an end user gets.
+```sh
+cargo install --path petridish-cli --locked
+cargo install --path swab --locked
+cargo install --path petri --locked
+petridish install
+```
+
+`--locked` is load-bearing, not decoration: `cargo install` otherwise ignores `Cargo.lock`
+and re-resolves, and a yanked transitive `gix` dependency (`bisync`) makes that resolution
+fail outright. `README.md` carries the same warning where a new reader will meet it.
+
+**Why the daemon is not a Homebrew `service` block.** Homebrew formulae can manage a
+launchd job directly, which would shorten the path for brew users. Rejected: everyone
+installing another way would then have no launchd path at all, and D1/D2 below would hold
+for one install route and not the other. One install story that every user exercises is
+worth more than a marginally shorter one for some.
+
+**Development installs use the same mechanism as end-user installs.** That is not just
+convenience — it means the launchd plist, the hook entries and `doctor` are exercised
+against the *real production layout* during development, rather than a dev-only
+arrangement that would need re-testing after release.
 
 Rejected alternatives:
 
 | Approach | Why rejected |
 | --- | --- |
-| Symlink into `/opt/homebrew/bin` | Homebrew-managed directory; `brew doctor` flags foreign files and brew operations can clobber them. |
-| Shell alias in `.zshrc` | **Actively broken.** `launchd` jobs and Claude Code hooks run non-interactively and never source shell rc files — the daemon and hook would silently fail while working in an interactive terminal. |
-| `pip install --user` | PEP 668 friction on managed Pythons; pollutes user site-packages; no isolation. |
+| Symlink into `/opt/homebrew/bin` by hand | Homebrew-managed directory; `brew doctor` flags foreign files and brew operations can clobber them. |
+| Shell alias in `.zshrc` | **Actively broken.** `launchd` jobs, Claude Code hooks and xbar plugins all run non-interactively and never source shell rc files — the daemon and hook would silently fail while working fine in a terminal. |
 
 ### 8.2 Release channels
 
-1. **PyPI — primary, source of truth.** Enables `uv tool install` / `pipx install`
-   immediately and is what any other channel wraps.
-2. **Homebrew tap — secondary, optional.** Because the tool is macOS-only by nature
-   (launchd, `~/Library` paths), brew is a natural fit for discoverability. Start
-   with a personal tap (`brew install <user>/tap/<name>`) rather than
-   `homebrew-core`, which imposes notability requirements (stars/forks, release
-   history) and ongoing maintenance obligations.
+1. **Homebrew tap — primary.** The tool is macOS-only by nature (launchd, `~/Library`), so
+   brew is the natural fit for discoverability and upgrades. A personal tap
+   (`brew install jkrag/tap/petridish`) rather than `homebrew-core`, which imposes
+   notability requirements and ongoing maintenance obligations.
+2. **Shell installer — secondary.** A `curl | sh` script for people who do not use brew.
+3. **`cargo install` — for Rust users**, from crates.io once published, or from a git
+   checkout at any time.
 
-**The zero-dependency rule is a distribution asset, not just a build constraint.**
-Homebrew Python formulae normally require a vendored `resource` block per
-transitive dependency — often dozens, each needing bumps. A stdlib-only package
-needs none, making the formula roughly fifteen lines. This is a strong reason to
-keep `src/petridish/`'s runtime dependencies at zero permanently, beyond the
-original testability rationale (CLAUDE.md).
+**PyPI is no longer a channel.** It was named the primary, source-of-truth channel here
+when the package was Python; there is nothing left to publish there (ADR-0004).
+
+**A note on the crates.io name.** `petridish` is taken by an unrelated, actively-published
+project-scaffolding tool, as are the bare `petri` and `swab`. The crate therefore publishes
+as `petri-dish` (free, and normalising to `petri_dish`, which does not collide) while
+shipping a binary named `petridish`. Crate names and binary names are independent, so
+nothing a user sees changes. See ADR-0004.
 
 ### 8.3 Design requirements this imposes
 
-- **D1 — Discover the binary path at install time; never hardcode it.** The
-  installer must resolve `command -v swab-hook` and write the **absolute** result
-  into both the launchd plist and `~/.claude/settings.json`. A `uv tool` user has
-  `~/.local/bin/swab-hook`; a Homebrew user has `/opt/homebrew/bin/swab-hook`.
-  Assuming either breaks the other.
-- **D2 — Assume no `PATH` in non-interactive contexts.** `launchd` does not inherit
-  the user's shell environment, and neither do Claude Code hooks. Every command
-  string written to disk must be absolute.
-- **D3 — Runtime dependencies stay at zero** for `src/petridish/`. See §8.2. Adding
-  one there is a distribution decision, not just an implementation one. (Does not
-  apply to the Rust crates — CLAUDE.md.)
-- **D4 — The installer is idempotent, reversible, and marks its own work.** It must
-  back up `~/.claude/settings.json` before editing, *append* to existing hook arrays
-  (never replace them — real users have other hook consumers), tag every entry it
-  adds with a literal marker comment, and ship an `--uninstall` that removes only
-  marked entries.
-- **D5 — Declare macOS-only.** Add the appropriate classifier and fail early with a
-  clear message on other platforms rather than half-installing. **Implemented:**
-  `Operating System :: MacOS :: MacOS X` classifier in `pyproject.toml`, plus
-  `installer.py`'s `check_platform()` (`sys.platform != "darwin"` raises before touching
-  anything) — that's where "half-installing" would actually happen, since launchd is the
-  macOS-only surface. The CLI itself (`swab scan`/`list`) is deliberately *not*
-  platform-gated: its sensors already degrade to `null`/empty per CLAUDE.md invariant 5
-  (e.g. the Copilot sensor finding no `workspaceStorage/` on Linux is that invariant
-  working, not a bug), so gating the whole CLI would reject strictly more than necessary.
-- **D6 — Respect user-data separation.** Code lives in the tool's venv; user state
-  (`config.toml`, `projects.json`, `events.ndjson`) lives in `~/.petridish/` and
-  must survive uninstall/reinstall untouched.
+- **D1 — Discover the binary path at install time; never hardcode it.** The installer
+  resolves each binary on `PATH` and writes the **absolute** result into both the launchd
+  plist and `~/.claude/settings.json`. A `cargo install` user has `~/.cargo/bin/swab-hook`;
+  a Homebrew user has `/opt/homebrew/bin/swab-hook`. Assuming either breaks the other.
+  **Implemented:** `petridish-cli`'s `paths::resolve_binary_in`.
+
+  *Absolutise, but do not canonicalise.* Under Homebrew, `/opt/homebrew/bin/swab` is a
+  symlink into a version-stamped Cellar directory; resolving it would bake that version
+  into the plist and the next `brew upgrade` would leave launchd pointing at a path that no
+  longer exists. `petridish doctor` checks specifically for this — it reads the program
+  path back out of the installed plist and verifies it still exists.
+- **D2 — Assume no `PATH` in non-interactive contexts.** `launchd` does not inherit the
+  user's shell environment; neither do Claude Code hooks; neither does xbar, which is
+  launched by the GUI session. Every command string written to disk must be absolute. This
+  is why the generated xbar wrapper embeds the binary path rather than calling `petridish`
+  by name — a bare invocation works when tested in a terminal and shows nothing in the menu
+  bar.
+- **D3 — Keep the installer's dependency tree small.** *Reinterpreted:* this originally
+  read "runtime dependencies stay at zero for `src/petridish/`", justified by Homebrew
+  Python formulae needing a vendored `resource` block per transitive dependency. Both the
+  subject and that argument are gone. The requirement survives as a constraint on
+  `petridish-cli`, the crate a user runs first and the one that edits files it does not
+  own: `clap`, `serde_json`, `chrono`, `petridish-core`. No async runtime, no HTTP client,
+  no plist library. PATH lookup, the scratch-directory test helper and the `getuid` call
+  are each a few lines of `std` rather than a dependency, deliberately. `swab` and `petri`
+  were never bound by this.
+- **D4 — The installer is idempotent, reversible, and marks its own work.** It backs up
+  `~/.claude/settings.json` before editing (once — a second install must not overwrite a
+  clean pre-install snapshot with a dirty one), *appends* to existing hook arrays rather
+  than replacing them (real users have other hook consumers), tags every entry it adds with
+  the literal marker `# petridish`, and ships an `uninstall` that removes only marked
+  entries. Uninstall never restores the backup wholesale: that would silently discard every
+  unrelated edit made since.
+
+  *Idempotent per event, not per file.* A whole-file marker check reports "already
+  installed" on any machine set up before an event joined `HOOK_EVENTS` — which is every
+  machine predating the MECH-5 pair — stranding the new events forever and leaving the
+  feature dead exactly where it was supposed to work. **Implemented:**
+  `petridish-cli`'s `settings::add_hook_entries`.
+- **D5 — Declare macOS-only.** Fail early with a clear message on other platforms rather
+  than half-installing. **Implemented:** `petridish-cli`'s `paths::check_platform`, called
+  before anything is written, since launchd is where half-installing would actually happen.
+  *Reinterpreted:* the original implementation was a pyproject classifier plus
+  `installer.py`'s `sys.platform` check, both gone.
+
+  Note that `check_platform` takes the OS name as a *parameter* rather than being a
+  `#[cfg(target_os)]` gate. CI compiles this crate on Linux to verify the rest of the
+  workspace is not macOS-bound, and a compile-time gate would make its tests unrunnable
+  there. The scanner is deliberately *not* platform-gated at all: its sensors degrade to
+  `null`/empty per CLAUDE.md invariant 5 (the Copilot sensor finding no `workspaceStorage/`
+  on Linux is that invariant working, not a bug), so gating the whole CLI would reject
+  strictly more than necessary.
+- **D6 — Respect user-data separation.** User state (`config.toml`, `projects.json`,
+  `events.ndjson`, the settings backup) lives in `~/.petridish/` and must survive
+  uninstall/reinstall untouched. Only the binaries are managed by the package manager.
 
 ### 8.4 Naming — resolved
 
-`project-radar` was a working title, replaced (2026-08-06) with **`petridish`** —
-the filesystem-as-Petri-dish metaphor for dozens of small AI-assisted experiments
-growing (or sitting dormant) across the machine. The bare name `petri` was already
-taken on PyPI at the time; `petridish` was checked and free, so it is the
-distribution name. `petri` was kept in reserve for the dashboard frontend and is
-now that frontend's actual name (`petri/SPEC.md`), not used for anything published
-to PyPI. Final mapping:
+`project-radar` was a working title, replaced (2026-08-06) with **`petridish`** — the
+filesystem-as-Petri-dish metaphor for dozens of small AI-assisted experiments growing (or
+sitting dormant) across the machine. Final mapping:
 
-- PyPI distribution / import package: `petridish`
-- CLI console script (scan/list/path/doctor): `swab` — "swabbing" the filesystem
-  to see what's alive. Replaces the working name `radar`.
-- Hook console script: `swab-hook`. Replaces the working name `radar-hook`.
+- Project, Homebrew formula, user-data directory: `petridish`, `~/.petridish/`
+- Installer / health-check / menu-bar binary: `petridish`
+- Scanner: `swab` — "swabbing" the filesystem to see what is alive. Replaced the working
+  name `radar`.
+- Hook: `swab-hook`. Replaced the working name `radar-hook`.
 - Interactive dashboard: `petri` (Rust/ratatui; `petri/SPEC.md`).
-- User-data directory: `~/.petridish/`
 - launchd label: `com.petridish.daemon`
-- Hook marker string written into `settings.json`: `# petridish` — load-bearing,
-  since `swab doctor` and `--uninstall` identify their own entries by matching it.
+- Hook marker written into `settings.json`: `# petridish` — load-bearing, since both
+  `doctor` commands and `uninstall` identify their own entries by matching it.
+
+**Registry names, and why one of them differs.** The bare `petri` was taken on PyPI when
+the name was first chosen, which is why `petridish` became the distribution name; PyPI is
+no longer a channel (§8.2). On crates.io, `petridish`, `petri` and `swab` are *all* taken
+by unrelated live crates. The installer crate therefore publishes as **`petri-dish`** —
+free, and normalising to `petri_dish`, which does not collide with `petridish` — while
+still shipping a binary named `petridish`. Crate names and binary names are independent, so
+this is invisible to users; only `cargo install` ever names the crate. See ADR-0004 for the
+alternatives weighed, including renaming the project outright.

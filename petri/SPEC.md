@@ -644,7 +644,7 @@ Four layers. Full reasoning: ADR-0003. This work is intended for unattended
 
 ### Fixtures
 
-Four committed fixtures under `tests/fixtures/`, replacing the original
+Four committed fixtures under `fixtures/`, replacing the original
 single-project `projects.golden.json` (kept alongside them for whatever Python-side
 tests still reference it):
 

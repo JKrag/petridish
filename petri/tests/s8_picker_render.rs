@@ -6,11 +6,11 @@
 //! this says the same thing on a laptop with four git TUIs and on a CI box
 //! with none.
 
+use crossterm::event::KeyCode;
 use petri::picker::PickerState;
 use petri::tools::{Action, Candidate, ExecMode, Target};
 use ratatui::Terminal;
 use ratatui::backend::TestBackend;
-use crossterm::event::KeyCode;
 
 fn state() -> PickerState {
     let action = Action {
@@ -49,9 +49,18 @@ fn draw(state: &PickerState, w: u16, h: u16) -> String {
 fn the_popup_shows_the_action_title_and_every_option() {
     let screen = draw(&state(), 80, 24);
     assert!(screen.contains("git history"), "missing title:\n{screen}");
-    assert!(screen.contains("serie"), "missing first candidate:\n{screen}");
-    assert!(screen.contains("lazygit"), "missing second candidate:\n{screen}");
-    assert!(screen.contains("Other"), "missing the escape hatch:\n{screen}");
+    assert!(
+        screen.contains("serie"),
+        "missing first candidate:\n{screen}"
+    );
+    assert!(
+        screen.contains("lazygit"),
+        "missing second candidate:\n{screen}"
+    );
+    assert!(
+        screen.contains("Other"),
+        "missing the escape hatch:\n{screen}"
+    );
 }
 
 #[test]
@@ -71,7 +80,10 @@ fn the_popup_advertises_only_the_keys_bound_in_the_mode_it_is_in() {
     // SPEC.md §3.1's rule, applied to the popup: in list mode it offers
     // move/choose/cancel; once typing, "move" is a lie and must be gone.
     let list_mode = draw(&state(), 80, 24);
-    assert!(list_mode.contains("j/k"), "list mode must offer movement:\n{list_mode}");
+    assert!(
+        list_mode.contains("j/k"),
+        "list mode must offer movement:\n{list_mode}"
+    );
 
     let mut typing = state();
     for _ in 0..2 {
@@ -83,7 +95,10 @@ fn the_popup_advertises_only_the_keys_bound_in_the_mode_it_is_in() {
         !typed.contains("j/k"),
         "movement must not be advertised while j and k are literal text:\n{typed}"
     );
-    assert!(typed.contains("Esc back"), "expected the two-stage Esc hint:\n{typed}");
+    assert!(
+        typed.contains("Esc back"),
+        "expected the two-stage Esc hint:\n{typed}"
+    );
 }
 
 #[test]
@@ -97,7 +112,10 @@ fn the_typed_path_is_visible_as_it_is_entered() {
         typing.on_key(KeyCode::Char(c));
     }
     let screen = draw(&typing, 80, 24);
-    assert!(screen.contains("jjui"), "typed text must be shown back:\n{screen}");
+    assert!(
+        screen.contains("jjui"),
+        "typed text must be shown back:\n{screen}"
+    );
 }
 
 #[test]
@@ -134,8 +152,14 @@ fn the_repick_popup_advertises_both_verbs_and_first_run_advertises_neither_twice
     // advertise it — and re-pick's Enter is "run once", not the bare "choose"
     // that would imply it stores.
     let repick = draw(&repick_state(), 80, 24);
-    assert!(repick.contains("run once"), "re-pick must name the one-off verb:\n{repick}");
-    assert!(repick.contains("D set default"), "re-pick must name the D verb:\n{repick}");
+    assert!(
+        repick.contains("run once"),
+        "re-pick must name the one-off verb:\n{repick}"
+    );
+    assert!(
+        repick.contains("D set default"),
+        "re-pick must name the D verb:\n{repick}"
+    );
 
     let first_run = draw(&state(), 80, 24);
     assert!(
@@ -174,7 +198,10 @@ fn the_custom_field_advertises_only_the_verb_it_inherited() {
     }
     once.on_key(KeyCode::Enter);
     let once_screen = draw(&once, 80, 24);
-    assert!(once_screen.contains("Enter run once"), "expected run-once hint:\n{once_screen}");
+    assert!(
+        once_screen.contains("Enter run once"),
+        "expected run-once hint:\n{once_screen}"
+    );
     assert!(
         !once_screen.contains("set default"),
         "a field opened with Enter cannot set the default:\n{once_screen}"

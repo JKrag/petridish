@@ -57,10 +57,7 @@ pub fn handle_hook_input(stdin: &str) -> i32 {
     };
 
     // Extract `cwd` (required). If absent or not a string: drop the event entirely.
-    let cwd = raw
-        .get("cwd")
-        .and_then(|v| v.as_str())
-        .map(String::from);
+    let cwd = raw.get("cwd").and_then(|v| v.as_str()).map(String::from);
 
     // Extract `session_id` from either `session_id` or `sessionId` (tolerant of both).
     let session_id = raw
@@ -90,7 +87,7 @@ pub fn handle_hook_input(stdin: &str) -> i32 {
 
 pub fn main() {
     let mut stdin_buf = String::new();
-    if let Err(_) = io::stdin().read_to_string(&mut stdin_buf) {
+    if io::stdin().read_to_string(&mut stdin_buf).is_err() {
         return;
     }
 
@@ -111,10 +108,7 @@ mod hook_tests {
     /// `PETRIDISH_EVENTS_PATH` the instant this function returned, so every assertion the
     /// caller made afterward against `events_path()` (reading back the just-appended line)
     /// silently fell through to the real, nonexistent `$HOME/.petridish/events.ndjson`.
-    fn run_hook_in_test(
-        stdin: &str,
-        _events_path_override: Option<&std::path::Path>,
-    ) -> i32 {
+    fn run_hook_in_test(stdin: &str, _events_path_override: Option<&std::path::Path>) -> i32 {
         handle_hook_input(stdin)
     }
 
@@ -126,10 +120,7 @@ mod hook_tests {
 
     impl TempEventsFile {
         fn new(override_path: Option<&std::path::Path>) -> Self {
-            let dir = std::env::temp_dir().join(format!(
-                "swab_hook_test_{}",
-                std::process::id()
-            ));
+            let dir = std::env::temp_dir().join(format!("swab_hook_test_{}", std::process::id()));
             let _ = std::fs::create_dir_all(&dir); // best-effort
             let path = match override_path {
                 Some(p) => p.to_path_buf(),
@@ -140,10 +131,6 @@ mod hook_tests {
             // Set the env var so `events_path()` returns our test file.
             unsafe { std::env::set_var("PETRIDISH_EVENTS_PATH", path.to_str().unwrap()) };
             Self { _path: path }
-        }
-
-        fn events_path(&self) -> &std::path::Path {
-            &self._path
         }
     }
 
@@ -158,7 +145,8 @@ mod hook_tests {
     #[test]
     fn all_fields_present_appends_one_line() {
         let _guard = TempEventsFile::new(None);
-        let input = r#"{"cwd":"/tmp/project","session_id":"sess-123","hook_event_name":"tool_use"}"#;
+        let input =
+            r#"{"cwd":"/tmp/project","session_id":"sess-123","hook_event_name":"tool_use"}"#;
 
         let code = run_hook_in_test(input, None);
         assert_eq!(code, 0, "valid input must exit 0");
@@ -187,7 +175,8 @@ mod hook_tests {
         let content = std::fs::read_to_string(&path).unwrap_or_default();
         let lines: Vec<_> = content.split('\n').filter(|l| !l.is_empty()).collect();
         assert_eq!(
-            lines.len(), 0,
+            lines.len(),
+            0,
             "no line appended on malformed JSON: {content:?}"
         );
     }
@@ -218,7 +207,10 @@ mod hook_tests {
         let path = swab::events::events_path();
         let content = std::fs::read_to_string(&path).unwrap_or_default();
         let record: serde_json::Value = serde_json::from_str(content.trim()).expect("valid JSON");
-        assert_eq!(record["session_id"], "camel-sess", "camelCase must be picked up");
+        assert_eq!(
+            record["session_id"], "camel-sess",
+            "camelCase must be picked up"
+        );
     }
 
     // ── Test 5: missing cwd -> exit 0, nothing appended (event dropped) ─
@@ -233,7 +225,11 @@ mod hook_tests {
         let path = swab::events::events_path();
         let content = std::fs::read_to_string(&path).unwrap_or_default();
         let lines: Vec<_> = content.split('\n').filter(|l| !l.is_empty()).collect();
-        assert_eq!(lines.len(), 0, "event dropped when cwd missing: {content:?}");
+        assert_eq!(
+            lines.len(),
+            0,
+            "event dropped when cwd missing: {content:?}"
+        );
     }
 
     // ── Test 6: missing hook_event_name -> event appended with None event ─
@@ -251,7 +247,11 @@ mod hook_tests {
         let record: serde_json::Value = serde_json::from_str(content.trim()).expect("valid JSON");
         assert_eq!(record["cwd"], "/tmp/proj");
         // `event` field must be null (event None maps to Value::Null in the JSON line).
-        assert_eq!(record["event"], serde_json::Value::Null, "event must be None/null");
+        assert_eq!(
+            record["event"],
+            serde_json::Value::Null,
+            "event must be None/null"
+        );
     }
 
     // ── Test 7: explicit panic inside the wrapped block still exits 0 ──
@@ -296,8 +296,7 @@ mod hook_tests {
         assert!(result.is_ok(), "run_hook must succeed: {:?}", result);
 
         let content = std::fs::read_to_string(&events_path).unwrap_or_default();
-        let record: serde_json::Value =
-            serde_json::from_str(content.trim()).expect("valid JSON");
+        let record: serde_json::Value = serde_json::from_str(content.trim()).expect("valid JSON");
         assert_eq!(record["cwd"], "/tmp/direct-proj");
         assert_eq!(record["session_id"], "sess-direct");
         assert_eq!(record["event"], "prompt");
@@ -334,11 +333,7 @@ mod hook_tests {
     fn binary_main_exits_zero_on_malformed_stdin() {
         let _guard = TempEventsFile::new(None);
 
-        assert_eq!(
-            handle_hook_input(""),
-            0,
-            "must exit 0 on empty stdin"
-        );
+        assert_eq!(handle_hook_input(""), 0, "must exit 0 on empty stdin");
         assert_eq!(
             handle_hook_input("not json"),
             0,

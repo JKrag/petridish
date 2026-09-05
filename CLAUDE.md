@@ -3,58 +3,55 @@
 Local monitoring daemon for macOS: crawls project roots, tracks git state, senses AI agent
 activity, and aggregates into `~/.petridish/projects.json`.
 
-**Two languages, split by role — not a partial migration, a deliberate split:**
+**One toolchain, four crates, split by role:**
 
 - **`swab/`** (Rust) is the scanner: everything that *writes* `projects.json`. Binaries
-  `swab` (CLI: `scan`/`list`/`path`/`doctor`/`config`) and `swab-hook` (fast hook path,
-  appends to `events.ndjson`). This fully replaced the original Python scanner
-  (`src/petridish/{cli,config,discovery,git,events,scan,hook}.py` +
-  `sensors/{claude,copilot,quota}.py`, all deleted) after a from-scratch port proved
-  field-equivalent (`swab/scripts/diff_check.sh`) and then measurably faster (gix
-  in-process git access beats both a CLI-subprocess and a git2/libgit2 backend on real
-  benchmarks — see `swab/src/git.rs`'s module doc comment for the full history).
-- **`petridish-core/`** (Rust) is the schema + presentation layer shared between `swab`
-  and the incoming Rust `petri` TUI (`petri/SPEC.md`, ADR-0002): the serde wire types
-  (`Radar`/`Project`/`GitState`/... — moved out of `swab/src/schema.rs` to here) plus the
-  pure derivation helpers both frontends need (agent label, dirty marker, worktree cell,
-  bucket/activity strings). `swab` depends on it for these rather than owning them; it
-  does not depend on `swab`, so it cannot reach the writer.
-- **`src/petridish/`** (Python) is now read-side only: `schema.py` is the shared contract
-  every frontend parses `projects.json` through (`Radar`/`Project` dataclasses,
-  `read_json`), `tui.py`/`tui_state.py`/`screens.py` are `petripy`, the deprecated
-  Python TUI kept installed as a fallback while the Rust `petri` (`petri/SPEC.md`) earns
-  trust — see `CONTEXT.md`'s `petripy` entry, `menubar.py` is the menu-bar frontend,
-  `installer.py` wires up the launchd job + Claude Code hook (invoking the Rust binaries
-  by name via `shutil.which`). None of these write `projects.json` — they only ever read it.
+  `swab` (CLI: `scan`/`list`/`path`/`doctor`/`config`) and `swab-hook` (the fast hook
+  path, which appends to `events.ndjson`). It replaced the original Python scanner after a
+  from-scratch port proved field-equivalent and then measurably faster — gix in-process
+  git access beats both a CLI-subprocess and a git2/libgit2 backend on real benchmarks;
+  see `swab/src/git.rs`'s module doc comment for the history.
+- **`petridish-core/`** (Rust) is the schema + presentation layer every other crate shares
+  (ADR-0002): the serde wire types (`Radar`/`Project`/`GitState`/...), the hook constants
+  (`HOOK_MARKER`, `HOOK_EVENTS`), and the pure derivation helpers the frontends need
+  (agent label, dirty marker, worktree cell, bucket/activity strings). It does **not**
+  depend on `swab`, so the compiler enforces that it cannot reach the writer.
+- **`petri/`** (Rust) is the terminal dashboard, built on ratatui. `petri/SPEC.md` is
+  authoritative for its behaviour. Read-only over `projects.json`.
+- **`petridish-cli/`** (Rust, published as `petri-dish`, binary **`petridish`**) is the
+  installer and menu-bar renderer: `install`, `uninstall`, `doctor`, `menubar`. It replaced
+  the Python `installer.py`/`menubar.py` (ADR-0004). Like `petridish-core`, it does not
+  depend on `swab` — it wires the daemon up, it never writes state itself.
 
-**Read `ARCHITECTURE.md` before writing any code, in either language.** It's the
-language-agnostic architecture/findings/schema doc — supersedes
-`docs/archive/IMPLEMENTATION_PLAN.md` (the original all-Python build spec, kept only as a
-historical record) for everything still true regardless of implementation.
+**The Python read-side is gone** (ADR-0004). `petripy`, `schema.py`, `menubar.py` and
+`installer.py` were deleted once `petri` had earned trust and the installer had been
+ported. Do not reintroduce a second toolchain: the whole install story, CI gate and
+contributor setup depend on there being exactly one.
+
+**Read `ARCHITECTURE.md` before writing any code.** It's the architecture/findings/schema
+doc, and §8 carries the distribution requirements D1-D6, which are cited by number from
+code comments.
 
 ## Stack & layout
 
-A cargo workspace at the repo root (`Cargo.toml`, members `petridish-core` + `swab` today;
-`petri` joins once its crate exists, `petri/SPEC.md` §2/§9 S4) sits alongside the Python
-package:
+A cargo workspace at the repo root (`Cargo.toml`), members `petridish-core`,
+`petridish-cli`, `swab`, `petri`. Shared metadata lives in `[workspace.package]` — one
+version string for all four, since they ship as one product from one tag.
 
-- **`petridish-core/`**: Rust, `serde` + `chrono`. Schema types (`src/schema.rs`, moved from
-  `swab/src/schema.rs`) plus the shared `present` derivation helpers. No `swab` or `petri`
-  dependency — the compiler enforces that this crate can't reach the state-file writer.
-- **`swab/`**: Rust, `gix` (pure-Rust git, no libgit2/C dependency) + `clap` + `serde` +
-  `chrono` + `regex` + `toml`, plus `petridish-core` for the schema/`present` types. Source
-  in `swab/src/`, sensors in `swab/src/sensors/`, tests inline (`#[cfg(test)] mod tests`) in
-  each module. Verified via `cargo test --workspace` plus `swab/scripts/diff_check.sh` (a
-  differential oracle — no longer has a Python scanner to diff against, so treat its
-  fixture-based golden comparisons and real regression tests as the correctness bar
-  instead).
-- **`src/petridish/`**: Python 3.12+, stdlib only, for everything that remains here.
-  `pytest` is the sole dev dependency. Do not add runtime dependencies to this side — the
-  zero-deps constraint is what keeps the TUI/menubar/installer trivially verifiable with no
-  env setup. (This constraint never applied to the Rust crates — their dependencies are
-  fine, pinned in each crate's own `Cargo.toml`.)
-- Tests in `tests/` (Python, pytest) and `{petridish-core,swab}/src/**/*.rs` (Rust, inline
-  `#[test]`), run together via `cargo test --workspace` from the repo root.
+- **`petridish-core/`**: `serde` + `chrono`. No `swab`/`petri`/`petridish-cli` dependency.
+- **`swab/`**: `gix` (pure-Rust git, no libgit2/C dependency) + `clap` + `serde` +
+  `chrono` + `regex` + `toml`, plus `petridish-core`. Sensors in `swab/src/sensors/`,
+  tests inline (`#[cfg(test)] mod tests`) in each module.
+- **`petri/`**: `ratatui` + `crossterm` + `unicode-width`, plus `petridish-core`.
+  Integration tests in `petri/tests/`, including a PTY harness.
+- **`petridish-cli/`**: `clap` + `serde_json` + `chrono`, plus `petridish-core`. Keep this
+  tree small — ARCHITECTURE.md D3. PATH lookup, the scratch-dir test helper and `getuid`
+  are each a few lines of `std` rather than a dependency, deliberately.
+- Shared JSON fixtures live in `/fixtures` at the repo root, consumed by tests in all
+  crates. Not under any one crate's `tests/`, so no crate owns them and they stay out of
+  `cargo package`.
+- `integrations/` holds the non-Rust frontends: `xbar/` (docs; the plugin itself is
+  generated by `petridish install`) and `raycast/` (a TypeScript extension, gated in CI).
 
 ## Non-negotiable invariants
 
@@ -82,16 +79,34 @@ tests and is still wrong. Invariants 1-5 apply to `swab/`, the only thing still 
 
 ## Testing
 
-**Rust (`petridish-core/`, `swab/`)**: real fixtures, not mocks — `git init` actual repos in
-tmpdirs with pinned author/date env vars, real fixture transcript files, cross-verified
-against the real `git` CLI's own porcelain output where behavior is subtle (see `git.rs`'s
-status-parity regression tests). `cargo test --workspace -- --test-threads=1` from the repo
-root must exit 0 (parallel test threads currently share `HOME` env-var mutation across some
-Python-side fixture tests only — not a Rust issue, but run single-threaded out of habit if
-in doubt).
+**Real fixtures, not mocks.** `git init` actual repos in tmpdirs with pinned author/date
+env vars, real fixture transcript files, real executables on a synthetic `PATH`,
+cross-verified against the real `git` CLI's own porcelain output where behaviour is subtle
+(see `git.rs`'s status-parity regression tests). Where a seam is genuinely needed — the
+`launchctl` calls — it is an injected trait with a recording implementation that asserts
+the exact argv, not a mock that asserts nothing.
 
-**Python (`src/petridish/`)**: same real-fixtures philosophy for whatever exercises
-`schema.py`/the TUI/installer. `pytest tests/ -q` from the repo root must exit 0.
+Prefer a parameter over an environment read. `petridish-cli` takes `home`, `uid`,
+`claude_dir` and the `PATH` string as arguments precisely so its tests never mutate
+process-global state.
+
+**The gate:** `make check` (fmt-check + clippy `-D warnings` + tests) must exit 0. That is
+the fast loop; `make check-all` adds the three CI jobs that need extra tooling —
+`cargo-deny`, an MSRV toolchain, and node for the Raycast extension. Run
+`check-all` before opening a PR.
+
+**`--test-threads=1` is required.** The reason is *not* the one this file used to give:
+it is not a Python artifact, and the Python is gone. Three tests in `swab/src/cli.rs`
+mutate `$HOME`, which is process-global, so in parallel they race every test that reads it.
+Measured: without the flag, `cargo test -p swab --lib` fails 3 runs out of 3. Making those
+three stop touching the environment would let the flag go.
+
+**PTY tests:** `petri/tests/pty_support/` drives the real binary through a pseudo-terminal.
+Assert against a reconstructed screen grid, never the raw byte stream — a partially-painted
+frame must show up as wrong content in a specific cell, not as a coincidentally-passing
+substring match. `settle()` applies its quiet window only *after* the first byte arrives;
+applying it to an empty buffer conflates "finished painting" with "not started yet" and
+makes the suite fail whenever the machine is busy.
 
 ## Engineering integrity
 

@@ -1,0 +1,53 @@
+[package]
+# Crate name differs from the binary name on purpose. `petridish` is taken on
+# crates.io by an unrelated, actively-published project-scaffolding tool, as are
+# the bare `petri` and `swab`. `petri-dish` is free and normalises to
+# `petri_dish`, which does not collide. Since a crate may ship a binary under any
+# name, the user-facing command stays `petridish` — matching `~/.petridish/`,
+# `com.petridish.daemon`, the `# petridish` hook marker and the Homebrew formula.
+name = "petri-dish"
+description = "Install, verify and drive petridish: the launchd daemon, the Claude Code hook, and the menu-bar plugin."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+authors.workspace = true
+keywords.workspace = true
+categories.workspace = true
+readme = "../README.md"
+
+# A lib half alongside the bin so every pure function here is unit-testable
+# without spawning a process, and integration tests can still drive the real
+# binary via `CARGO_BIN_EXE_petridish`. Same split `petri` uses.
+[lib]
+name = "petridish_cli"
+path = "src/lib.rs"
+
+[[bin]]
+name = "petridish"
+path = "src/main.rs"
+
+[dependencies]
+chrono.workspace = true
+clap = { version = "4", features = ["derive"] }
+petridish-core.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+
+# cargo-dist: this is the formula a user installs. The crate is `petri-dish`
+# (crates.io name), but the formula and the binary are both `petridish`.
+[package.metadata.dist]
+formula = "petridish"
+
+# cargo-dist builds one "app" per package and cannot bundle binaries from
+# several crates into one artifact, but the crates cannot merge either —
+# ADR-0002 keeps `swab-hook` out of a dependency tree containing ratatui, and
+# keeps the read/write boundary compiler-enforced rather than a matter of
+# discipline. So the four binaries ship as three formulae, and this one pulls
+# the other two in, making `brew install jkrag/tap/petridish` install
+# everything.
+[package.metadata.dist.dependencies.homebrew]
+"jkrag/tap/swab" = { stage = ["run"] }
+"jkrag/tap/petri" = { stage = ["run"] }

@@ -64,7 +64,10 @@ fn prefs_file_written_before_tools_existed_still_parses() {
     .expect("write legacy prefs must succeed");
 
     let prefs = prefs::load(&path);
-    assert!(prefs.tools.is_empty(), "absent [tools] must mean no choices");
+    assert!(
+        prefs.tools.is_empty(),
+        "absent [tools] must mean no choices"
+    );
     assert_eq!(
         prefs.last_screen,
         LastScreen::Browser,
@@ -76,16 +79,27 @@ fn prefs_file_written_before_tools_existed_still_parses() {
 #[test]
 fn roundtrip_preserves_tool_choices() {
     let path = scratch_path("roundtrip_preserves_tool_choices");
-    let mut written = Prefs::default();
-    written.last_screen = LastScreen::Browser;
-    written.tools = choices(&[("gitlog", "serie"), ("edit", "code")]);
+    let written = Prefs {
+        last_screen: LastScreen::Browser,
+        tools: choices(&[("gitlog", "serie"), ("edit", "code")]),
+        ..Prefs::default()
+    };
 
     prefs::save(&path, &written).expect("save must succeed");
     let read_back = prefs::load(&path);
 
-    assert_eq!(read_back, written, "prefs must survive a save/load round trip");
-    assert_eq!(read_back.tools.get("gitlog").map(String::as_str), Some("serie"));
-    assert_eq!(read_back.tools.get("edit").map(String::as_str), Some("code"));
+    assert_eq!(
+        read_back, written,
+        "prefs must survive a save/load round trip"
+    );
+    assert_eq!(
+        read_back.tools.get("gitlog").map(String::as_str),
+        Some("serie")
+    );
+    assert_eq!(
+        read_back.tools.get("edit").map(String::as_str),
+        Some("code")
+    );
 }
 
 #[test]
@@ -104,8 +118,10 @@ fn tool_choices_serialize_as_a_real_toml_table() {
     // experiment. `tools` is still declared last in `Prefs`, but for readability
     // only.
     let path = scratch_path("tool_choices_serialize_as_a_real_toml_table");
-    let mut written = Prefs::default();
-    written.tools = choices(&[("gitlog", "lazygit")]);
+    let written = Prefs {
+        tools: choices(&[("gitlog", "lazygit")]),
+        ..Prefs::default()
+    };
     prefs::save(&path, &written).expect("save must succeed — a ValueAfterTable error here means the map field is not declared last in Prefs");
 
     let text = std::fs::read_to_string(&path).expect("written prefs must be readable");
@@ -134,7 +150,10 @@ fn unknown_action_ids_round_trip_untouched() {
 
     let loaded = prefs::load(&path);
     assert_eq!(
-        loaded.tools.get("something_from_the_future").map(String::as_str),
+        loaded
+            .tools
+            .get("something_from_the_future")
+            .map(String::as_str),
         Some("quux"),
         "an unrecognised action id must be preserved verbatim"
     );
@@ -151,8 +170,11 @@ fn malformed_tools_table_falls_back_to_defaults_not_a_panic() {
     // parse error means defaults plus a warning — never a crash, never a
     // refusal to start.
     let path = scratch_path("malformed_tools_table_falls_back_to_defaults_not_a_panic");
-    std::fs::write(&path, b"last_screen = \"browser\"\ntools = \"not a table\"\n")
-        .expect("write must succeed");
+    std::fs::write(
+        &path,
+        b"last_screen = \"browser\"\ntools = \"not a table\"\n",
+    )
+    .expect("write must succeed");
 
     let prefs = prefs::load(&path);
     assert_eq!(

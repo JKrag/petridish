@@ -46,19 +46,37 @@ fn tab_switches_dashboard_to_browser_and_back() {
     // this test repeatedly during verification. No prior real preferences
     // existed to be lost (confirmed via the file's creation timestamp
     // matching a test run), but the isolation bug itself is real regardless.
-    let home = std::env::temp_dir().join(format!("petri_s7_pty_tab_switch_home_{}", std::process::id()));
+    let home = std::env::temp_dir().join(format!(
+        "petri_s7_pty_tab_switch_home_{}",
+        std::process::id()
+    ));
     std::fs::create_dir_all(&home).expect("scratch home dir must be creatable");
     let mut session = Session::spawn_with_home(&fixture_path("loaded.json"), 80, 40, &home);
 
-    let initial_screen = session.screen_retry(80, 40, Duration::from_secs(5), Duration::from_millis(300), 5);
+    let initial_screen = session.screen_retry(
+        80,
+        40,
+        Duration::from_secs(5),
+        Duration::from_millis(300),
+        5,
+    );
     assert!(
         initial_screen[0].contains("petri") && initial_screen[0].contains("dashboard"),
         "petri must start on the Dashboard (S6 default, still true here), got row 0: {:?}",
         initial_screen[0]
     );
 
-    session.writer.write_all(b"\t").expect("write Tab must succeed");
-    let after_first_tab = session.screen_retry(80, 40, Duration::from_secs(2), Duration::from_millis(300), 5);
+    session
+        .writer
+        .write_all(b"\t")
+        .expect("write Tab must succeed");
+    let after_first_tab = session.screen_retry(
+        80,
+        40,
+        Duration::from_secs(2),
+        Duration::from_millis(300),
+        5,
+    );
     assert!(
         after_first_tab[0].contains("petri") && after_first_tab[0].contains("browser"),
         "Tab from the Dashboard must switch to the Browser (petri/SPEC.md §5), got row 0: {:?}",
@@ -70,17 +88,33 @@ fn tab_switches_dashboard_to_browser_and_back() {
         after_first_tab.join("\n")
     );
 
-    session.writer.write_all(b"\t").expect("write second Tab must succeed");
-    let after_second_tab = session.screen_retry(80, 40, Duration::from_secs(2), Duration::from_millis(300), 5);
+    session
+        .writer
+        .write_all(b"\t")
+        .expect("write second Tab must succeed");
+    let after_second_tab = session.screen_retry(
+        80,
+        40,
+        Duration::from_secs(2),
+        Duration::from_millis(300),
+        5,
+    );
     assert!(
         after_second_tab[0].contains("petri") && after_second_tab[0].contains("dashboard"),
         "Tab from the Browser must switch back to the Dashboard, got row 0: {:?}",
         after_second_tab[0]
     );
 
-    session.writer.write_all(b"q").expect("write 'q' must succeed");
+    session
+        .writer
+        .write_all(b"q")
+        .expect("write 'q' must succeed");
     let status = session.wait_with_timeout(Duration::from_secs(5));
-    assert_eq!(status.exit_code(), 0, "'q' must still exit 0 after round-tripping Tab");
+    assert_eq!(
+        status.exit_code(),
+        0,
+        "'q' must still exit 0 after round-tripping Tab"
+    );
 }
 
 #[test]
@@ -94,23 +128,42 @@ fn valid_petri_toml_is_applied_on_startup() {
     // = "browser"` is ever actually read and applied, startup must land on
     // the Browser instead of S6's hardcoded Dashboard default — confirmed
     // failing against the current stub before delegating S7.
-    let home = std::env::temp_dir().join(format!("petri_s7_pty_valid_toml_home_{}", std::process::id()));
+    let home = std::env::temp_dir().join(format!(
+        "petri_s7_pty_valid_toml_home_{}",
+        std::process::id()
+    ));
     let petridish_dir = home.join(".petridish");
     std::fs::create_dir_all(&petridish_dir).expect("scratch .petridish dir must be creatable");
-    std::fs::write(petridish_dir.join("petri.toml"), b"last_screen = \"browser\"\ncollapsed = [true, true, true, true]\n")
-        .expect("write valid petri.toml must succeed");
+    std::fs::write(
+        petridish_dir.join("petri.toml"),
+        b"last_screen = \"browser\"\ncollapsed = [true, true, true, true]\n",
+    )
+    .expect("write valid petri.toml must succeed");
 
     let mut session = Session::spawn_with_home(&fixture_path("normal.json"), 80, 24, &home);
-    let screen = session.screen_retry(80, 24, Duration::from_secs(5), Duration::from_millis(300), 5);
+    let screen = session.screen_retry(
+        80,
+        24,
+        Duration::from_secs(5),
+        Duration::from_millis(300),
+        5,
+    );
     assert!(
         screen[0].contains("petri") && screen[0].contains("browser"),
         "a persisted last_screen = \"browser\" must be applied on startup, got row 0: {:?}",
         screen[0]
     );
 
-    session.writer.write_all(b"q").expect("write 'q' must succeed");
+    session
+        .writer
+        .write_all(b"q")
+        .expect("write 'q' must succeed");
     let status = session.wait_with_timeout(Duration::from_secs(5));
-    assert_eq!(status.exit_code(), 0, "'q' must still exit 0 after starting from a persisted Browser screen");
+    assert_eq!(
+        status.exit_code(),
+        0,
+        "'q' must still exit 0 after starting from a persisted Browser screen"
+    );
 }
 
 #[test]
@@ -119,26 +172,40 @@ fn corrupt_petri_toml_does_not_prevent_startup() {
     // warning — never a crash, and never a refusal to start. There is a test
     // for this." This is that test, at the real-binary level (the pure-state
     // half — load() itself not panicking — is covered by s7_prefs.rs).
-    let home = std::env::temp_dir().join(format!("petri_s7_pty_corrupt_toml_home_{}", std::process::id()));
+    let home = std::env::temp_dir().join(format!(
+        "petri_s7_pty_corrupt_toml_home_{}",
+        std::process::id()
+    ));
     let petridish_dir = home.join(".petridish");
     std::fs::create_dir_all(&petridish_dir).expect("scratch .petridish dir must be creatable");
-    std::fs::write(petridish_dir.join("petri.toml"), b"not valid toml { [[[ ===").expect("write corrupt petri.toml must succeed");
+    std::fs::write(
+        petridish_dir.join("petri.toml"),
+        b"not valid toml { [[[ ===",
+    )
+    .expect("write corrupt petri.toml must succeed");
 
     let mut session = Session::spawn_with_home(&fixture_path("normal.json"), 80, 24, &home);
-    let screen = session.screen_retry(80, 24, Duration::from_secs(5), Duration::from_millis(300), 5);
+    let screen = session.screen_retry(
+        80,
+        24,
+        Duration::from_secs(5),
+        Duration::from_millis(300),
+        5,
+    );
     let whole = screen.join("\n");
     assert!(
         whole.contains("petri") && whole.contains("dashboard"),
         "petri must still start normally (defaults, not a crash) with a corrupt petri.toml, got:\n{whole}"
     );
 
-    session.writer.write_all(b"q").expect("write 'q' must succeed");
+    session
+        .writer
+        .write_all(b"q")
+        .expect("write 'q' must succeed");
     let status = session.wait_with_timeout(Duration::from_secs(5));
-    assert_eq!(status.exit_code(), 0, "'q' must still exit 0 with a corrupt petri.toml present");
+    assert_eq!(
+        status.exit_code(),
+        0,
+        "'q' must still exit 0 with a corrupt petri.toml present"
+    );
 }
-
-
-
-
-
-

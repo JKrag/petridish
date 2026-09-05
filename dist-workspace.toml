@@ -1,0 +1,54 @@
+[workspace]
+members = ["cargo:."]
+
+# Config for 'dist' (cargo-dist). Regenerate .github/workflows/release.yml with
+# `dist generate` after changing anything here — that file is generated, not
+# hand-edited.
+#
+# Note the binary name: `dist`, not `cargo dist`. cargo-dist 0.32 installs its
+# executable as `dist`, so `cargo dist ...` fails with "no such command".
+[dist]
+cargo-dist-version = "0.32.0"
+ci = "github"
+
+# Homebrew only, and deliberately so. cargo-dist builds one "app" per package,
+# so a `shell` installer here would publish THREE separate curl-pipe-sh scripts
+# (one per crate), each installing a third of the product — worse than not
+# offering one. Homebrew can express the relationship: the `petridish` formula
+# `depends_on` the other two (see petridish-cli/Cargo.toml), so a single
+# `brew install jkrag/tap/petridish` lands all four binaries.
+#
+# Non-Homebrew users are served by `cargo install --git`, and the per-target
+# tarballs are attached to the GitHub Release either way.
+#
+# A personal tap rather than homebrew-core: that imposes notability requirements
+# and ongoing maintenance obligations (ARCHITECTURE.md §8.2).
+installers = ["homebrew"]
+tap = "JKrag/homebrew-tap"
+publish-jobs = ["homebrew"]
+
+# Publish the formula for prereleases too. Without this, cargo-dist's generated
+# workflow skips `publish-homebrew-formula` whenever the version has a
+# prerelease suffix — so tagging `v1.0.0-beta.1` would upload tarballs, cut a
+# GitHub Release, and push nothing to the tap, leaving the documented
+# `brew install jkrag/tap/petridish` a 404. A beta nobody can install is not a
+# beta.
+publish-prereleases = true
+
+# macOS only, and that is the product rather than a limitation: launchd and
+# ~/Library are load-bearing, and `petridish install` refuses to run anywhere
+# else (ARCHITECTURE.md §8.3 D5). Both architectures, because Intel Macs are
+# still in use.
+#
+# CI still *compiles and tests* on Linux — that is what verifies the scanner
+# isn't accidentally macOS-bound — but there is nothing to ship there.
+targets = ["aarch64-apple-darwin", "x86_64-apple-darwin"]
+
+# The shell installer drops binaries here rather than in a versioned directory,
+# so an upgrade replaces them in place and the absolute paths written into the
+# launchd plist and ~/.claude/settings.json stay valid (D1/D2).
+install-path = "CARGO_HOME"
+
+# Prereleases (1.0.0-beta.1) shouldn't be handed to people who asked for the
+# stable installer.
+install-updater = false

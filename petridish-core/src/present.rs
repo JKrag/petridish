@@ -6,7 +6,7 @@
 //! these formatting functions without depending on `swab` (the writer). `petridish-core`
 //! depends on none of the writers, so this crate cannot reach them.
 
-use crate::schema::{waiting_latch_live, AgentActivity, AgentState, GitState, StatusBucket};
+use crate::schema::{AgentActivity, AgentState, GitState, StatusBucket, waiting_latch_live};
 use chrono::{DateTime, Utc};
 
 /// `StatusBucket` -> lowercase snake_case string (`"active"`, `"in_flight"`, ...).
@@ -67,7 +67,11 @@ pub fn agent_label(agent: &AgentState) -> String {
 /// Mirrors `cli.rs`'s `_print_table` logic — the marker is part of the table output,
 /// not the schema.
 pub fn dirty_marker(git: &GitState) -> &'static str {
-    if git.is_repo && git.is_dirty { "*" } else { " " }
+    if git.is_repo && git.is_dirty {
+        "*"
+    } else {
+        " "
+    }
 }
 
 /// Extract the basename of a parent directory path. Returns the last path component,
@@ -147,7 +151,9 @@ mod tests {
         let agent = AgentState {
             state: AgentActivity::Idle,
             active_agent: Some("claude-code".to_string()),
-            waiting_since: Some(now - chrono::Duration::seconds(crate::schema::WAITING_MAX_LATCH_S + 1)),
+            waiting_since: Some(
+                now - chrono::Duration::seconds(crate::schema::WAITING_MAX_LATCH_S + 1),
+            ),
             ..AgentState::idle_unknown()
         };
         assert_eq!(agent_label_at(&agent, now), "claude-code (idle)");
@@ -207,7 +213,10 @@ mod tests {
 
     #[test]
     fn worktree_parent_name_basic() {
-        assert_eq!(worktree_parent_name("/Users/jan/repos/catshow-searcher"), "catshow-searcher");
+        assert_eq!(
+            worktree_parent_name("/Users/jan/repos/catshow-searcher"),
+            "catshow-searcher"
+        );
         assert_eq!(worktree_parent_name("/a/b/c"), "c");
     }
 

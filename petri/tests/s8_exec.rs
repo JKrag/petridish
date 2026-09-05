@@ -50,7 +50,10 @@ fn spawn_detached_actually_starts_the_program() {
         matches!(out, Outcome::Detached),
         "expected Detached, got {out:?}"
     );
-    assert!(wait_for(&marker), "the child never ran: {marker:?} was not created");
+    assert!(
+        wait_for(&marker),
+        "the child never ran: {marker:?} was not created"
+    );
 }
 
 #[test]
@@ -94,7 +97,10 @@ fn spawn_detached_passes_its_arguments_through() {
     let dir = scratch_dir("spawn_detached_passes_its_arguments_through");
     let marker = dir.join("args");
     exec::spawn_detached(
-        &launch("sh", &["-c", "printf '%s' \"$0 $1\" > args", "alpha", "beta"]),
+        &launch(
+            "sh",
+            &["-c", "printf '%s' \"$0 $1\" > args", "alpha", "beta"],
+        ),
         &dir,
     );
     assert!(wait_for(&marker), "child never wrote its args");
@@ -114,7 +120,9 @@ fn is_installed_finds_a_program_on_path() {
 
 #[test]
 fn is_installed_rejects_a_program_that_does_not_exist() {
-    assert!(!exec::is_installed("petri-definitely-not-a-real-program-9f3a"));
+    assert!(!exec::is_installed(
+        "petri-definitely-not-a-real-program-9f3a"
+    ));
 }
 
 #[test]
@@ -140,5 +148,7 @@ fn is_installed_rejects_a_directory_that_shadows_a_program_name() {
     // permission error the user cannot interpret.
     let dir = scratch_dir("is_installed_rejects_a_directory");
     std::fs::create_dir_all(dir.join("notaprogram")).expect("dir must be creatable");
-    assert!(!exec::is_installed(dir.join("notaprogram").to_str().unwrap()));
+    assert!(!exec::is_installed(
+        dir.join("notaprogram").to_str().unwrap()
+    ));
 }

@@ -21,10 +21,7 @@ use std::time::Duration;
 
 #[test]
 fn switching_screens_preserves_stored_tool_choices() {
-    let home = std::env::temp_dir().join(format!(
-        "petri_s8_pty_tools_home_{}",
-        std::process::id()
-    ));
+    let home = std::env::temp_dir().join(format!("petri_s8_pty_tools_home_{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&home);
     std::fs::create_dir_all(home.join(".petridish")).expect("scratch home must be creatable");
     let prefs_path = home.join(".petridish").join("petri.toml");
@@ -51,7 +48,10 @@ fn switching_screens_preserves_stored_tool_choices() {
     );
 
     // Tab is the cheapest key that triggers a prefs write.
-    session.writer.write_all(b"\t").expect("write Tab must succeed");
+    session
+        .writer
+        .write_all(b"\t")
+        .expect("write Tab must succeed");
     session.writer.flush().expect("flush must succeed");
     session.screen_retry(
         80,
@@ -61,7 +61,10 @@ fn switching_screens_preserves_stored_tool_choices() {
         5,
     );
 
-    session.writer.write_all(b"q").expect("write q must succeed");
+    session
+        .writer
+        .write_all(b"q")
+        .expect("write q must succeed");
     session.writer.flush().expect("flush must succeed");
     session.wait_with_timeout(Duration::from_secs(10));
 

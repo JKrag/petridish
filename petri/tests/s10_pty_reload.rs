@@ -100,8 +100,11 @@ fn a_state_file_reload_does_not_reopen_a_collapsed_section() {
     // test is vacuous: a rewrite that changes nothing visible is indistinguishable
     // from no reload at all, and an earlier draft of this test passed happily with
     // the bug reinstated for exactly that reason.
-    std::fs::write(&state_path, body.replace("\"scan_duration_ms\": 312", "\"scan_duration_ms\": 9900"))
-        .expect("state rewrite must succeed");
+    std::fs::write(
+        &state_path,
+        body.replace("\"scan_duration_ms\": 312", "\"scan_duration_ms\": 9900"),
+    )
+    .expect("state rewrite must succeed");
 
     // The poll interval is 2-5s (SPEC §4.3), so the reload cannot have happened
     // yet; wait past it before snapshotting. `settle`/`screen_retry` return as

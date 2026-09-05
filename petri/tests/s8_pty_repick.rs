@@ -43,7 +43,13 @@ fn seeded_home(name: &str) -> (std::path::PathBuf, std::path::PathBuf) {
 }
 
 fn settle(session: &mut Session) -> Vec<String> {
-    session.screen_retry(90, 40, Duration::from_secs(5), Duration::from_millis(300), 5)
+    session.screen_retry(
+        90,
+        40,
+        Duration::from_secs(5),
+        Duration::from_millis(300),
+        5,
+    )
 }
 
 fn send(session: &mut Session, bytes: &[u8]) {

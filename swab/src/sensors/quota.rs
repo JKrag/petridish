@@ -32,28 +32,33 @@ pub fn read_quota(path: &Path) -> Option<QuotaState> {
 /// optional and degrades independently. Returns `None` only when the top-level payload
 /// is not a JSON object; partial truth beats absence.
 fn parse_value(payload: &serde_json::Value, now: DateTime<Utc>) -> Option<QuotaState> {
-    let obj = match payload.as_object() {
-        Some(o) => o,
-        None => return None,
-    };
+    let obj = payload.as_object()?;
 
     let state = QuotaState {
         measured_at: parse_ts(obj.get("ts"), now),
-        five_hour_used_pct: pct(obj.get("rate_limits").and_then(|v| v.get("five_hour")).and_then(|v| v.get("used_percentage"))),
+        five_hour_used_pct: pct(obj
+            .get("rate_limits")
+            .and_then(|v| v.get("five_hour"))
+            .and_then(|v| v.get("used_percentage"))),
         five_hour_resets_at: epoch_to_dt(
             obj.get("rate_limits")
                 .and_then(|v| v.get("five_hour"))
                 .and_then(|v| v.get("resets_at")),
             now,
         ),
-        seven_day_used_pct: pct(obj.get("rate_limits").and_then(|v| v.get("seven_day")).and_then(|v| v.get("used_percentage"))),
+        seven_day_used_pct: pct(obj
+            .get("rate_limits")
+            .and_then(|v| v.get("seven_day"))
+            .and_then(|v| v.get("used_percentage"))),
         seven_day_resets_at: epoch_to_dt(
             obj.get("rate_limits")
                 .and_then(|v| v.get("seven_day"))
                 .and_then(|v| v.get("resets_at")),
             now,
         ),
-        context_used_pct: pct(obj.get("context_window").and_then(|v| v.get("used_percentage"))),
+        context_used_pct: pct(obj
+            .get("context_window")
+            .and_then(|v| v.get("used_percentage"))),
     };
 
     // Nothing recognisable -> None so a header can omit the line entirely. `QuotaState`
@@ -81,10 +86,7 @@ fn pct(value: Option<&serde_json::Value>) -> Option<u8> {
     if v.is_boolean() {
         return None;
     }
-    let n = match v.as_i64() {
-        Some(n) => n,
-        None => return None,
-    };
+    let n = v.as_i64()?;
     if !(0..=100).contains(&n) {
         return None;
     }
@@ -110,10 +112,7 @@ fn epoch_to_dt(value: Option<&serde_json::Value>, now: DateTime<Utc>) -> Option<
     };
     let secs = n as i64;
     let subsec = ((n - secs as f64) * 1_000_000_000_f64).round() as u32;
-    let dt = match DateTime::from_timestamp(secs, subsec) {
-        Some(dt) => dt,
-        None => return None,
-    };
+    let dt = DateTime::from_timestamp(secs, subsec)?;
     if (dt - now).num_seconds().unsigned_abs() > MAX_RESET_HORIZON_S as u64 {
         return None;
     }
@@ -131,8 +130,10 @@ fn parse_ts(value: Option<&serde_json::Value>, now: DateTime<Utc>) -> Option<Dat
         Ok(dt) => dt.with_timezone(&Utc),
         Err(_) => {
             // Fallback: naive value like "2026-08-09T06:32:11" (no offset, no Z). Treat as UTC.
-            match chrono::NaiveDateTime::parse_from_str(s.trim_end_matches('Z'), "%Y-%m-%dT%H:%M:%S")
-            {
+            match chrono::NaiveDateTime::parse_from_str(
+                s.trim_end_matches('Z'),
+                "%Y-%m-%dT%H:%M:%S",
+            ) {
                 Ok(ndt) => Utc.from_utc_datetime(&ndt),
                 Err(_) => return None,
             }
@@ -155,8 +156,7 @@ mod tests {
     }
     impl Tmp {
         fn new(suffix: &str) -> Self {
-            let path = std::env::temp_dir()
-                .join(format!("swab_quota_test_{suffix}"));
+            let path = std::env::temp_dir().join(format!("swab_quota_test_{suffix}"));
             let _ = std::fs::remove_file(&path);
             Self { path }
         }
@@ -203,8 +203,14 @@ mod tests {
         assert_eq!(state.five_hour_used_pct, Some(9));
         assert_eq!(state.seven_day_used_pct, Some(86));
         assert_eq!(state.context_used_pct, Some(28));
-        assert!(state.five_hour_resets_at.is_some(), "five_hour resets_at must be set");
-        assert!(state.seven_day_resets_at.is_some(), "seven_day resets_at must be set");
+        assert!(
+            state.five_hour_resets_at.is_some(),
+            "five_hour resets_at must be set"
+        );
+        assert!(
+            state.seven_day_resets_at.is_some(),
+            "seven_day resets_at must be set"
+        );
         assert!(state.measured_at.is_some(), "measured_at must be set");
     }
 
@@ -252,12 +258,14 @@ mod tests {
         });
 
         // Use a now that's close to the fixed resets_at timestamps (so they pass plausibility).
-        let fixed_dt = chrono::NaiveDateTime::parse_from_str("2026-06-08T12:50:00", "%Y-%m-%dT%H:%M:%S")
-            .unwrap()
-            .and_utc();
+        let fixed_dt =
+            chrono::NaiveDateTime::parse_from_str("2026-06-08T12:50:00", "%Y-%m-%dT%H:%M:%S")
+                .unwrap()
+                .and_utc();
         let now = fixed_dt;
 
-        let result = parse_value(&payload, now).expect("still must succeed since other fields valid");
+        let result =
+            parse_value(&payload, now).expect("still must succeed since other fields valid");
 
         assert_eq!(result.five_hour_used_pct, None, "boolean must be dropped");
         assert_eq!(result.seven_day_used_pct, Some(86));
@@ -291,9 +299,13 @@ mod tests {
             "context_window": { "used_percentage": 28 }
         });
         let now = Utc::now();
-        let result = parse_value(&payload, now).expect("still succeeds because context_window valid");
+        let result =
+            parse_value(&payload, now).expect("still succeeds because context_window valid");
 
-        assert_eq!(result.five_hour_resets_at, None, "too-far-in-future reset must be None");
+        assert_eq!(
+            result.five_hour_resets_at, None,
+            "too-far-in-future reset must be None"
+        );
         assert_eq!(result.five_hour_used_pct, Some(9));
         assert_eq!(result.context_used_pct, Some(28));
     }
@@ -370,7 +382,10 @@ mod tests {
         let now = Utc::now();
         // 2030 is more than 30 days away.
         let result = parse_ts(Some(&serde_json::json!("2030-01-01T00:00:00Z")), now);
-        assert!(result.is_none(), "2030 must fail the 30-day plausibility check");
+        assert!(
+            result.is_none(),
+            "2030 must fail the 30-day plausibility check"
+        );
     }
 
     // Test: a resets_at in the distant past (e.g. 1970-01-01) is None.
@@ -384,7 +399,10 @@ mod tests {
         });
         let now = Utc::now();
         let result = parse_value(&payload, now).expect("still succeeds");
-        assert_eq!(result.five_hour_resets_at, None, "epoch 0 (1970) is more than 30 days away from now");
+        assert_eq!(
+            result.five_hour_resets_at, None,
+            "epoch 0 (1970) is more than 30 days away from now"
+        );
     }
 
     // Test: bool `used_percentage` on five_hour — that field None but rest parses.
@@ -398,9 +416,10 @@ mod tests {
             "context_window": { "used_percentage": 28 }
         });
         // Use a now that's close to the fixed resets_at timestamps.
-        let fixed_dt = chrono::NaiveDateTime::parse_from_str("2026-06-08T12:50:00", "%Y-%m-%dT%H:%M:%S")
-            .unwrap()
-            .and_utc();
+        let fixed_dt =
+            chrono::NaiveDateTime::parse_from_str("2026-06-08T12:50:00", "%Y-%m-%dT%H:%M:%S")
+                .unwrap()
+                .and_utc();
         let result = parse_value(&payload, fixed_dt).expect("other fields must still parse");
         assert_eq!(result.five_hour_used_pct, None);
         assert_eq!(result.seven_day_used_pct, Some(86));
@@ -444,10 +463,12 @@ mod tests {
                 "seven_day": { "used_percentage": 86, "resets_at": 1786431600 }
             }
         });
-        let fixed_dt = chrono::NaiveDateTime::parse_from_str("2026-06-08T12:50:00", "%Y-%m-%dT%H:%M:%S")
-            .unwrap()
-            .and_utc();
-        let result = parse_value(&payload, fixed_dt).expect("must still succeed without context_window");
+        let fixed_dt =
+            chrono::NaiveDateTime::parse_from_str("2026-06-08T12:50:00", "%Y-%m-%dT%H:%M:%S")
+                .unwrap()
+                .and_utc();
+        let result =
+            parse_value(&payload, fixed_dt).expect("must still succeed without context_window");
         assert_eq!(result.context_used_pct, None);
         assert_eq!(result.five_hour_used_pct, Some(9));
     }
@@ -535,9 +556,10 @@ mod tests {
                 "seven_day": { "used_percentage": 86, "resets_at": 1786431600 }
             }
         });
-        let fixed_dt = chrono::NaiveDateTime::parse_from_str("2026-06-08T12:50:00", "%Y-%m-%dT%H:%M:%S")
-            .unwrap()
-            .and_utc();
+        let fixed_dt =
+            chrono::NaiveDateTime::parse_from_str("2026-06-08T12:50:00", "%Y-%m-%dT%H:%M:%S")
+                .unwrap()
+                .and_utc();
         let result = parse_value(&payload, fixed_dt).expect("must succeed");
         assert_eq!(result.context_used_pct, None);
         assert_eq!(result.five_hour_used_pct, Some(9));

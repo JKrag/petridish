@@ -12,15 +12,14 @@
 //! one the original complaint was about — the first is at least implied by
 //! the keystrokes you just made.
 
-use petridish_core::schema::Radar;
 use petri::browser::BrowserState;
+use petridish_core::schema::Radar;
 use ratatui::{Terminal, backend::TestBackend};
 use std::path::PathBuf;
 
 fn fixture_path(name: &str) -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join("..")
-        .join("tests")
         .join("fixtures")
         .join(name)
 }
@@ -137,7 +136,11 @@ fn a_query_that_matches_nothing_still_says_so() {
 
     let mut state = BrowserState::new(&radar);
     state.apply_filter(&radar, "zzzz-no-such-project");
-    assert_eq!(state.visible.len(), 0, "fixture assumption: this query matches nothing");
+    assert_eq!(
+        state.visible.len(),
+        0,
+        "fixture assumption: this query matches nothing"
+    );
 
     let header = rendered_lines(&radar, &state, 80, 24)[0].clone();
     assert!(
@@ -181,7 +184,11 @@ fn the_count_survives_a_narrow_terminal_and_the_query_is_truncated() {
     state.apply_filter(&radar, "alpha-project-with-a-very-long-query");
 
     let lines = rendered_lines(&radar, &state, 40, 10);
-    assert_eq!(lines.len(), 10, "render must still produce a full frame at 40x10");
+    assert_eq!(
+        lines.len(),
+        10,
+        "render must still produce a full frame at 40x10"
+    );
     let header = lines[0].clone();
     assert!(
         header.contains(&format!("0 of {total}")),
@@ -219,5 +226,3 @@ fn truncation_keeps_the_end_you_are_typing_and_the_start_you_are_not() {
         "once closed, the head of the query must stay visible, got: {closed:?}"
     );
 }
-
-

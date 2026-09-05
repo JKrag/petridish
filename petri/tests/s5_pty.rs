@@ -68,15 +68,25 @@ fn navigation_and_filter_keystrokes_do_not_crash_the_binary() {
     let _ = session.settle(Duration::from_secs(5), Duration::from_millis(300));
 
     for keys in [&b"j"[..], b"j", b"k", b"/", b"ab", &[0x1b]] {
-        session.writer.write_all(keys).unwrap_or_else(|e| panic!("write {keys:?} must succeed: {e}"));
+        session
+            .writer
+            .write_all(keys)
+            .unwrap_or_else(|e| panic!("write {keys:?} must succeed: {e}"));
         let _ = session.settle(Duration::from_millis(500), Duration::from_millis(150));
         let alive = session.child.try_wait().ok().flatten().is_none();
         assert!(alive, "petri must still be alive after sending {keys:?}");
     }
 
-    session.writer.write_all(b"q").expect("write 'q' must succeed");
+    session
+        .writer
+        .write_all(b"q")
+        .expect("write 'q' must succeed");
     let status = session.wait_with_timeout(Duration::from_secs(5));
-    assert_eq!(status.exit_code(), 0, "'q' must still exit 0 after a sequence of navigation/filter keystrokes");
+    assert_eq!(
+        status.exit_code(),
+        0,
+        "'q' must still exit 0 after a sequence of navigation/filter keystrokes"
+    );
 }
 
 #[test]
@@ -85,7 +95,14 @@ fn q_still_quits_cleanly_with_browser_active() {
     // wiring BrowserState into the event loop.
     let mut session = Session::spawn(&fixture_path("normal.json"), 80, 24);
     let _ = session.settle(Duration::from_secs(5), Duration::from_millis(300));
-    session.writer.write_all(b"q").expect("write 'q' must succeed");
+    session
+        .writer
+        .write_all(b"q")
+        .expect("write 'q' must succeed");
     let status = session.wait_with_timeout(Duration::from_secs(5));
-    assert_eq!(status.exit_code(), 0, "'q' must still exit 0 with the Browser wired in");
+    assert_eq!(
+        status.exit_code(),
+        0,
+        "'q' must still exit 0 with the Browser wired in"
+    );
 }

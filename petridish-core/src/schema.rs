@@ -35,10 +35,7 @@ mod iso_second_opt {
     use chrono::{DateTime, SubsecRound, Utc};
     use serde::{Deserialize, Deserializer, Serializer};
 
-    pub fn serialize<S: Serializer>(
-        dt: &Option<DateTime<Utc>>,
-        s: S,
-    ) -> Result<S::Ok, S::Error> {
+    pub fn serialize<S: Serializer>(dt: &Option<DateTime<Utc>>, s: S) -> Result<S::Ok, S::Error> {
         match dt {
             Some(dt) => {
                 s.serialize_str(&dt.trunc_subsecs(0).format("%Y-%m-%dT%H:%M:%SZ").to_string())
@@ -47,9 +44,7 @@ mod iso_second_opt {
         }
     }
 
-    pub fn deserialize<'de, D: Deserializer<'de>>(
-        d: D,
-    ) -> Result<Option<DateTime<Utc>>, D::Error> {
+    pub fn deserialize<'de, D: Deserializer<'de>>(d: D) -> Result<Option<DateTime<Utc>>, D::Error> {
         let opt: Option<String> = Option::deserialize(d)?;
         match opt {
             Some(s) => DateTime::parse_from_rfc3339(&s)
@@ -59,6 +54,30 @@ mod iso_second_opt {
         }
     }
 }
+
+/// Literal marker string appended to every hook `command` entry this project
+/// writes into `~/.claude/settings.json`.
+///
+/// Load-bearing, not decorative: it is the *only* thing that distinguishes our
+/// entries from the other hook consumers sharing that file, so both the
+/// installer's `--uninstall` and `doctor`'s health check identify their own
+/// work by matching it. Changing this string orphans every existing install.
+pub const HOOK_MARKER: &str = "# petridish";
+
+/// The Claude Code hook events `swab-hook` is registered on.
+///
+/// Lives here, in the crate both the writer and the checker depend on, so the
+/// installer that registers these events and the `doctor` that verifies them
+/// cannot drift apart. They previously could: the writer was Python and the
+/// checker Rust, so the list was duplicated by necessity and kept in step by
+/// hand.
+///
+/// `Notification`/`PermissionRequest` are the MECH-5 pair. Without them
+/// registered, `agent.waiting_since` is never set and the "waiting on you"
+/// indicator is dead code on that machine — which is exactly what `doctor`
+/// exists to notice, and why it checks per-event rather than just for the
+/// marker's presence.
+pub const HOOK_EVENTS: [&str; 4] = ["PreToolUse", "Stop", "Notification", "PermissionRequest"];
 
 /// Silence below this many seconds => `AgentActivity::Working`.
 pub const AGENT_WORKING_MAX_S: i64 = 90;
@@ -252,7 +271,11 @@ pub struct AgentSignal {
 /// negative input is treated as zero rather than panicking, a frontend must
 /// never crash on a timestamp from the future.
 pub fn agent_state_for_silence(silence_seconds: i64) -> AgentActivity {
-    let silence = if silence_seconds < 0 { 0 } else { silence_seconds };
+    let silence = if silence_seconds < 0 {
+        0
+    } else {
+        silence_seconds
+    };
     if silence < AGENT_WORKING_MAX_S {
         AgentActivity::Working
     } else if silence < AGENT_RECENT_MAX_S {
@@ -273,10 +296,7 @@ pub fn agent_state_for_silence(silence_seconds: i64) -> AgentActivity {
 ///
 /// A latch from the future (clock skew between writer and reader) counts as live rather than
 /// panicking, mirroring `agent_state_for_silence`'s negative-input clamp.
-pub fn waiting_latch_live(
-    waiting_since: Option<DateTime<Utc>>,
-    now: DateTime<Utc>,
-) -> bool {
+pub fn waiting_latch_live(waiting_since: Option<DateTime<Utc>>, now: DateTime<Utc>) -> bool {
     match waiting_since {
         None => false,
         Some(since) => (now - since).num_seconds() < WAITING_MAX_LATCH_S,
@@ -290,42 +310,107 @@ pub fn write_atomic(path: &Path, radar: &Radar) -> std::io::Result<()> {
     // Same behavior as `petridish.schema.write_atomic`: parent dir first,
     // sibling `.tmp` for the rename to stay on the same filesystem (so
     // `os.replace` / `fs::rename` stays atomic), and cleanup on any failure.
-    std::fs::create_dir_all(path.parent().ok_or_else(|| {
-        std::io::Error::new(
-            std::io::ErrorKind::Other,
-            "radar path has no parent directory",
-        )
-    })?)?;
+    std::fs::create_dir_all(
+        path.parent()
+            .ok_or_else(|| std::io::Error::other("radar path has no parent directory"))?,
+    )?;
 
-    let tmp_name = path
-        .file_name()
-        .and_then(|n| n.to_str())
-        .ok_or_else(|| {
-            std::io::Error::new(
-                std::io::ErrorKind::InvalidInput,
-                "radar path has a non-UTF8 filename",
-            )
-        })?;
+    let tmp_name = path.file_name().and_then(|n| n.to_str()).ok_or_else(|| {
+        std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "radar path has a non-UTF8 filename",
+        )
+    })?;
     let tmp = path.with_file_name(format!("{}.tmp", tmp_name));
 
-    let body = serde_json::to_string(radar).map_err(|e| {
-        std::io::Error::new(std::io::ErrorKind::Other, e.to_string())
-    })?;
+    let body = serde_json::to_string(radar).map_err(|e| std::io::Error::other(e.to_string()))?;
 
     std::fs::write(&tmp, &body)?;
-    std::fs::rename(&tmp, path)
-        .map_err(|rename_err| {
-            // Best-effort cleanup: ignore any error from this remove so the
-            // original rename failure is what the caller sees.
-            let _ = std::fs::remove_file(&tmp);
-            rename_err
-        })
+    std::fs::rename(&tmp, path).inspect_err(|_rename_err| {
+        // Best-effort cleanup: ignore any error from this remove so the
+        // original rename failure is what the caller sees.
+        let _ = std::fs::remove_file(&tmp);
+    })
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use chrono::SubsecRound;
+
+    // ── Timestamp wire format ────────────────────────────────────────────
+    //
+    // Ported from `tests/test_schema.py` when the Python read-side was deleted.
+    // These pin the `iso_second`/`iso_second_opt` serde helpers, which had no
+    // direct Rust coverage: every timestamp in `projects.json` is second
+    // resolution with a literal trailing `Z`, and every frontend parses on that
+    // assumption.
+
+    fn radar_at(updated_at: DateTime<Utc>) -> Radar {
+        Radar {
+            schema_version: 1,
+            updated_at,
+            scan_duration_ms: 0,
+            projects: vec![],
+            quota: None,
+        }
+    }
+
+    #[test]
+    fn timestamps_serialize_with_a_trailing_z() {
+        let text = serde_json::to_string(&radar_at(
+            DateTime::parse_from_rfc3339("2026-08-05T22:45:00Z")
+                .unwrap()
+                .with_timezone(&Utc),
+        ))
+        .unwrap();
+        assert!(
+            text.contains(r#""updated_at":"2026-08-05T22:45:00Z""#),
+            "{text}"
+        );
+    }
+
+    /// Deliberate and documented: the wire format is second resolution. Emitting
+    /// sub-second digits would break every reader parsing the fixed-width form.
+    #[test]
+    fn sub_second_precision_is_truncated_not_rounded() {
+        let t = DateTime::parse_from_rfc3339("2026-08-05T22:45:00.999999Z")
+            .unwrap()
+            .with_timezone(&Utc);
+        let text = serde_json::to_string(&radar_at(t)).unwrap();
+        assert!(
+            text.contains(r#""updated_at":"2026-08-05T22:45:00Z""#),
+            "must truncate, not round: {text}"
+        );
+    }
+
+    /// A non-UTC offset on the way in must be converted, not dropped —
+    /// dropping it would silently shift the timestamp by the offset.
+    #[test]
+    fn a_non_utc_offset_is_converted_to_utc_on_read() {
+        let json = r#"{"schema_version":1,"updated_at":"2026-08-05T23:45:00+01:00","scan_duration_ms":0,"projects":[],"quota":null}"#;
+        let radar: Radar = serde_json::from_str(json).unwrap();
+        assert_eq!(
+            radar.updated_at,
+            DateTime::parse_from_rfc3339("2026-08-05T22:45:00Z")
+                .unwrap()
+                .with_timezone(&Utc)
+        );
+        // ...and it is re-emitted in the canonical `Z` form.
+        assert!(
+            serde_json::to_string(&radar)
+                .unwrap()
+                .contains(r#""updated_at":"2026-08-05T22:45:00Z""#)
+        );
+    }
+
+    #[test]
+    fn an_absent_optional_timestamp_round_trips_as_null() {
+        let json = r#"{"schema_version":1,"updated_at":"2026-08-05T22:45:00Z","scan_duration_ms":0,"projects":[],"quota":null}"#;
+        let radar: Radar = serde_json::from_str(json).unwrap();
+        let text = serde_json::to_string(&radar).unwrap();
+        assert!(text.contains(r#""quota":null"#), "{text}");
+    }
 
     #[test]
     fn agent_state_for_silence_zero_is_working() {
@@ -372,8 +457,14 @@ mod tests {
         let now = Utc::now();
         let just_inside = now - chrono::Duration::seconds(WAITING_MAX_LATCH_S - 1);
         let exactly_at = now - chrono::Duration::seconds(WAITING_MAX_LATCH_S);
-        assert!(waiting_latch_live(Some(just_inside), now), "one second short of the cap is live");
-        assert!(!waiting_latch_live(Some(exactly_at), now), "the cap itself has expired");
+        assert!(
+            waiting_latch_live(Some(just_inside), now),
+            "one second short of the cap is live"
+        );
+        assert!(
+            !waiting_latch_live(Some(exactly_at), now),
+            "the cap itself has expired"
+        );
     }
 
     #[test]
@@ -381,7 +472,10 @@ mod tests {
         // Clock skew between the writer and the reader, same case
         // `agent_state_for_silence` clamps rather than panicking on.
         let now = Utc::now();
-        assert!(waiting_latch_live(Some(now + chrono::Duration::hours(1)), now));
+        assert!(waiting_latch_live(
+            Some(now + chrono::Duration::hours(1)),
+            now
+        ));
     }
 
     #[test]
@@ -416,7 +510,10 @@ mod tests {
     #[test]
     fn write_atomic_overwrite_second_call_differs() {
         let tmp = std::env::temp_dir();
-        let dir = tmp.join(format!("swab_write_atomic_overwrite_test_{}", std::process::id()));
+        let dir = tmp.join(format!(
+            "swab_write_atomic_overwrite_test_{}",
+            std::process::id()
+        ));
         let _ = std::fs::remove_dir_all(&dir);
 
         let path = dir.join("projects.json");
@@ -438,8 +535,7 @@ mod tests {
         let back = std::fs::read_to_string(&path).expect("file must be readable");
 
         // File contents must match radar_b, not radar_a.
-        let file_json: serde_json::Value =
-            serde_json::from_str(&back).expect("file is valid JSON");
+        let file_json: serde_json::Value = serde_json::from_str(&back).expect("file is valid JSON");
 
         let expected_b: serde_json::Value =
             serde_json::from_str(&serde_json::to_string(&radar_b).unwrap()).unwrap();

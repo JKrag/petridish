@@ -5,20 +5,11 @@
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 
-/// Literal marker string appended to hook `command` entries in `~/.claude/settings.json`;
-/// shared with `swab doctor`'s hook-detection.
-pub const HOOK_MARKER: &str = "# petridish";
-
-/// The Claude Code hook events `swab-hook` is registered on. **`installer.py`'s
-/// `HOOK_EVENTS` is the writer and this is the checker** — the duplication is deliberate
-/// (the installer is Python, `swab doctor` is Rust, and neither can call the other), so
-/// they must be kept in step; `doctor` failing on a machine the installer just set up is
-/// how a drift here shows itself.
-///
-/// `Notification`/`PermissionRequest` are the `MECH-5` pair: without them registered,
-/// `agent.waiting_since` is never set and the "waiting on you" indicator is dead code on
-/// that machine — which is exactly what `doctor` exists to notice.
-pub const HOOK_EVENTS: [&str; 4] = ["PreToolUse", "Stop", "Notification", "PermissionRequest"];
+// Both constants now live in `petridish-core`, the crate every frontend and the
+// installer share, so the writer of these hook entries and the `doctor` that
+// checks them cannot drift apart. Re-exported here so existing
+// `config::HOOK_MARKER` / `config::HOOK_EVENTS` call sites keep working.
+pub use petridish_core::schema::{HOOK_EVENTS, HOOK_MARKER};
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct Config {
@@ -88,7 +79,9 @@ pub fn for_home(home: &std::path::Path) -> PathBuf {
 
 /// Default location: `~/.petridish/config.toml`, reading `$HOME` from the environment.
 pub fn default_path() -> PathBuf {
-    for_home(&PathBuf::from(std::env::var("HOME").expect("HOME must be set")))
+    for_home(&PathBuf::from(
+        std::env::var("HOME").expect("HOME must be set"),
+    ))
 }
 
 /// A single-string value from a TOML table entry — `None` when the key is missing or
@@ -107,10 +100,9 @@ fn as_string_list(table: &toml::value::Table, key: &str) -> Option<Vec<String>> 
     }
     let mut out = Vec::with_capacity(array.len());
     for v in array {
-        if let Some(s) = v.as_str() {
+        {
+            let s = v.as_str()?;
             out.push(s.to_string());
-        } else {
-            return None;
         }
     }
     Some(out)
@@ -125,7 +117,12 @@ fn as_path_list(table: &toml::value::Table, key: &str) -> Option<Vec<PathBuf>> {
         return Some(Vec::new());
     }
     let home = std::env::var("HOME").unwrap_or_default();
-    Some(items.iter().map(|s| PathBuf::from(expand_path(s, &home))).collect())
+    Some(
+        items
+            .iter()
+            .map(|s| PathBuf::from(expand_path(s, &home)))
+            .collect(),
+    )
 }
 
 /// A `{string: number}` table (`bucket_thresholds`), coerced per-key against `defaults`
@@ -176,10 +173,7 @@ fn as_float_table(
 ///
 /// Found via a gap audit: an earlier version bailed the whole table to `None` on the
 /// first non-string value.
-fn as_str_table(
-    table: &toml::value::Table,
-    key: &str,
-) -> Option<HashMap<String, String>> {
+fn as_str_table(table: &toml::value::Table, key: &str) -> Option<HashMap<String, String>> {
     let tbl = table.get(key)?.as_table()?;
     let mut out = HashMap::with_capacity(tbl.len());
     for (k, v) in tbl {
@@ -275,7 +269,11 @@ pub fn load_config(path: &std::path::Path) -> Result<Config, ConfigError> {
     if let Some(items) = as_string_list(&table, "ignore_dirs") {
         cfg.ignore_dirs = items.into_iter().collect();
     }
-    if let Some(v) = as_float_table(&table, "bucket_thresholds", &Config::default().bucket_thresholds) {
+    if let Some(v) = as_float_table(
+        &table,
+        "bucket_thresholds",
+        &Config::default().bucket_thresholds,
+    ) {
         cfg.bucket_thresholds = v;
     }
     if let Some(v) = as_str_table(&table, "category_overrides") {
@@ -283,7 +281,7 @@ pub fn load_config(path: &std::path::Path) -> Result<Config, ConfigError> {
     }
     if let Some(depth) = table.get("max_depth").and_then(|v| v.as_integer()) {
         // Booleans are rejected: `as_integer()` returns None for bools.
-        if depth >= 0 && depth <= std::u32::MAX as i64 {
+        if depth >= 0 && depth <= u32::MAX as i64 {
             cfg.max_depth = depth as u32;
         }
     }
@@ -408,7 +406,8 @@ mod tests {
         for root in &cfg.roots {
             assert!(
                 !root.to_string_lossy().starts_with('~'),
-                "expected absolute path, got {:?}", root
+                "expected absolute path, got {:?}",
+                root
             );
         }
         // And order/contents match the input (after expansion).
@@ -493,10 +492,15 @@ stale = 1440.0
         assert_eq!(cfg.category_overrides.get("*.js").unwrap(), "javascript");
         assert_eq!(cfg.category_overrides.get("*.py").unwrap(), "python");
         assert_eq!(
-            cfg.category_overrides.get("*.bad"), None,
+            cfg.category_overrides.get("*.bad"),
+            None,
             "the non-string value's key must be dropped, not crash the whole table"
         );
-        assert_eq!(cfg.category_overrides.len(), 2, "the two good keys must survive");
+        assert_eq!(
+            cfg.category_overrides.len(),
+            2,
+            "the two good keys must survive"
+        );
     }
 
     /// Sanity check: env-var prefix on a path string is expanded too.
@@ -506,6 +510,9 @@ stale = 1440.0
         let cfg = load_config(&path).expect("env-expand must succeed");
         assert_eq!(cfg.roots.len(), 1);
         let s = cfg.roots[0].to_string_lossy();
-        assert!(!s.starts_with('$'), "env var should have been expanded: {s:?}");
+        assert!(
+            !s.starts_with('$'),
+            "env var should have been expanded: {s:?}"
+        );
     }
 }

@@ -150,7 +150,10 @@ fn enter_on_a_candidate_chooses_its_program_name() {
     state.on_key(KeyCode::Down);
     assert_eq!(
         state.on_key(KeyCode::Enter),
-        Outcome::Chosen { program: "lazygit".to_string(), persist: true },
+        Outcome::Chosen {
+            program: "lazygit".to_string(),
+            persist: true
+        },
         "the answer is the bare program name — what gets stored in [tools]"
     );
 }
@@ -158,7 +161,13 @@ fn enter_on_a_candidate_chooses_its_program_name() {
 #[test]
 fn enter_on_the_first_row_chooses_without_any_movement() {
     let mut state = open();
-    assert_eq!(state.on_key(KeyCode::Enter), Outcome::Chosen { program: "serie".to_string(), persist: true });
+    assert_eq!(
+        state.on_key(KeyCode::Enter),
+        Outcome::Chosen {
+            program: "serie".to_string(),
+            persist: true
+        }
+    );
 }
 
 #[test]
@@ -169,7 +178,13 @@ fn a_fallback_is_choosable_like_any_other_row() {
     let mut state = open();
     state.on_key(KeyCode::Down);
     state.on_key(KeyCode::Down);
-    assert_eq!(state.on_key(KeyCode::Enter), Outcome::Chosen { program: "git".to_string(), persist: true });
+    assert_eq!(
+        state.on_key(KeyCode::Enter),
+        Outcome::Chosen {
+            program: "git".to_string(),
+            persist: true
+        }
+    );
 }
 
 #[test]
@@ -240,7 +255,11 @@ fn arrow_keys_do_not_move_the_cursor_in_custom_mode_either() {
     state.on_key(KeyCode::Up);
     state.on_key(KeyCode::Down);
     assert_eq!(state.selected(), before);
-    assert_eq!(state.custom_input(), Some(""), "cursor keys are not text either");
+    assert_eq!(
+        state.custom_input(),
+        Some(""),
+        "cursor keys are not text either"
+    );
 }
 
 #[test]
@@ -257,7 +276,11 @@ fn backspace_deletes_the_last_character() {
 fn backspace_on_an_empty_input_is_harmless() {
     let mut state = open_in_custom_mode();
     assert_eq!(state.on_key(KeyCode::Backspace), Outcome::Pending);
-    assert_eq!(state.custom_input(), Some(""), "must not underflow or exit the mode");
+    assert_eq!(
+        state.custom_input(),
+        Some(""),
+        "must not underflow or exit the mode"
+    );
 }
 
 #[test]
@@ -266,7 +289,13 @@ fn enter_accepts_the_typed_program() {
     for c in "jjui".chars() {
         state.on_key(KeyCode::Char(c));
     }
-    assert_eq!(state.on_key(KeyCode::Enter), Outcome::Chosen { program: "jjui".to_string(), persist: true });
+    assert_eq!(
+        state.on_key(KeyCode::Enter),
+        Outcome::Chosen {
+            program: "jjui".to_string(),
+            persist: true
+        }
+    );
 }
 
 #[test]
@@ -276,7 +305,11 @@ fn enter_on_an_empty_input_does_not_accept_an_empty_program_name() {
     // through forever while the user believed they had answered.
     let mut state = open_in_custom_mode();
     assert_eq!(state.on_key(KeyCode::Enter), Outcome::Pending);
-    assert_eq!(state.custom_input(), Some(""), "still typing, not cancelled");
+    assert_eq!(
+        state.custom_input(),
+        Some(""),
+        "still typing, not cancelled"
+    );
 }
 
 #[test]
@@ -293,7 +326,13 @@ fn the_accepted_program_name_is_trimmed() {
     for c in "  tig ".chars() {
         state.on_key(KeyCode::Char(c));
     }
-    assert_eq!(state.on_key(KeyCode::Enter), Outcome::Chosen { program: "tig".to_string(), persist: true });
+    assert_eq!(
+        state.on_key(KeyCode::Enter),
+        Outcome::Chosen {
+            program: "tig".to_string(),
+            persist: true
+        }
+    );
 }
 
 #[test]
@@ -307,7 +346,11 @@ fn esc_in_custom_mode_returns_to_the_list_rather_than_cancelling() {
     }
     assert_eq!(state.on_key(KeyCode::Esc), Outcome::Pending);
     assert_eq!(state.custom_input(), None, "back in list mode");
-    assert_eq!(state.on_key(KeyCode::Esc), Outcome::Cancelled, "the second Esc cancels");
+    assert_eq!(
+        state.on_key(KeyCode::Esc),
+        Outcome::Cancelled,
+        "the second Esc cancels"
+    );
 }
 
 #[test]
@@ -329,7 +372,11 @@ fn leaving_custom_mode_discards_what_was_typed() {
 fn the_list_cursor_survives_a_trip_through_custom_mode() {
     let mut state = open_in_custom_mode();
     state.on_key(KeyCode::Esc);
-    assert_eq!(state.selected(), 3, "still on Other, where the user left it");
+    assert_eq!(
+        state.selected(),
+        3,
+        "still on Other, where the user left it"
+    );
 }
 
 // ------------------------------------------------------------ inert keys ----
@@ -365,7 +412,10 @@ fn repick_enter_runs_once_without_touching_the_stored_default() {
     let mut state = repick();
     assert_eq!(
         state.on_key(KeyCode::Enter),
-        Outcome::Chosen { program: "serie".to_string(), persist: false },
+        Outcome::Chosen {
+            program: "serie".to_string(),
+            persist: false
+        },
         "Enter in re-pick mode is the ONE-OFF verb"
     );
 }
@@ -376,7 +426,10 @@ fn repick_shift_d_adopts_the_highlighted_tool_as_the_new_default() {
     state.on_key(KeyCode::Down);
     assert_eq!(
         state.on_key(KeyCode::Char('D')),
-        Outcome::Chosen { program: "lazygit".to_string(), persist: true },
+        Outcome::Chosen {
+            program: "lazygit".to_string(),
+            persist: true
+        },
         "D re-defaults AND launches"
     );
 }
@@ -388,11 +441,18 @@ fn first_run_enter_still_stores_and_d_is_inert_there() {
     // advertised in that mode, and a hidden key that silently re-defaults
     // would be worse than no key.
     let mut state = open();
-    assert_eq!(state.on_key(KeyCode::Char('D')), Outcome::Pending, "D is inert in first-run");
+    assert_eq!(
+        state.on_key(KeyCode::Char('D')),
+        Outcome::Pending,
+        "D is inert in first-run"
+    );
     assert_eq!(state.selected(), 0, "D must not move the cursor either");
     assert_eq!(
         state.on_key(KeyCode::Enter),
-        Outcome::Chosen { program: "serie".to_string(), persist: true },
+        Outcome::Chosen {
+            program: "serie".to_string(),
+            persist: true
+        },
     );
 }
 
@@ -408,14 +468,24 @@ fn the_custom_path_field_inherits_the_verb_that_opened_it() {
         once.on_key(KeyCode::Down);
     }
     once.on_key(KeyCode::Enter);
-    assert_eq!(once.custom_input(), Some(""), "Enter on Other opens the field");
-    assert!(!once.custom_persists(), "opened with Enter -> run-once flavour");
+    assert_eq!(
+        once.custom_input(),
+        Some(""),
+        "Enter on Other opens the field"
+    );
+    assert!(
+        !once.custom_persists(),
+        "opened with Enter -> run-once flavour"
+    );
     for c in "mytui".chars() {
         once.on_key(KeyCode::Char(c));
     }
     assert_eq!(
         once.on_key(KeyCode::Enter),
-        Outcome::Chosen { program: "mytui".to_string(), persist: false },
+        Outcome::Chosen {
+            program: "mytui".to_string(),
+            persist: false
+        },
         "committing inherits run-once, not the key that committed it"
     );
 
@@ -424,14 +494,24 @@ fn the_custom_path_field_inherits_the_verb_that_opened_it() {
         default.on_key(KeyCode::Down);
     }
     default.on_key(KeyCode::Char('D'));
-    assert_eq!(default.custom_input(), Some(""), "D on Other also opens the field");
-    assert!(default.custom_persists(), "opened with D -> set-default flavour");
+    assert_eq!(
+        default.custom_input(),
+        Some(""),
+        "D on Other also opens the field"
+    );
+    assert!(
+        default.custom_persists(),
+        "opened with D -> set-default flavour"
+    );
     for c in "mytui".chars() {
         default.on_key(KeyCode::Char(c));
     }
     assert_eq!(
         default.on_key(KeyCode::Enter),
-        Outcome::Chosen { program: "mytui".to_string(), persist: true },
+        Outcome::Chosen {
+            program: "mytui".to_string(),
+            persist: true
+        },
     );
 }
 
@@ -469,6 +549,10 @@ fn a_repick_on_a_machine_with_nothing_installed_still_offers_other() {
     // the popup must still be usable: `Other — specify path…` is always a row.
     let mut state = PickerState::repick(&action(), vec![]);
     assert_eq!(state.options().len(), 1, "just the escape hatch");
-    assert_eq!(state.on_key(KeyCode::Enter), Outcome::Pending, "opens the field");
+    assert_eq!(
+        state.on_key(KeyCode::Enter),
+        Outcome::Pending,
+        "opens the field"
+    );
     assert_eq!(state.custom_input(), Some(""));
 }

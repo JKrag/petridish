@@ -127,9 +127,7 @@ fn fold_one_hash(
     let key = resolved.to_string_lossy().into_owned();
 
     // Two hashes mapping to the same root: the one with the newer `at` wins.
-    let dominated = signals
-        .get(&key)
-        .is_some_and(|existing| existing.at >= at);
+    let dominated = signals.get(&key).is_some_and(|existing| existing.at >= at);
     if !dominated {
         signals.insert(
             key,
@@ -204,11 +202,12 @@ mod tests {
     use std::time::{Duration, SystemTime};
 
     fn test_config(roots: Vec<std::path::PathBuf>) -> Config {
-        let mut cfg = Config::default();
-        cfg.roots = roots;
-        cfg.extra_paths = vec![];
-        cfg.ignore_dirs = HashSet::new();
-        cfg
+        Config {
+            roots,
+            extra_paths: vec![],
+            ignore_dirs: HashSet::new(),
+            ..Config::default()
+        }
     }
 
     struct Tmp {
@@ -216,8 +215,7 @@ mod tests {
     }
     impl Tmp {
         fn new(suffix: &str) -> Self {
-            let path = std::env::temp_dir()
-                .join(format!("swab_copilot_test_{suffix}"));
+            let path = std::env::temp_dir().join(format!("swab_copilot_test_{suffix}"));
             let _ = std::fs::remove_dir_all(&path);
             std::fs::create_dir_all(&path).expect("mktemp");
             Self { path }
@@ -244,11 +242,7 @@ mod tests {
         std::fs::write(path, content).expect("write json file");
     }
 
-    fn write_file_set_mtime<P: AsRef<Path>, C: AsRef<[u8]>>(
-        path: P,
-        content: C,
-        seconds_ago: u64,
-    ) {
+    fn write_file_set_mtime<P: AsRef<Path>, C: AsRef<[u8]>>(path: P, content: C, seconds_ago: u64) {
         let path = path.as_ref();
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent).expect("mkdir parent");
@@ -276,11 +270,7 @@ mod tests {
             r#"{"folder": "file:///fake/repo"}"#,
             0,
         );
-        write_file_set_mtime(
-            hash1.join("chatSessions").join("s.jsonl"),
-            b"x",
-            0,
-        );
+        write_file_set_mtime(hash1.join("chatSessions").join("s.jsonl"), b"x", 0);
 
         let cfg = test_config(vec![tmp.path.clone()]);
         let signals = scan(&ws, &cfg, 1440);
@@ -311,7 +301,10 @@ mod tests {
 
         let cfg = test_config(vec![tmp.path.clone()]);
         let signals = scan(&ws, &cfg, 1440);
-        assert!(signals.is_empty(), "hash without chatSessions/ must not emit a signal");
+        assert!(
+            signals.is_empty(),
+            "hash without chatSessions/ must not emit a signal"
+        );
     }
 
     // Test 3: a hash missing workspace.json is skipped.
@@ -325,15 +318,14 @@ mod tests {
 
         let hash1 = ws.join("abc123");
         std::fs::create_dir_all(hash1.join("chatSessions")).expect("mkdir");
-        write_file_set_mtime(
-            hash1.join("chatSessions").join("s.jsonl"),
-            b"x",
-            0,
-        );
+        write_file_set_mtime(hash1.join("chatSessions").join("s.jsonl"), b"x", 0);
 
         let cfg = test_config(vec![tmp.path.clone()]);
         let signals = scan(&ws, &cfg, 1440);
-        assert!(signals.is_empty(), "hash without workspace.json must not emit a signal");
+        assert!(
+            signals.is_empty(),
+            "hash without workspace.json must not emit a signal"
+        );
     }
 
     // Test 4: malformed JSON in workspace.json is skipped without aborting other hashes.
@@ -348,11 +340,7 @@ mod tests {
         let hash1 = ws.join("bad-json");
         std::fs::create_dir_all(hash1.join("chatSessions")).expect("mkdir");
         write_file_set_mtime(hash1.join("workspace.json"), b"NOT JSON", 0);
-        write_file_set_mtime(
-            hash1.join("chatSessions").join("s.jsonl"),
-            b"x",
-            0,
-        );
+        write_file_set_mtime(hash1.join("chatSessions").join("s.jsonl"), b"x", 0);
 
         let hash2 = ws.join("good");
         std::fs::create_dir_all(hash2.join("chatSessions")).expect("mkdir");
@@ -361,11 +349,7 @@ mod tests {
             r#"{"folder": "file:///fake/repo"}"#,
             0,
         );
-        write_file_set_mtime(
-            hash2.join("chatSessions").join("s.jsonl"),
-            b"x",
-            0,
-        );
+        write_file_set_mtime(hash2.join("chatSessions").join("s.jsonl"), b"x", 0);
 
         let cfg = test_config(vec![tmp.path.clone()]);
         let signals = scan(&ws, &cfg, 1440);
@@ -442,15 +426,25 @@ mod tests {
         .expect("now-as-epoch");
         // Allow a few seconds of tolerance for clock drift during the test.
         let diff = (sig.at - expected).num_seconds().unsigned_abs();
-        assert!(diff < 5, "at should match newer mtime (30s ago), got diff={diff}s");
+        assert!(
+            diff < 5,
+            "at should match newer mtime (30s ago), got diff={diff}s"
+        );
     }
 
     // Test 7: missing workspace_storage_dir -> empty map, no panic.
     #[test]
     fn missing_dir_yields_empty_map() {
         let cfg = test_config(vec![]);
-        let signals = scan(std::path::Path::new("/definitely/does/not/exist"), &cfg, 1440);
-        assert!(signals.is_empty(), "missing dir must not yield signals and must not panic");
+        let signals = scan(
+            std::path::Path::new("/definitely/does/not/exist"),
+            &cfg,
+            1440,
+        );
+        assert!(
+            signals.is_empty(),
+            "missing dir must not yield signals and must not panic"
+        );
     }
 
     // Test 8: two hashes resolving to the same root -> one signal, newest wins.
@@ -473,11 +467,7 @@ mod tests {
                 r#"{"folder": "file:///fake/repo"}"#,
                 seconds_ago,
             );
-            write_file_set_mtime(
-                h.join("chatSessions").join("s.jsonl"),
-                b"x",
-                seconds_ago,
-            );
+            write_file_set_mtime(h.join("chatSessions").join("s.jsonl"), b"x", seconds_ago);
         }
 
         let cfg = test_config(vec![tmp.path.clone()]);
@@ -516,11 +506,7 @@ mod tests {
             r#"{"folder": ["/fake/a", "/fake/b"]}"#,
             0,
         );
-        write_file_set_mtime(
-            h.join("chatSessions").join("s.jsonl"),
-            b"x",
-            0,
-        );
+        write_file_set_mtime(h.join("chatSessions").join("s.jsonl"), b"x", 0);
     }
 
     // Additional: a hash with an empty `chatSessions/` directory contributes no signal.
@@ -535,13 +521,16 @@ mod tests {
         let h = ws.join("empty");
         std::fs::create_dir_all(h.join("chatSessions")).expect("mkdir");
         write_json_file(
-            &h.join("workspace.json"),
+            h.join("workspace.json"),
             r#"{"folder": "file:///fake/repo"}"#,
         );
 
         let cfg = test_config(vec![tmp.path.clone()]);
         let signals = scan(&ws, &cfg, 1440);
-        assert!(signals.is_empty(), "empty chatSessions must not yield a signal");
+        assert!(
+            signals.is_empty(),
+            "empty chatSessions must not yield a signal"
+        );
     }
 
     // Regression: an earlier version of `scan()` had no `cold_cutoff_hours` parameter at
@@ -559,19 +548,30 @@ mod tests {
 
         let h = ws.join("stale");
         std::fs::create_dir_all(h.join("chatSessions")).expect("mkdir");
-        write_json_file(&h.join("workspace.json"), r#"{"folder": "file:///fake/repo"}"#);
+        write_json_file(
+            h.join("workspace.json"),
+            r#"{"folder": "file:///fake/repo"}"#,
+        );
         // 2000 hours ago -- well past the default 1440h (60-day) cutoff.
-        write_file_set_mtime(h.join("chatSessions").join("old.jsonl"), b"old", 2000 * 3600);
+        write_file_set_mtime(
+            h.join("chatSessions").join("old.jsonl"),
+            b"old",
+            2000 * 3600,
+        );
 
         let cfg = test_config(vec![tmp.path.clone()]);
         let signals = scan(&ws, &cfg, 1440);
-        assert!(signals.is_empty(), "a chat session older than the cutoff must not yield a signal");
+        assert!(
+            signals.is_empty(),
+            "a chat session older than the cutoff must not yield a signal"
+        );
 
         // Same fixture, but with a cutoff wide enough to include it -- confirms the skip
         // above is genuinely the cutoff doing its job, not some other bug hiding the signal.
         let signals_with_wide_cutoff = scan(&ws, &cfg, 3000);
         assert_eq!(
-            signals_with_wide_cutoff.len(), 1,
+            signals_with_wide_cutoff.len(),
+            1,
             "the same session must produce a signal once the cutoff is wide enough"
         );
     }

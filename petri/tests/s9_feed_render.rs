@@ -12,9 +12,7 @@
 
 use petri::dashboard::{DashboardState, feed_rows_for, plan_layout};
 use petri::feed::{FeedKind, FeedState, feed_block_lines};
-use petridish_core::schema::{
-    AgentActivity, AgentState, GitState, Project, Radar, StatusBucket,
-};
+use petridish_core::schema::{AgentActivity, AgentState, GitState, Project, Radar, StatusBucket};
 use ratatui::{Terminal, backend::TestBackend, layout::Rect};
 
 fn ts(s: &str) -> chrono::DateTime<chrono::Utc> {
@@ -51,6 +49,31 @@ fn with_agent(mut p: Project, who: &str, event: &str, at: &str) -> Project {
     p
 }
 
+/// A radar whose `updated_at` is *now*, for tests that go through
+/// `dashboard::render`.
+///
+/// Load-bearing, and it cost a day to learn why. `render` compares the radar's
+/// `updated_at` against the real `chrono::Utc::now()` to decide whether to draw
+/// the stale banner (`dashboard.rs`'s `elapsed_secs > 86400`). A fixture pinned
+/// to an absolute past date is therefore a time bomb: every test here used
+/// `2026-09-03T20:00:00Z`, which passed all day and then began failing at
+/// exactly 20:00 UTC the following day, when the fixture crossed 24 hours old
+/// and the banner appeared — consuming the row the feed needed in a 14-row
+/// terminal.
+///
+/// Tests that call `feed_block_lines` directly are unaffected: they are handed
+/// `now` explicitly and are genuinely deterministic. Only the ones that render
+/// need this.
+fn fresh_radar(projects: Vec<Project>) -> Radar {
+    Radar {
+        schema_version: 1,
+        updated_at: chrono::Utc::now(),
+        scan_duration_ms: 0,
+        projects,
+        quota: None,
+    }
+}
+
 fn radar_at(updated_at: &str, projects: Vec<Project>) -> Radar {
     Radar {
         schema_version: 1,
@@ -65,7 +88,13 @@ fn radar_at(updated_at: &str, projects: Vec<Project>) -> Radar {
 /// reason about when setting up a truncation case.
 fn fleet(n: usize) -> Vec<Project> {
     (0..n)
-        .map(|i| project(&format!("p{i}"), &format!("proj-{i:02}"), StatusBucket::InFlight))
+        .map(|i| {
+            project(
+                &format!("p{i}"),
+                &format!("proj-{i:02}"),
+                StatusBucket::InFlight,
+            )
+        })
         .collect()
 }
 
@@ -109,11 +138,18 @@ fn joined(rows: &[String]) -> String {
 /// on an out-of-range timestamp. Caught by `block_is_exactly_the_rows_it_was_given`, which
 /// originally asked for 20.
 fn feed_of(n: usize) -> FeedState {
-    assert!(n < 16, "feed_of stamps hour 8+i; n={n} would run past 23:00");
+    assert!(
+        n < 16,
+        "feed_of stamps hour 8+i; n={n} would run past 23:00"
+    );
     let projects: Vec<Project> = (0..n)
         .map(|i| {
             with_agent(
-                project(&format!("p{i}"), &format!("proj-{i:02}"), StatusBucket::Active),
+                project(
+                    &format!("p{i}"),
+                    &format!("proj-{i:02}"),
+                    StatusBucket::Active,
+                ),
                 "claude-code",
                 "Stop",
                 &format!("2026-09-03T{:02}:00:00Z", 8 + i),
@@ -179,10 +215,22 @@ fn feed_claims_only_what_it_can_fill() {
 fn feed_gets_nothing_when_too_few_rows_remain() {
     // 3 spare rows cannot carry a rule + label + two events; an almost-empty labelled box
     // is worse than no box.
-    assert_eq!(feed_rows_for(false, 40, 38, &[], &[], 30), 0, "2 spare rows is below the floor");
-    assert_eq!(feed_rows_for(false, 40, 37, &[], &[], 30), 3, "3 is exactly the floor");
+    assert_eq!(
+        feed_rows_for(false, 40, 38, &[], &[], 30),
+        0,
+        "2 spare rows is below the floor"
+    );
+    assert_eq!(
+        feed_rows_for(false, 40, 37, &[], &[], 30),
+        3,
+        "3 is exactly the floor"
+    );
     assert_eq!(feed_rows_for(false, 40, 40, &[], &[], 30), 0);
-    assert_eq!(feed_rows_for(false, 40, 41, &[], &[], 30), 0, "must not underflow past `used`");
+    assert_eq!(
+        feed_rows_for(false, 40, 41, &[], &[], 30),
+        0,
+        "must not underflow past `used`"
+    );
 }
 
 #[test]
@@ -193,7 +241,11 @@ fn leftover_beside_a_truncated_section_is_too_small_for_another_card() {
     let projects: Vec<Project> = (0..24)
         .map(|i| {
             with_agent(
-                project(&format!("r{i}"), &format!("run-{i:02}"), StatusBucket::Active),
+                project(
+                    &format!("r{i}"),
+                    &format!("run-{i:02}"),
+                    StatusBucket::Active,
+                ),
                 "claude-code",
                 "PreToolUse",
                 "2026-09-03T09:00:00Z",
@@ -201,9 +253,17 @@ fn leftover_beside_a_truncated_section_is_too_small_for_another_card() {
         })
         .collect();
     let radar = radar_at("2026-09-03T09:30:00Z", projects);
-    let plan = plan_layout(Rect::new(0, 0, 70, 30), &radar, [false, false, false, false], 30);
+    let plan = plan_layout(
+        Rect::new(0, 0, 70, 30),
+        &radar,
+        [false, false, false, false],
+        30,
+    );
 
-    let truncated = plan.sections.iter().any(|s| s.truncated_remaining.is_some());
+    let truncated = plan
+        .sections
+        .iter()
+        .any(|s| s.truncated_remaining.is_some());
     let skipped = !plan.skipped.is_empty();
     assert!(
         truncated || skipped,
@@ -224,7 +284,11 @@ fn leftover_beside_a_truncated_section_is_too_small_for_another_card() {
 fn block_is_exactly_the_rows_it_was_given() {
     for rows in [4usize, 6, 12] {
         let lines = feed_block_lines(&feed_of(15), ts("2026-09-03T20:00:00Z"), 80, rows);
-        assert_eq!(lines.len(), rows, "block must fill its rect exactly at rows={rows}");
+        assert_eq!(
+            lines.len(),
+            rows,
+            "block must fill its rect exactly at rows={rows}"
+        );
     }
 }
 
@@ -246,9 +310,12 @@ fn block_draws_no_rule_of_its_own() {
         "the block must start at its label, got {first:?}"
     );
     assert!(
-        !lines
+        !lines.iter().any(|l| l
+            .spans
             .iter()
-            .any(|l| l.spans.iter().map(|s| s.content.as_ref()).collect::<String>().contains("──")),
+            .map(|s| s.content.as_ref())
+            .collect::<String>()
+            .contains("──")),
         "the block must draw no rule"
     );
 }
@@ -258,7 +325,12 @@ fn block_is_labelled_and_lists_newest_first() {
     let lines = feed_block_lines(&feed_of(6), ts("2026-09-03T20:00:00Z"), 80, 6);
     let text: Vec<String> = lines
         .iter()
-        .map(|l| l.spans.iter().map(|s| s.content.as_ref()).collect::<String>())
+        .map(|l| {
+            l.spans
+                .iter()
+                .map(|s| s.content.as_ref())
+                .collect::<String>()
+        })
         .collect();
 
     assert!(
@@ -305,12 +377,19 @@ fn rows_are_truncated_to_width_never_wrapped() {
     // constraint); a row wider than the pane would push content off the edge silently.
     let mut feed = FeedState::default();
     feed.ingest(
-        &radar_at("2026-09-03T08:00:00Z", vec![project("a", "alpha", StatusBucket::Cold)]),
+        &radar_at(
+            "2026-09-03T08:00:00Z",
+            vec![project("a", "alpha", StatusBucket::Cold)],
+        ),
         &radar_at(
             "2026-09-03T09:00:00Z",
             vec![
                 project("a", "alpha", StatusBucket::Cold),
-                project("b", &"very-long-project-name-".repeat(6), StatusBucket::Cold),
+                project(
+                    "b",
+                    &"very-long-project-name-".repeat(6),
+                    StatusBucket::Cold,
+                ),
             ],
         ),
     );
@@ -337,13 +416,22 @@ fn block_does_not_panic_on_a_hostile_width() {
 fn absorb_seeds_the_feed_on_the_very_first_snapshot() {
     let fresh = radar_at(
         "2026-09-03T09:00:00Z",
-        vec![with_agent(project("a", "alpha", StatusBucket::Active), "claude-code", "Stop", "2026-09-03T08:55:00Z")],
+        vec![with_agent(
+            project("a", "alpha", StatusBucket::Active),
+            "claude-code",
+            "Stop",
+            "2026-09-03T08:55:00Z",
+        )],
     );
     let mut feed = FeedState::default();
     let last_good = petri::absorb_snapshot(&mut feed, None, fresh);
 
     assert!(last_good.is_some(), "the fresh snapshot becomes last_good");
-    assert_eq!(feed.len(), 1, "a first read seeds rather than diffing against nothing");
+    assert_eq!(
+        feed.len(),
+        1,
+        "a first read seeds rather than diffing against nothing"
+    );
     assert_eq!(feed.events().front().unwrap().kind, FeedKind::Agent);
 }
 
@@ -353,17 +441,31 @@ fn absorb_diffs_against_the_previous_snapshot_before_replacing_it() {
     // feed permanently empty, on a path no unit test naturally reaches.
     let prev = radar_at(
         "2026-09-03T09:00:00Z",
-        vec![with_agent(project("a", "alpha", StatusBucket::Active), "claude-code", "PreToolUse", "2026-09-03T08:55:00Z")],
+        vec![with_agent(
+            project("a", "alpha", StatusBucket::Active),
+            "claude-code",
+            "PreToolUse",
+            "2026-09-03T08:55:00Z",
+        )],
     );
     let next = radar_at(
         "2026-09-03T09:05:00Z",
-        vec![with_agent(project("a", "alpha", StatusBucket::Active), "claude-code", "Stop", "2026-09-03T09:04:00Z")],
+        vec![with_agent(
+            project("a", "alpha", StatusBucket::Active),
+            "claude-code",
+            "Stop",
+            "2026-09-03T09:04:00Z",
+        )],
     );
 
     let mut feed = FeedState::default();
     let last_good = petri::absorb_snapshot(&mut feed, Some(prev), next);
 
-    assert_eq!(feed.len(), 1, "the advance between the two snapshots must produce a row");
+    assert_eq!(
+        feed.len(),
+        1,
+        "the advance between the two snapshots must produce a row"
+    );
     let e = feed.events().front().unwrap();
     assert_eq!(e.at, ts("2026-09-03T09:04:00Z"));
     assert_eq!(e.detail, "claude-code stop");
@@ -392,17 +494,26 @@ fn absorb_accumulates_across_several_reloads() {
     }
     // One seeded row, then three diffs.
     assert_eq!(feed.len(), 4);
-    assert_eq!(feed.events().front().unwrap().at, ts("2026-09-03T12:00:00Z"));
+    assert_eq!(
+        feed.events().front().unwrap().at,
+        ts("2026-09-03T12:00:00Z")
+    );
 }
 
 // ------------------------------------------------------------------ rendered result
 
 #[test]
 fn a_tall_dashboard_draws_the_feed() {
-    let radar = radar_at("2026-09-03T20:00:00Z", fleet(4));
+    let radar = fresh_radar(fleet(4));
     let screen = joined(&render_rows(&radar, &feed_of(6), 100, 44));
-    assert!(screen.contains("ACTIVITY"), "tall terminal, small fleet: expected a feed block");
-    assert!(screen.contains("proj-05"), "expected the newest feed row on screen");
+    assert!(
+        screen.contains("ACTIVITY"),
+        "tall terminal, small fleet: expected a feed block"
+    );
+    assert!(
+        screen.contains("proj-05"),
+        "expected the newest feed row on screen"
+    );
 }
 
 #[test]
@@ -410,9 +521,12 @@ fn a_short_dashboard_still_spends_its_leftover_on_the_feed() {
     // Retired premise: this used to assert the compact tier never draws a feed. Four
     // projects fit in a 14-row terminal with rows to spare, and those rows were blank —
     // a small terminal has no more use for a blank row than a tall one does.
-    let radar = radar_at("2026-09-03T20:00:00Z", fleet(4));
+    let radar = fresh_radar(fleet(4));
     let screen = joined(&render_rows(&radar, &feed_of(6), 100, 14));
-    assert!(screen.contains("ACTIVITY"), "leftover rows should carry the feed");
+    assert!(
+        screen.contains("ACTIVITY"),
+        "leftover rows should carry the feed"
+    );
     for i in 0..4 {
         assert!(
             screen.contains(&format!("proj-{i:02}")),
@@ -425,7 +539,7 @@ fn a_short_dashboard_still_spends_its_leftover_on_the_feed() {
 fn a_full_dashboard_draws_no_feed() {
     // The case that actually matters: when the fleet consumes the budget there is nothing
     // left, and the feed must not take a row from it.
-    let radar = radar_at("2026-09-03T20:00:00Z", fleet(40));
+    let radar = fresh_radar(fleet(40));
     let rows = render_rows(&radar, &feed_of(6), 100, 14);
     assert!(
         !joined(&rows).contains("ACTIVITY"),
@@ -435,9 +549,12 @@ fn a_full_dashboard_draws_no_feed() {
 
 #[test]
 fn the_feed_sits_below_the_fleet_not_above_it() {
-    let radar = radar_at("2026-09-03T20:00:00Z", fleet(4));
+    let radar = fresh_radar(fleet(4));
     let rows = render_rows(&radar, &feed_of(6), 100, 44);
-    let activity = rows.iter().position(|r| r.contains("ACTIVITY")).expect("feed drawn");
+    let activity = rows
+        .iter()
+        .position(|r| r.contains("ACTIVITY"))
+        .expect("feed drawn");
     // Compare against the section header rather than a project row: feed rows also carry
     // project names, so "the last row mentioning a project" is not a fleet landmark.
     let section = rows
@@ -452,7 +569,7 @@ fn the_feed_sits_below_the_fleet_not_above_it() {
 
 #[test]
 fn rendering_with_a_feed_does_not_panic_at_hostile_sizes() {
-    let radar = radar_at("2026-09-03T20:00:00Z", fleet(30));
+    let radar = fresh_radar(fleet(30));
     for (w, h) in [(40u16, 10u16), (1, 1), (80, 24), (200, 60), (40, 44)] {
         let _ = render_rows(&radar, &feed_of(8), w, h);
     }
@@ -482,16 +599,30 @@ fn rows_are_tinted_by_what_produced_them() {
     feed.ingest(
         &radar_at(
             "2026-09-03T08:00:00Z",
-            vec![with_agent(project("a", "alpha", StatusBucket::Active), "claude-code", "Stop", "2026-09-03T07:00:00Z")],
+            vec![with_agent(
+                project("a", "alpha", StatusBucket::Active),
+                "claude-code",
+                "Stop",
+                "2026-09-03T07:00:00Z",
+            )],
         ),
         &radar_at(
             "2026-09-03T09:00:00Z",
-            vec![with_agent(project("a", "alpha", StatusBucket::InFlight), "claude-code", "Stop", "2026-09-03T08:30:00Z")],
+            vec![with_agent(
+                project("a", "alpha", StatusBucket::InFlight),
+                "claude-code",
+                "Stop",
+                "2026-09-03T08:30:00Z",
+            )],
         ),
     );
     // One Bucket row and one Agent row, in that order (newest first).
     let kinds: Vec<FeedKind> = feed.events().iter().map(|e| e.kind).collect();
-    assert_eq!(kinds, vec![FeedKind::Bucket, FeedKind::Agent], "fixture precondition");
+    assert_eq!(
+        kinds,
+        vec![FeedKind::Bucket, FeedKind::Agent],
+        "fixture precondition"
+    );
 
     let lines = feed_block_lines(&feed, ts("2026-09-03T20:00:00Z"), 80, 4);
     // span 0 is the time field, span 1 the body — kind tints the body. Indexed through a
@@ -512,20 +643,38 @@ fn a_clock_and_a_date_are_visually_distinct() {
     // only way this block is ever read.
     let mut feed = FeedState::default();
     feed.ingest(
-        &radar_at("2026-09-01T08:00:00Z", vec![project("a", "alpha", StatusBucket::Active)]),
+        &radar_at(
+            "2026-09-01T08:00:00Z",
+            vec![project("a", "alpha", StatusBucket::Active)],
+        ),
         &radar_at(
             "2026-09-02T23:14:00Z",
-            vec![with_agent(project("a", "alpha", StatusBucket::Active), "claude-code", "Stop", "2026-09-02T23:14:00Z")],
+            vec![with_agent(
+                project("a", "alpha", StatusBucket::Active),
+                "claude-code",
+                "Stop",
+                "2026-09-02T23:14:00Z",
+            )],
         ),
     );
     feed.ingest(
         &radar_at(
             "2026-09-02T23:15:00Z",
-            vec![with_agent(project("b", "bravo", StatusBucket::Active), "claude-code", "Stop", "2026-09-02T23:14:00Z")],
+            vec![with_agent(
+                project("b", "bravo", StatusBucket::Active),
+                "claude-code",
+                "Stop",
+                "2026-09-02T23:14:00Z",
+            )],
         ),
         &radar_at(
             "2026-09-03T04:58:00Z",
-            vec![with_agent(project("b", "bravo", StatusBucket::Active), "claude-code", "Stop", "2026-09-03T04:58:00Z")],
+            vec![with_agent(
+                project("b", "bravo", StatusBucket::Active),
+                "claude-code",
+                "Stop",
+                "2026-09-03T04:58:00Z",
+            )],
         ),
     );
 
@@ -537,8 +686,16 @@ fn a_clock_and_a_date_are_visually_distinct() {
         .map(|l| l.spans.iter().map(|s| s.content.as_ref()).collect())
         .collect();
 
-    assert!(texts[0].contains("04:58"), "newest row is today's clock, got {:?}", texts[0]);
-    assert!(texts[1].contains("09-02"), "older row is a date, got {:?}", texts[1]);
+    assert!(
+        texts[0].contains("04:58"),
+        "newest row is today's clock, got {:?}",
+        texts[0]
+    );
+    assert!(
+        texts[1].contains("09-02"),
+        "older row is a date, got {:?}",
+        texts[1]
+    );
     assert_ne!(
         stamps[0], stamps[1],
         "today's clock and an earlier day's date must not share a colour"

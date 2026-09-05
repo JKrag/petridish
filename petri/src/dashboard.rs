@@ -50,7 +50,6 @@ const COMPACT_TIER_MAX_CONTENT_ROWS: usize = 16;
 /// its own — the section above it always ends in one; see `feed::feed_block_lines`.)
 const FEED_MIN_ROWS: usize = 3;
 
-
 /// Minimum roomy-card width before a second grid column is added. Below this a real branch
 /// name (`analysis/cross-registry-identity`) and its `git`/`agent` zone rows have no room to
 /// stay legible — chosen from the card's actual content budget (indent + `ZONE_LABEL_WIDTH` +
@@ -73,8 +72,9 @@ const MIN_COMPACT_COL_WIDTH: usize = 45;
 /// ("999d ago", 8) + gap + the `[gh]` marker (4), then the sparkline (`GIT_ACTIVITY_WINDOW_DAYS`
 /// samples) + its 2-space gap + `"14d"` tag, plus one more gap column so the two halves never
 /// touch.
-const MIN_INFLIGHT_COL_WIDTH: usize =
-    (1 + 26 + 1 + 22 + 1 + 4 + 1 + 8 + 1 + 4) + 1 + (petridish_core::schema::GIT_ACTIVITY_WINDOW_DAYS + 2 + 3);
+const MIN_INFLIGHT_COL_WIDTH: usize = (1 + 26 + 1 + 22 + 1 + 4 + 1 + 8 + 1 + 4)
+    + 1
+    + (petridish_core::schema::GIT_ACTIVITY_WINDOW_DAYS + 2 + 3);
 /// Column cap for either grid. Past this, cards get so narrow that branch names and paths
 /// truncate more than they inform — screen-fill should come from wider cards claiming the
 /// extra width, not an unbounded column count.
@@ -169,7 +169,10 @@ pub struct DashboardState {
 /// Position of a `StatusBucket` in `SECTION_ORDER`. Panics if not found (all
 /// valid buckets are in the order by construction).
 fn section_index(bucket: &StatusBucket) -> usize {
-    SECTION_ORDER.iter().position(|b| b == bucket).expect("bucket not in SECTION_ORDER")
+    SECTION_ORDER
+        .iter()
+        .position(|b| b == bucket)
+        .expect("bucket not in SECTION_ORDER")
 }
 
 /// Ceiling on how far "quietest first" can promote a project up the RUNNING
@@ -201,7 +204,10 @@ pub fn is_waiting(p: &Project) -> bool {
 /// maximally silent, same convention the pre-ceiling sort used.
 fn silence_secs_for_sort(p: &Project) -> i64 {
     match p.last_activity_at {
-        Some(dt) => chrono::Utc::now().signed_duration_since(dt).num_seconds().max(0),
+        Some(dt) => chrono::Utc::now()
+            .signed_duration_since(dt)
+            .num_seconds()
+            .max(0),
         None => i64::MAX,
     }
 }
@@ -234,10 +240,10 @@ impl DashboardState {
                 // parent_path points back at this project's own path) that is
                 // itself Active? (Not the other direction: this project's own
                 // parent_path pointing at something active.)
-                radar
-                    .projects
-                    .iter()
-                    .any(|c| c.parent_path.as_deref() == Some(p.path.as_str()) && c.status_bucket == StatusBucket::Active)
+                radar.projects.iter().any(|c| {
+                    c.parent_path.as_deref() == Some(p.path.as_str())
+                        && c.status_bucket == StatusBucket::Active
+                })
             })
             .map(|(idx, _)| idx)
             .collect();
@@ -439,7 +445,11 @@ impl DashboardState {
         // Headers are always present (they're the load-bearing stops that
         // survive collapse), so we can safely find this section's header
         // again in the rebuilt visible list.
-        if let Some(header_pos) = self.visible.iter().position(|r| *r == DashRow::Header(bucket)) {
+        if let Some(header_pos) = self
+            .visible
+            .iter()
+            .position(|r| *r == DashRow::Header(bucket))
+        {
             self.selected = Some(header_pos);
         }
     }
@@ -597,7 +607,10 @@ pub fn plan_layout(
     feed_events: usize,
 ) -> DashPlan {
     let width = area.width as usize;
-    let elapsed_secs = chrono::Utc::now().signed_duration_since(radar.updated_at).num_seconds().max(0);
+    let elapsed_secs = chrono::Utc::now()
+        .signed_duration_since(radar.updated_at)
+        .num_seconds()
+        .max(0);
     let is_stale = elapsed_secs > 86400;
 
     // 2 header rows (title + heavy rule) + 2 footer rows (light rule + keymap) + 1 reserved row
@@ -607,7 +620,9 @@ pub fn plan_layout(
     // fit even their own header, and without an always-reserved row they vanished with zero
     // indication, which is exactly the silent-truncation failure mode SPEC.md §3.2 rules out.
     let fixed_rows = 2 + 2 + usize::from(is_stale);
-    let fleet_rows = (area.height as usize).saturating_sub(fixed_rows).saturating_sub(1);
+    let fleet_rows = (area.height as usize)
+        .saturating_sub(fixed_rows)
+        .saturating_sub(1);
     let compact_tier = fleet_rows <= COMPACT_TIER_MAX_CONTENT_ROWS;
 
     let mut sections: Vec<SectionPlan> = Vec::new();
@@ -719,8 +734,21 @@ pub fn plan_layout(
         });
     }
 
-    let feed_rows = feed_rows_for(compact_tier, fleet_rows, used, &sections, &skipped, feed_events);
-    DashPlan { compact_tier, fleet_rows, sections, skipped, feed_rows }
+    let feed_rows = feed_rows_for(
+        compact_tier,
+        fleet_rows,
+        used,
+        &sections,
+        &skipped,
+        feed_events,
+    );
+    DashPlan {
+        compact_tier,
+        fleet_rows,
+        sections,
+        skipped,
+        feed_rows,
+    }
 }
 
 /// Render the Dashboard into `frame`. Per petri/SPEC.md §3.2, and following petripy's actual
@@ -761,7 +789,10 @@ pub fn render(
     }
     let width = area.width as usize;
 
-    let elapsed_secs = chrono::Utc::now().signed_duration_since(radar.updated_at).num_seconds().max(0);
+    let elapsed_secs = chrono::Utc::now()
+        .signed_duration_since(radar.updated_at)
+        .num_seconds()
+        .max(0);
     let is_stale = elapsed_secs > 86400;
 
     let now = chrono::Utc::now();
@@ -777,7 +808,10 @@ pub fn render(
     ])
     .areas(area);
 
-    frame.render_widget(Paragraph::new(header_lines(radar, &now, scan_secs, width)), header_area);
+    frame.render_widget(
+        Paragraph::new(header_lines(radar, &now, scan_secs, width)),
+        header_area,
+    );
 
     if is_stale {
         // `▲`, not `⚠` — the latter (U+26A0, Unicode 4.0) is the exact
@@ -787,8 +821,14 @@ pub fn render(
         // reusing the one glyph proven to do exactly that here would be
         // ironic at best.
         let banner = Line::from(Span::styled(
-            format!(" ▲ Data stale (updated {} ago)", humanize_secs(elapsed_secs as u64)),
-            Style::default().fg(Color::Black).bg(theme::DANGER).add_modifier(Modifier::BOLD),
+            format!(
+                " ▲ Data stale (updated {} ago)",
+                humanize_secs(elapsed_secs as u64)
+            ),
+            Style::default()
+                .fg(Color::Black)
+                .bg(theme::DANGER)
+                .add_modifier(Modifier::BOLD),
         ));
         frame.render_widget(Paragraph::new(vec![banner]), banner_area);
     }
@@ -806,7 +846,13 @@ pub fn render(
     let mut section_constraints: Vec<Constraint> = plan
         .sections
         .iter()
-        .map(|s| Constraint::Length((s.chrome_rows + s.grid_rows * s.item_span + usize::from(s.truncated_remaining.is_some())) as u16))
+        .map(|s| {
+            Constraint::Length(
+                (s.chrome_rows
+                    + s.grid_rows * s.item_span
+                    + usize::from(s.truncated_remaining.is_some())) as u16,
+            )
+        })
         .collect();
     section_constraints.push(Constraint::Length(u16::from(!plan.skipped.is_empty())));
     // The SPACE-1 feed claims the surplus `feed_rows_for` granted it, ahead of the `Fill`
@@ -855,7 +901,11 @@ pub fn render(
             .skipped
             .iter()
             .map(|(bucket, count)| {
-                let label = SECTION_LABELS.iter().find(|(b, _)| b == bucket).map(|(_, l)| *l).unwrap_or("?");
+                let label = SECTION_LABELS
+                    .iter()
+                    .find(|(b, _)| b == bucket)
+                    .map(|(_, l)| *l)
+                    .unwrap_or("?");
                 format!("{label} +{count}")
             })
             .collect::<Vec<_>>()
@@ -864,7 +914,9 @@ pub fn render(
         frame.render_widget(
             Paragraph::new(vec![Line::from(Span::styled(
                 format!(" … not shown: {summary} — resize taller"),
-                Style::default().fg(theme::AGING).add_modifier(Modifier::BOLD),
+                Style::default()
+                    .fg(theme::AGING)
+                    .add_modifier(Modifier::BOLD),
             ))]),
             summary_rect,
         );
@@ -873,13 +925,21 @@ pub fn render(
     if plan.feed_rows > 0 {
         let feed_rect = section_rects[plan.sections.len() + 1];
         frame.render_widget(
-            Paragraph::new(crate::feed::feed_block_lines(feed, now, width, plan.feed_rows)),
+            Paragraph::new(crate::feed::feed_block_lines(
+                feed,
+                now,
+                width,
+                plan.feed_rows,
+            )),
             feed_rect,
         );
     }
 }
 
 /// Render one section's chrome + grid into `rect`, per `SectionPlan`'s resolved geometry.
+// Each argument is a distinct piece of render state with no natural grouping;
+// a params struct here would exist only to satisfy the lint.
+#[allow(clippy::too_many_arguments)]
 fn render_section(
     frame: &mut ratatui::Frame,
     rect: Rect,
@@ -915,7 +975,13 @@ fn render_section(
     );
     chrome_lines.push(match strip {
         Some(run) => collapsed_strip_line(radar, run, state, fleet_width),
-        None => section_header_line(radar, section.bucket, section.member_count, is_selected_header, fleet_width),
+        None => section_header_line(
+            radar,
+            section.bucket,
+            section.member_count,
+            is_selected_header,
+            fleet_width,
+        ),
     });
     chrome_lines.push(rule_line(fleet_width, Color::DarkGray));
     frame.render_widget(Paragraph::new(chrome_lines), chrome_rect);
@@ -949,7 +1015,8 @@ fn render_section(
             let col_rect = column_rects[c * 2];
             if roomy {
                 let inner_width = section.card_width.saturating_sub(2);
-                let mut card_constraints: Vec<Constraint> = Vec::with_capacity(proj_indices.len() * 2);
+                let mut card_constraints: Vec<Constraint> =
+                    Vec::with_capacity(proj_indices.len() * 2);
                 for i in 0..proj_indices.len() {
                     card_constraints.push(Constraint::Length(ROOMY_CARD_BOX_ROWS as u16));
                     if i + 1 < proj_indices.len() {
@@ -963,11 +1030,15 @@ fn render_section(
                         Some(DashRow::Project(idx)) if *idx == proj_idx
                     );
                     let border_style = if is_selected {
-                        Style::default().fg(theme::ACCENT).add_modifier(Modifier::BOLD)
+                        Style::default()
+                            .fg(theme::ACCENT)
+                            .add_modifier(Modifier::BOLD)
                     } else {
                         Style::default().fg(theme::DIMMER)
                     };
-                    let block = Block::bordered().border_type(BorderType::Rounded).border_style(border_style);
+                    let block = Block::bordered()
+                        .border_type(BorderType::Rounded)
+                        .border_style(border_style);
                     let lines = roomy_card_lines(radar, proj_idx, inner_width);
                     frame.render_widget(Paragraph::new(lines).block(block), card_rects[i * 2]);
                 }
@@ -980,9 +1051,20 @@ fn render_section(
                             Some(DashRow::Project(idx)) if *idx == proj_idx
                         );
                         if section.bucket == StatusBucket::Active {
-                            compact_running_row_line(radar, proj_idx, is_selected, section.card_width)
+                            compact_running_row_line(
+                                radar,
+                                proj_idx,
+                                is_selected,
+                                section.card_width,
+                            )
                         } else {
-                            compact_row_line(radar, proj_idx, is_selected, section.card_width, section.bucket == StatusBucket::InFlight)
+                            compact_row_line(
+                                radar,
+                                proj_idx,
+                                is_selected,
+                                section.card_width,
+                                section.bucket == StatusBucket::InFlight,
+                            )
                         }
                     })
                     .collect();
@@ -1009,7 +1091,9 @@ fn render_section(
         frame.render_widget(
             Paragraph::new(vec![Line::from(Span::styled(
                 format!(" … +{remaining} more"),
-                Style::default().fg(theme::AGING).add_modifier(Modifier::BOLD),
+                Style::default()
+                    .fg(theme::AGING)
+                    .add_modifier(Modifier::BOLD),
             ))]),
             marker_rect,
         );
@@ -1041,7 +1125,13 @@ fn rule_line(width: usize, color: Color) -> Line<'static> {
 /// Split `left`/`right` across `width` columns, padding between them (at
 /// least one space) — mirrors petripy's `_split`: a stable label on the
 /// left, the volatile value you're actually scanning on the right.
-fn split_line(left: String, right: String, width: usize, left_style: Style, right_style: Style) -> Line<'static> {
+fn split_line(
+    left: String,
+    right: String,
+    width: usize,
+    left_style: Style,
+    right_style: Style,
+) -> Line<'static> {
     let left_len = left.chars().count();
     let right_len = right.chars().count();
     let pad = width.saturating_sub(left_len + right_len).max(1);
@@ -1080,7 +1170,8 @@ struct ZoneRowSpec {
 
 fn zone_row(spec: ZoneRowSpec, width: usize) -> Line<'static> {
     let label_padded = format!("{:<ZONE_LABEL_WIDTH$}", spec.label);
-    let left_len = spec.indent.chars().count() + label_padded.chars().count() + spec.facts.chars().count();
+    let left_len =
+        spec.indent.chars().count() + label_padded.chars().count() + spec.facts.chars().count();
     let right_len = spec.sparkline.chars().count() + 2 + spec.tag.chars().count();
     let pad = width.saturating_sub(left_len + right_len).max(1);
 
@@ -1100,16 +1191,36 @@ fn zone_row(spec: ZoneRowSpec, width: usize) -> Line<'static> {
 /// colors on just the app name) plus the heavy rule is what makes this read
 /// as a header at a glance, matching petripy's `_header` — a single plain
 /// line of text was the thing that "nearly disappears into the rest."
-fn header_lines(radar: &Radar, now: &chrono::DateTime<chrono::Utc>, scan_secs: f64, width: usize) -> Vec<Line<'static>> {
-    let right = format!("{} projects · {} · scan {scan_secs:.1}s", radar.projects.len(), now.format("%H:%M"));
+fn header_lines(
+    radar: &Radar,
+    now: &chrono::DateTime<chrono::Utc>,
+    scan_secs: f64,
+    width: usize,
+) -> Vec<Line<'static>> {
+    let right = format!(
+        "{} projects · {} · scan {scan_secs:.1}s",
+        radar.projects.len(),
+        now.format("%H:%M")
+    );
     let title = split_line(
         " petri · dashboard ".to_string(),
         format!("{right} "),
         width,
-        Style::default().fg(Color::Black).bg(theme::ACCENT).add_modifier(Modifier::BOLD),
+        Style::default()
+            .fg(Color::Black)
+            .bg(theme::ACCENT)
+            .add_modifier(Modifier::BOLD),
         Style::default().fg(theme::FG),
     );
-    vec![title, Line::from(Span::styled("═".repeat(width), Style::default().fg(theme::ACCENT).add_modifier(Modifier::BOLD)))]
+    vec![
+        title,
+        Line::from(Span::styled(
+            "═".repeat(width),
+            Style::default()
+                .fg(theme::ACCENT)
+                .add_modifier(Modifier::BOLD),
+        )),
+    ]
 }
 
 /// The label a section shows. RUNNING degrades to RECENT when no member project has an
@@ -1173,13 +1284,21 @@ fn collapsed_strip_line(
             break;
         }
         if !sep.is_empty() {
-            spans.push(Span::styled(sep.to_string(), Style::default().fg(theme::DIMMER)));
+            spans.push(Span::styled(
+                sep.to_string(),
+                Style::default().fg(theme::DIMMER),
+            ));
             used += sep.chars().count();
         }
         let style = if Some(*bucket) == selected_bucket {
-            Style::default().fg(Color::Black).bg(theme::ACCENT).add_modifier(Modifier::BOLD)
+            Style::default()
+                .fg(Color::Black)
+                .bg(theme::ACCENT)
+                .add_modifier(Modifier::BOLD)
         } else {
-            Style::default().fg(crate::theme::bucket_color(*bucket)).add_modifier(Modifier::BOLD)
+            Style::default()
+                .fg(crate::theme::bucket_color(*bucket))
+                .add_modifier(Modifier::BOLD)
         };
         used += entry.chars().count();
         spans.push(Span::styled(entry, style));
@@ -1196,7 +1315,13 @@ fn collapsed_strip_line(
 
 /// Section header line: " RUNNING" left, "25" right, between the two light
 /// rules `render` pushes around it.
-fn section_header_line(radar: &Radar, bucket: StatusBucket, count: usize, is_selected: bool, width: usize) -> Line<'static> {
+fn section_header_line(
+    radar: &Radar,
+    bucket: StatusBucket,
+    count: usize,
+    is_selected: bool,
+    width: usize,
+) -> Line<'static> {
     let label = section_label(radar, bucket);
     // Section label previews the state of what's inside it, reusing the same
     // gradient `silence_tier_color` applies per-project: RUNNING reads
@@ -1205,11 +1330,22 @@ fn section_header_line(radar: &Radar, bucket: StatusBucket, count: usize, is_sel
     // section regardless of what it actually holds.
     let label_color = crate::theme::bucket_color(bucket);
     let style = if is_selected {
-        Style::default().fg(Color::Black).bg(theme::ACCENT).add_modifier(Modifier::BOLD)
+        Style::default()
+            .fg(Color::Black)
+            .bg(theme::ACCENT)
+            .add_modifier(Modifier::BOLD)
     } else {
-        Style::default().fg(label_color).add_modifier(Modifier::BOLD)
+        Style::default()
+            .fg(label_color)
+            .add_modifier(Modifier::BOLD)
     };
-    split_line(format!(" {label}"), format!("{count} "), width, style, style)
+    split_line(
+        format!(" {label}"),
+        format!("{count} "),
+        width,
+        style,
+        style,
+    )
 }
 
 /// Truecolor gradient on silence age: fresh (<1m, still likely mid-turn) →
@@ -1232,10 +1368,18 @@ fn silence_tier_color(secs: i64) -> Color {
 /// branch, silence age — silence age still carries the gradient, since
 /// "which run is stalling" is exactly what this row exists to answer at a
 /// glance.
-fn compact_running_row_line(radar: &Radar, proj_idx: usize, is_selected: bool, card_width: usize) -> Line<'static> {
+fn compact_running_row_line(
+    radar: &Radar,
+    proj_idx: usize,
+    is_selected: bool,
+    card_width: usize,
+) -> Line<'static> {
     let p = &radar.projects[proj_idx];
     let silence_secs = match p.last_activity_at {
-        Some(dt) => chrono::Utc::now().signed_duration_since(dt).num_seconds().max(0),
+        Some(dt) => chrono::Utc::now()
+            .signed_duration_since(dt)
+            .num_seconds()
+            .max(0),
         None => i64::MAX / 2,
     };
     // `MECH-5`: a waiting row abandons the silence gradient entirely — colour and glyph both
@@ -1243,7 +1387,11 @@ fn compact_running_row_line(radar: &Radar, proj_idx: usize, is_selected: bool, c
     // reading. `▲`, not `⚠`, per the staleness banner's note below on emoji-presentation
     // defaults in terminals.
     let waiting = is_waiting(p);
-    let tier_color = if waiting { theme::DANGER } else { silence_tier_color(silence_secs) };
+    let tier_color = if waiting {
+        theme::DANGER
+    } else {
+        silence_tier_color(silence_secs)
+    };
     let glyph = if waiting {
         "▲"
     } else {
@@ -1272,12 +1420,18 @@ fn compact_running_row_line(radar: &Radar, proj_idx: usize, is_selected: bool, c
     let silence_field = format!("{} ", fixed_width(&silence_str, 14));
 
     if is_selected {
-        return solid_selected_line(&format!(" {glyph} {name_field}{branch_field}{silence_field}{agent}"), card_width);
+        return solid_selected_line(
+            &format!(" {glyph} {name_field}{branch_field}{silence_field}{agent}"),
+            card_width,
+        );
     }
 
     Line::from(vec![
         Span::styled(format!(" {glyph} "), Style::default().fg(tier_color)),
-        Span::styled(name_field, Style::default().fg(theme::FG).add_modifier(Modifier::BOLD)),
+        Span::styled(
+            name_field,
+            Style::default().fg(theme::FG).add_modifier(Modifier::BOLD),
+        ),
         Span::styled(branch_field, Style::default().fg(theme::BRANCH)),
         Span::styled(silence_field, Style::default().fg(tier_color)),
         Span::styled(agent.to_string(), Style::default().fg(theme::DIM)),
@@ -1306,10 +1460,17 @@ fn roomy_card_lines(radar: &Radar, proj_idx: usize, card_width: usize) -> Vec<Li
         }
     };
     let dirty_marker = present::dirty_marker(&p.git);
-    let uncommitted = if p.git.uncommitted_files > 0 { format!(" ✎{}", p.git.uncommitted_files) } else { String::new() };
+    let uncommitted = if p.git.uncommitted_files > 0 {
+        format!(" ✎{}", p.git.uncommitted_files)
+    } else {
+        String::new()
+    };
     let has_agent = p.agent.active_agent.is_some();
     let silence_secs = match p.last_activity_at {
-        Some(dt) => chrono::Utc::now().signed_duration_since(dt).num_seconds().max(0),
+        Some(dt) => chrono::Utc::now()
+            .signed_duration_since(dt)
+            .num_seconds()
+            .max(0),
         None => 0,
     };
     let header_right = if waiting {
@@ -1320,7 +1481,11 @@ fn roomy_card_lines(radar: &Radar, proj_idx: usize, card_width: usize) -> Vec<Li
         "no agent".to_string()
     };
 
-    let tier_color = if waiting { theme::DANGER } else { silence_tier_color(silence_secs) };
+    let tier_color = if waiting {
+        theme::DANGER
+    } else {
+        silence_tier_color(silence_secs)
+    };
     let name_style = Style::default().fg(theme::FG).add_modifier(Modifier::BOLD);
     let silence_style = Style::default().fg(tier_color).add_modifier(Modifier::BOLD);
     let dim = Style::default().fg(theme::DIM);
@@ -1338,13 +1503,20 @@ fn roomy_card_lines(radar: &Radar, proj_idx: usize, card_width: usize) -> Vec<Li
     // sample/day over GIT_ACTIVITY_WINDOW_DAYS — a real "how alive is this branch" signal,
     // not the agent's per-minute activity).
     let branch = p.git.branch.as_deref().unwrap_or("-");
-    let dirty_suffix = if dirty_marker.trim().is_empty() { String::new() } else { format!(" {}", dirty_marker.trim()) };
+    let dirty_suffix = if dirty_marker.trim().is_empty() {
+        String::new()
+    } else {
+        format!(" {}", dirty_marker.trim())
+    };
     let commit_fact = match p.git.last_commit_at {
         Some(dt) => format!("commit {}", commit_ago(dt)),
         None => "no commits".to_string(),
     };
     let git_facts = format!("{branch}{dirty_suffix} · {commit_fact}");
-    let git_sparkline = sparkline_glyphs(&p.git.daily_commits, petridish_core::schema::GIT_ACTIVITY_WINDOW_DAYS);
+    let git_sparkline = sparkline_glyphs(
+        &p.git.daily_commits,
+        petridish_core::schema::GIT_ACTIVITY_WINDOW_DAYS,
+    );
     let git_row = zone_row(
         ZoneRowSpec {
             indent: ZONE_INDENT,
@@ -1422,9 +1594,10 @@ const SPARKLINE_WIDTH: usize = 20;
 /// doesn't ask for more samples than the ring actually keeps.
 fn agent_sparkline_width_for(card_width: usize) -> usize {
     let overhead = ZONE_INDENT.len() + ZONE_LABEL_WIDTH + 20 /* minimal facts */ + 2 /* gap */ + 4 /* tag */;
-    card_width
-        .saturating_sub(overhead)
-        .clamp(SPARKLINE_WIDTH, petridish_core::schema::AGENT_ACTIVITY_WINDOW)
+    card_width.saturating_sub(overhead).clamp(
+        SPARKLINE_WIDTH,
+        petridish_core::schema::AGENT_ACTIVITY_WINDOW,
+    )
 }
 
 /// Renders the trailing `width` samples of `samples` (oldest first, most recent last) as a
@@ -1464,15 +1637,29 @@ fn sparkline_glyphs(samples: &[u32], width: usize) -> String {
 /// `show_git_sparkline` is true only for IN FLIGHT (see `plan_layout`'s `shows_git_sparkline`
 /// doc comment for the 14-day alignment reasoning) — STALE/COLD rows omit it and keep the
 /// original plain fields.
-fn compact_row_line(radar: &Radar, proj_idx: usize, is_selected: bool, card_width: usize, show_git_sparkline: bool) -> Line<'static> {
+fn compact_row_line(
+    radar: &Radar,
+    proj_idx: usize,
+    is_selected: bool,
+    card_width: usize,
+    show_git_sparkline: bool,
+) -> Line<'static> {
     let p = &radar.projects[proj_idx];
     let branch = p.git.branch.as_deref().unwrap_or("(none)");
-    let uncommitted = if p.git.uncommitted_files > 0 { format!("✎{}", p.git.uncommitted_files) } else { String::new() };
+    let uncommitted = if p.git.uncommitted_files > 0 {
+        format!("✎{}", p.git.uncommitted_files)
+    } else {
+        String::new()
+    };
     let commit_age = match p.git.last_commit_at {
         Some(dt) => commit_ago(dt),
         None => "(none)".to_string(),
     };
-    let gh = if p.git.github_url.is_some() { "[gh]" } else { "" };
+    let gh = if p.git.github_url.is_some() {
+        "[gh]"
+    } else {
+        ""
+    };
 
     let name_field = format!(" {} ", fixed_width(&p.name, 26));
     let branch_field = format!("{} ", fixed_width(branch, 22));
@@ -1481,7 +1668,10 @@ fn compact_row_line(radar: &Radar, proj_idx: usize, is_selected: bool, card_widt
 
     let (sparkline, tag) = if show_git_sparkline {
         (
-            sparkline_glyphs(&p.git.daily_commits, petridish_core::schema::GIT_ACTIVITY_WINDOW_DAYS),
+            sparkline_glyphs(
+                &p.git.daily_commits,
+                petridish_core::schema::GIT_ACTIVITY_WINDOW_DAYS,
+            ),
             format!("{}d", petridish_core::schema::GIT_ACTIVITY_WINDOW_DAYS),
         )
     } else {
@@ -1493,7 +1683,9 @@ fn compact_row_line(radar: &Radar, proj_idx: usize, is_selected: bool, card_widt
     if is_selected {
         let content = if show_git_sparkline {
             let pad = card_width
-                .saturating_sub(left.chars().count() + sparkline.chars().count() + 2 + tag.chars().count())
+                .saturating_sub(
+                    left.chars().count() + sparkline.chars().count() + 2 + tag.chars().count(),
+                )
                 .max(1);
             format!("{left}{}{sparkline}  {tag}", " ".repeat(pad))
         } else {
@@ -1512,7 +1704,9 @@ fn compact_row_line(radar: &Radar, proj_idx: usize, is_selected: bool, card_widt
 
     if show_git_sparkline {
         let pad = card_width
-            .saturating_sub(left.chars().count() + sparkline.chars().count() + 2 + tag.chars().count())
+            .saturating_sub(
+                left.chars().count() + sparkline.chars().count() + 2 + tag.chars().count(),
+            )
             .max(1);
         spans.push(Span::raw(" ".repeat(pad)));
         spans.push(Span::styled(sparkline, Style::default().fg(theme::BRANCH)));
@@ -1533,7 +1727,10 @@ fn compact_row_line(radar: &Radar, proj_idx: usize, is_selected: bool, card_widt
 fn solid_selected_line(content: &str, card_width: usize) -> Line<'static> {
     Line::from(Span::styled(
         fixed_width(content, card_width),
-        Style::default().fg(Color::Black).bg(theme::ACCENT).add_modifier(Modifier::BOLD),
+        Style::default()
+            .fg(Color::Black)
+            .bg(theme::ACCENT)
+            .add_modifier(Modifier::BOLD),
     ))
 }
 
@@ -1549,7 +1746,10 @@ fn footer_line() -> Line<'static> {
 /// Future timestamps (a clock-skew edge case, not expected in practice) clamp
 /// to zero rather than printing a negative duration.
 fn commit_ago(dt: chrono::DateTime<chrono::Utc>) -> String {
-    let secs = chrono::Utc::now().signed_duration_since(dt).num_seconds().max(0);
+    let secs = chrono::Utc::now()
+        .signed_duration_since(dt)
+        .num_seconds()
+        .max(0);
     format!("{} ago", humanize_secs(secs as u64))
 }
 
@@ -1569,15 +1769,15 @@ fn humanize_secs(secs: u64) -> String {
 /// Abbreviate `$HOME/...` to `~/...` for display. Returns the input unchanged
 /// when `$HOME` is unset or the path doesn't start with it.
 fn abbreviate_home(path: &str) -> String {
-    if let Ok(home) = std::env::var("HOME") {
-        if let Ok(p) = std::path::Path::new(path).strip_prefix(&home) {
-            let remainder = p.to_string_lossy().to_string();
-            if remainder.is_empty() {
-                return home;
-            }
-            let sep = if remainder.starts_with('/') { "" } else { "/" };
-            return format!("~{sep}{remainder}");
+    if let Ok(home) = std::env::var("HOME")
+        && let Ok(p) = std::path::Path::new(path).strip_prefix(&home)
+    {
+        let remainder = p.to_string_lossy().to_string();
+        if remainder.is_empty() {
+            return home;
         }
+        let sep = if remainder.starts_with('/') { "" } else { "/" };
+        return format!("~{sep}{remainder}");
     }
     path.to_string()
 }
@@ -1624,17 +1824,26 @@ mod layout_tests {
     fn narrow_terminal_stays_single_column() {
         let radar = radar_with(6);
         let plan = plan_layout(Rect::new(0, 0, 80, 40), &radar, EXPANDED, 0);
-        assert_eq!(plan.sections[0].columns, 1, "80 cols is below 2×MIN_ROOMY_CARD_WIDTH, so no second column");
+        assert_eq!(
+            plan.sections[0].columns, 1,
+            "80 cols is below 2×MIN_ROOMY_CARD_WIDTH, so no second column"
+        );
     }
 
     #[test]
     fn wide_terminal_grows_columns_up_to_the_cap() {
         let radar = radar_with(20);
         let plan = plan_layout(Rect::new(0, 0, 200, 60), &radar, EXPANDED, 0);
-        assert_eq!(plan.sections[0].columns, 3, "200 cols fits 3× MIN_ROOMY_CARD_WIDTH+gutter but not 4");
+        assert_eq!(
+            plan.sections[0].columns, 3,
+            "200 cols fits 3× MIN_ROOMY_CARD_WIDTH+gutter but not 4"
+        );
 
         let plan = plan_layout(Rect::new(0, 0, 400, 60), &radar, EXPANDED, 0);
-        assert_eq!(plan.sections[0].columns, MAX_GRID_COLUMNS, "an very wide terminal must still respect the column cap");
+        assert_eq!(
+            plan.sections[0].columns, MAX_GRID_COLUMNS,
+            "an very wide terminal must still respect the column cap"
+        );
     }
 
     #[test]
@@ -1645,7 +1854,10 @@ mod layout_tests {
         let section = &plan.sections[0];
         assert_eq!(section.columns, 3);
         assert_eq!(section.items_shown, 6);
-        assert_eq!(section.grid_rows, 2, "6 items across 3 columns must take 2 grid rows");
+        assert_eq!(
+            section.grid_rows, 2,
+            "6 items across 3 columns must take 2 grid rows"
+        );
     }
 
     #[test]
@@ -1660,7 +1872,10 @@ mod layout_tests {
         let plan = plan_layout(Rect::new(0, 0, 300, 200), &radar, EXPANDED, 0);
         let section = &plan.sections[0];
         assert_eq!(section.bucket, StatusBucket::InFlight);
-        assert_eq!(section.columns, 1, "5 rows already fit in 1 column with room to spare, so no grid is needed");
+        assert_eq!(
+            section.columns, 1,
+            "5 rows already fit in 1 column with room to spare, so no grid is needed"
+        );
         assert_eq!(section.items_shown, 5);
         assert!(section.truncated_remaining.is_none());
     }
@@ -1672,7 +1887,10 @@ mod layout_tests {
         let radar = radar_with_bucket(60, StatusBucket::InFlight);
         let plan = plan_layout(Rect::new(0, 0, 300, 20), &radar, EXPANDED, 0);
         let section = &plan.sections[0];
-        assert!(section.columns > 1, "60 rows cannot fit in 1 column within a 20-row terminal, so it must grid");
+        assert!(
+            section.columns > 1,
+            "60 rows cannot fit in 1 column within a 20-row terminal, so it must grid"
+        );
     }
 
     #[test]
@@ -1683,7 +1901,10 @@ mod layout_tests {
         let radar = radar_with(3);
         let plan = plan_layout(Rect::new(0, 0, 200, 200), &radar, EXPANDED, 0);
         let section = &plan.sections[0];
-        assert!(section.columns > 1, "3 roomy cards easily fit in 1 column at this height, but width should still be used");
+        assert!(
+            section.columns > 1,
+            "3 roomy cards easily fit in 1 column at this height, but width should still be used"
+        );
     }
 
     #[test]
@@ -1693,7 +1914,10 @@ mod layout_tests {
         let radar = radar_with(200);
         let plan = plan_layout(Rect::new(0, 0, 200, 12), &radar, EXPANDED, 0);
         let section = &plan.sections[0];
-        assert!(section.items_shown < 200, "must truncate rather than render all 200 projects into 12 rows");
+        assert!(
+            section.items_shown < 200,
+            "must truncate rather than render all 200 projects into 12 rows"
+        );
         assert_eq!(
             section.truncated_remaining,
             Some(200 - section.items_shown),
@@ -1744,7 +1968,9 @@ mod sparkline_tests {
             "left pad must be the lowest bar: {out:?}"
         );
         assert!(
-            out[pad..].iter().all(|&c| c == SPARKLINE_GLYPHS[SPARKLINE_GLYPHS.len() - 1]),
+            out[pad..]
+                .iter()
+                .all(|&c| c == SPARKLINE_GLYPHS[SPARKLINE_GLYPHS.len() - 1]),
             "the three equal, nonzero, max-of-window samples must render at the top bar: {out:?}"
         );
     }
@@ -1763,13 +1989,16 @@ mod sparkline_tests {
         let out: Vec<char> = sparkline_glyphs(&ring, SPARKLINE_WIDTH).chars().collect();
         assert_eq!(out.len(), SPARKLINE_WIDTH);
         assert_eq!(
-            *out.last().unwrap(), SPARKLINE_GLYPHS[SPARKLINE_GLYPHS.len() - 1],
+            *out.last().unwrap(),
+            SPARKLINE_GLYPHS[SPARKLINE_GLYPHS.len() - 1],
             "the in-window spike must render as the top bar (it's the window's own max): {out:?}"
         );
         // Nothing else in the visible window is nonzero, so everything but the last char
         // must be the lowest bar -- the off-window spike must have no visible effect.
         assert!(
-            out[..out.len() - 1].iter().all(|&c| c == SPARKLINE_GLYPHS[0]),
+            out[..out.len() - 1]
+                .iter()
+                .all(|&c| c == SPARKLINE_GLYPHS[0]),
             "an off-window spike must not influence the visible normalization: {out:?}"
         );
     }
@@ -1782,14 +2011,18 @@ mod sparkline_tests {
         ring.push(2); // half of the window's max
         ring.push(4); // the window's max -> must render as the top bar
         let out: Vec<char> = sparkline_glyphs(&ring, SPARKLINE_WIDTH).chars().collect();
-        assert_eq!(*out.last().unwrap(), SPARKLINE_GLYPHS[SPARKLINE_GLYPHS.len() - 1]);
+        assert_eq!(
+            *out.last().unwrap(),
+            SPARKLINE_GLYPHS[SPARKLINE_GLYPHS.len() - 1]
+        );
         let half_level = out[out.len() - 2];
         assert_ne!(
             half_level, SPARKLINE_GLYPHS[0],
             "a nonzero count must never render as the zero-count bar: {out:?}"
         );
         assert_ne!(
-            half_level, SPARKLINE_GLYPHS[SPARKLINE_GLYPHS.len() - 1],
+            half_level,
+            SPARKLINE_GLYPHS[SPARKLINE_GLYPHS.len() - 1],
             "half of the window's max should not render identically to the max itself: {out:?}"
         );
     }
@@ -1814,9 +2047,18 @@ mod sparkline_tests {
         let facts_pos = rendered.find("FACTS").unwrap();
         let spark_pos = rendered.find("SPARK").unwrap();
         let tag_pos = rendered.find("14d").unwrap();
-        assert!(label_pos < facts_pos, "label must precede facts: {rendered:?}");
-        assert!(facts_pos < spark_pos, "facts must precede the sparkline: {rendered:?}");
-        assert!(spark_pos < tag_pos, "the sparkline must precede its scale tag: {rendered:?}");
+        assert!(
+            label_pos < facts_pos,
+            "label must precede facts: {rendered:?}"
+        );
+        assert!(
+            facts_pos < spark_pos,
+            "facts must precede the sparkline: {rendered:?}"
+        );
+        assert!(
+            spark_pos < tag_pos,
+            "the sparkline must precede its scale tag: {rendered:?}"
+        );
     }
 
     #[test]
