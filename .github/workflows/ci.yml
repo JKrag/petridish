@@ -20,7 +20,7 @@ jobs:
   lint:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt, clippy
@@ -61,7 +61,7 @@ jobs:
         os: [macos-14, ubuntu-latest]
     runs-on: ${{ matrix.os }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
 
@@ -78,7 +78,7 @@ jobs:
   msrv:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - id: msrv
         run: echo "version=$(grep '^rust-version' Cargo.toml | head -1 | sed 's/.*= *"//;s/".*//')" >> "$GITHUB_OUTPUT"
       - uses: dtolnay/rust-toolchain@master
@@ -93,7 +93,7 @@ jobs:
   deny:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: EmbarkStudios/cargo-deny-action@v2
         with:
           command: check licenses advisories
@@ -107,7 +107,7 @@ jobs:
       run:
         working-directory: integrations/raycast
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: actions/setup-node@v4
         with:
           node-version: "22"
