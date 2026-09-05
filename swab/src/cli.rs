@@ -84,13 +84,10 @@ pub fn default_state_path() -> PathBuf {
 /// errors, etc.). Mirrors `cli.py::_cmd_scan` — sensors degrade on their own; the only
 /// thing that should bubble to *this* function's exit code is a write failure.
 pub fn cmd_scan(state_path: &std::path::Path, out: &mut dyn Write) -> std::io::Result<u8> {
-    rotate_daemon_log(
-        &PathBuf::from(std::env::var("HOME").unwrap_or_else(|_| "~".to_string()))
-            .join(".petridish")
-            .join("daemon.log"),
-    );
+    let home = PathBuf::from(std::env::var("HOME").unwrap_or_else(|_| "~".to_string()));
+    rotate_daemon_log(&home.join(".petridish").join("daemon.log"));
 
-    let config = match crate::config::load_config(&crate::config::default_path()) {
+    let config = match crate::config::load_config(&crate::config::for_home(&home), &home) {
         Ok(c) => c,
         Err(e) => {
             let _ = writeln!(out, "scan failed: {e}");
@@ -263,7 +260,11 @@ pub fn cmd_path(
 /// - every path in `roots` exists on disk (dir),
 /// - state file exists and is fresh (<24h old),
 /// - `~/.claude/settings.json` contains the HOOK_MARKER string.
-pub fn cmd_doctor(state_path: &std::path::Path, out: &mut dyn Write) -> std::io::Result<u8> {
+pub fn cmd_doctor(
+    state_path: &std::path::Path,
+    home: &std::path::Path,
+    out: &mut dyn Write,
+) -> std::io::Result<u8> {
     let mut problems: Vec<String> = Vec::new();
     let mut report: Vec<(String, bool /* ok or not */)> = Vec::new();
 
@@ -285,12 +286,13 @@ pub fn cmd_doctor(state_path: &std::path::Path, out: &mut dyn Write) -> std::io:
     }
 
     check!("config", {
-        crate::config::load_config(&crate::config::default_path()).map_err(|e| format!("{e}"))?;
+        crate::config::load_config(&crate::config::for_home(home), home)
+            .map_err(|e| format!("{e}"))?;
         Ok::<bool, String>(true)
     });
 
     check!("roots", {
-        let cfg = crate::config::load_config(&crate::config::default_path())
+        let cfg = crate::config::load_config(&crate::config::for_home(home), home)
             .map_err(|e| format!("config load failed: {e}"))?;
         let missing: Vec<String> = cfg
             .roots
@@ -322,10 +324,7 @@ pub fn cmd_doctor(state_path: &std::path::Path, out: &mut dyn Write) -> std::io:
     });
 
     check!("hook", {
-        let home = std::env::var("HOME").unwrap_or_else(|_| "~".to_string());
-        let settings_path = std::path::PathBuf::from(home)
-            .join(".claude")
-            .join("settings.json");
+        let settings_path = home.join(".claude").join("settings.json");
         if !settings_path.is_file() {
             return Err(format!(
                 "settings.json not found: {}",
@@ -620,13 +619,18 @@ fn _print_table(projects: &[&crate::schema::Project], out: &mut dyn Write) -> st
 pub fn run_command(args: Cli, out: &mut dyn Write) -> std::io::Result<i32> {
     use Command::*;
     let state = args.state.clone().unwrap_or_else(default_state_path);
+    // Resolved lazily, only for `doctor` — `scan`/`list`/`path`/`config` must keep working
+    // with `HOME` unset, as they did before this function existed.
     match args.command {
         Scan => cmd_scan(&state, out).map(|c| c as i32),
         List { bucket, all, json } => {
             cmd_list(&state, bucket.as_deref(), all, json, out).map(|c| c as i32)
         }
         Path { query } => cmd_path(&state, &query, out).map(|c| c as i32),
-        Doctor => cmd_doctor(&state, out).map(|c| c as i32),
+        Doctor => {
+            let home = PathBuf::from(std::env::var("HOME").expect("HOME must be set"));
+            cmd_doctor(&state, &home, out).map(|c| c as i32)
+        }
         Config => cmd_config(out).map(|c| c as i32),
     }
 }
@@ -1109,31 +1113,29 @@ mod tests {
         let dir =
             std::env::temp_dir().join(format!("swab_test_doctor_broken_{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::create_dir_all(dir.join(".petridish")).unwrap();
 
-        // A config we can control.
-        std::fs::write(dir.join("config.toml"), "this is not valid toml [[[[")
-            .expect("write broken config");
+        // A config `cmd_doctor` will actually read: `home/.petridish/config.toml`, per
+        // `config::for_home`.
+        std::fs::write(
+            dir.join(".petridish").join("config.toml"),
+            "this is not valid toml [[[[",
+        )
+        .expect("write broken config");
 
-        // Force default_path() to point at our test dir (only during this test).
-        let real_home = std::env::var("HOME").unwrap_or_else(|_| "~".into());
-        let fake_home = dir.join("fake-home");
-        std::fs::create_dir_all(&fake_home).unwrap();
-        unsafe { std::env::set_var("HOME", fake_home.to_str().unwrap()) };
         let state_path = dir.join("projects.json");
 
-        // Make sure projects.json doesn't exist yet — state check should fail.
+        // Make sure projects.json doesn't exist yet — state check should fail too.
         let mut cap = Capture::new();
-        let code = cmd_doctor(&state_path, &mut cap).unwrap();
+        let code = cmd_doctor(&state_path, &dir, &mut cap).unwrap();
         assert_eq!(code, 1, "doctor should fail when config is broken");
 
         let captured = cap.as_str();
         assert!(
-            captured.contains("fail") || captured.contains("config"),
+            captured.contains("fail: config"),
             "config failure should be reported: {captured}"
         );
 
-        unsafe { std::env::set_var("HOME", &real_home) };
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -1183,12 +1185,9 @@ mod tests {
         )
         .unwrap();
 
-        let real_home = std::env::var("HOME").unwrap_or_else(|_| "~".into());
-        unsafe { std::env::set_var("HOME", dir.to_str().unwrap()) };
-
         let state_path = dir.join(".petridish").join("projects.json");
         let mut cap = Capture::new();
-        let code = cmd_doctor(&state_path, &mut cap).unwrap();
+        let code = cmd_doctor(&state_path, &dir, &mut cap).unwrap();
         assert_eq!(code, 0, "doctor should pass on a healthy fixture");
 
         let captured = cap.as_str();
@@ -1209,7 +1208,6 @@ mod tests {
             "hook should be ok: {captured}"
         );
 
-        unsafe { std::env::set_var("HOME", &real_home) };
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -1246,11 +1244,13 @@ mod tests {
         )
         .unwrap();
 
-        let real_home = std::env::var("HOME").unwrap_or_else(|_| "~".into());
-        unsafe { std::env::set_var("HOME", dir.to_str().unwrap()) };
         let mut cap = Capture::new();
-        let code = cmd_doctor(&dir.join(".petridish").join("projects.json"), &mut cap).unwrap();
-        unsafe { std::env::set_var("HOME", &real_home) };
+        let code = cmd_doctor(
+            &dir.join(".petridish").join("projects.json"),
+            &dir,
+            &mut cap,
+        )
+        .unwrap();
 
         let captured = cap.as_str();
         assert_eq!(

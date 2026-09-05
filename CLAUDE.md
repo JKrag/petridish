@@ -88,18 +88,16 @@ the exact argv, not a mock that asserts nothing.
 
 Prefer a parameter over an environment read. `petridish-cli` takes `home`, `uid`,
 `claude_dir` and the `PATH` string as arguments precisely so its tests never mutate
-process-global state.
+process-global state. `swab`'s `cmd_scan`/`cmd_doctor` and `config::load_config` take
+`home` the same way, and `swab-hook`'s `handle_hook_input`/`run_hook` take `events_path`
+— no test in the workspace calls `std::env::set_var` (issue #20: three tests in
+`swab/src/cli.rs` used to mutate `$HOME` to fake it, which raced every other test reading
+that process-global var under parallel `cargo test`).
 
 **The gate:** `make check` (fmt-check + clippy `-D warnings` + tests) must exit 0. That is
 the fast loop; `make check-all` adds the three CI jobs that need extra tooling —
 `cargo-deny`, an MSRV toolchain, and node for the Raycast extension. Run
 `check-all` before opening a PR.
-
-**`--test-threads=1` is required.** The reason is *not* the one this file used to give:
-it is not a Python artifact, and the Python is gone. Three tests in `swab/src/cli.rs`
-mutate `$HOME`, which is process-global, so in parallel they race every test that reads it.
-Measured: without the flag, `cargo test -p swab --lib` fails 3 runs out of 3. Making those
-three stop touching the environment would let the flag go.
 
 **PTY tests:** `petri/tests/pty_support/` drives the real binary through a pseudo-terminal.
 Assert against a reconstructed screen grid, never the raw byte stream — a partially-painted

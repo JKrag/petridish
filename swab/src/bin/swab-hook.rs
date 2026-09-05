@@ -46,9 +46,12 @@ pub fn run_hook(input: HookInput, events_path: &std::path::Path) -> io::Result<(
 /// **Always returns 0** — the whole body is wrapped in `catch_unwind` at the call site in
 /// `main()`. This function returns an exit code (never `None`), but can be `panic!`-safe
 /// via the wrapper around it.
-pub fn handle_hook_input(stdin: &str) -> i32 {
-    let events_path = swab::events::events_path();
-
+///
+/// `events_path` is injected rather than resolved internally via `swab::events::events_path()`
+/// so tests can point at a scratch file without mutating the process-wide
+/// `PETRIDISH_EVENTS_PATH` env var — see `mod hook_tests` for why that mutation is unsafe
+/// under parallel tests.
+pub fn handle_hook_input(stdin: &str, events_path: &std::path::Path) -> i32 {
     // If parsing fails for any reason (empty stdin, malformed JSON, wrong shape): exit 0
     // immediately, do nothing else. Mirrors hook.py's `try/except BaseException: return 0`.
     let raw = match serde_json::from_str::<serde_json::Value>(stdin) {
@@ -78,7 +81,7 @@ pub fn handle_hook_input(stdin: &str) -> i32 {
             session_id,
             event,
         };
-        run_hook(input, &events_path)
+        run_hook(input, events_path)
     }) {
         Ok(Ok(())) => 0,
         _ => 0, // ANY failure (panic or error) -> still exit 0. The contract is absolute.
@@ -91,7 +94,13 @@ pub fn main() {
         return;
     }
 
-    let exit = std::panic::catch_unwind(|| handle_hook_input(&stdin_buf));
+    // `events_path()` stays INSIDE the wrapped closure — the module contract is
+    // "must ALWAYS exit 0", so a panic in path resolution (e.g. `HOME` unset) has to be
+    // caught here too, not just a panic inside `handle_hook_input`.
+    let exit = std::panic::catch_unwind(|| {
+        let events_path = swab::events::events_path();
+        handle_hook_input(&stdin_buf, &events_path)
+    });
     match exit {
         Ok(code) => std::process::exit(code),
         Err(_) => std::process::exit(0),
@@ -102,56 +111,36 @@ pub fn main() {
 mod hook_tests {
     use super::*;
 
-    /// Helper: run the hook against a fake stdin, returning the exit code. Callers must set
-    /// up their own `TempEventsFile` guard BEFORE calling this -- an earlier version of this
-    /// helper created its own nested guard here, whose `Drop` unset
-    /// `PETRIDISH_EVENTS_PATH` the instant this function returned, so every assertion the
-    /// caller made afterward against `events_path()` (reading back the just-appended line)
-    /// silently fell through to the real, nonexistent `$HOME/.petridish/events.ndjson`.
-    fn run_hook_in_test(stdin: &str, _events_path_override: Option<&std::path::Path>) -> i32 {
-        handle_hook_input(stdin)
+    /// Helper: run the hook against a fake stdin and a scratch events path, returning the
+    /// exit code.
+    fn run_hook_in_test(stdin: &str, events_path: &std::path::Path) -> i32 {
+        handle_hook_input(stdin, events_path)
     }
 
-    /// Test fixture: write the events payload to a unique temp file under `$PETRIDISH_EVENTS_PATH`
-    /// for the duration of the test. RAII drops clean up.
-    struct TempEventsFile {
-        _path: std::path::PathBuf,
-    }
-
-    impl TempEventsFile {
-        fn new(override_path: Option<&std::path::Path>) -> Self {
-            let dir = std::env::temp_dir().join(format!("swab_hook_test_{}", std::process::id()));
-            let _ = std::fs::create_dir_all(&dir); // best-effort
-            let path = match override_path {
-                Some(p) => p.to_path_buf(),
-                None => dir.join("events.ndjson"),
-            };
-            // Clear any pre-existing events file.
-            let _ = std::fs::remove_file(&path);
-            // Set the env var so `events_path()` returns our test file.
-            unsafe { std::env::set_var("PETRIDISH_EVENTS_PATH", path.to_str().unwrap()) };
-            Self { _path: path }
-        }
-    }
-
-    impl Drop for TempEventsFile {
-        fn drop(&mut self) {
-            unsafe { std::env::remove_var("PETRIDISH_EVENTS_PATH") };
-        }
+    /// A unique scratch events file per test, passed explicitly to `handle_hook_input`/
+    /// `run_hook` rather than via `$PETRIDISH_EVENTS_PATH` — mutating that process-wide env
+    /// var raced every other test doing the same under parallel `cargo test` (the same class
+    /// of bug `swab/src/cli.rs`'s `$HOME` mutation had — see issue #20).
+    fn temp_events_path(name: &str) -> std::path::PathBuf {
+        let dir =
+            std::env::temp_dir().join(format!("swab_hook_test_{}_{name}", std::process::id()));
+        let _ = std::fs::create_dir_all(&dir);
+        let path = dir.join("events.ndjson");
+        let _ = std::fs::remove_file(&path);
+        path
     }
 
     // ── Test 1: all fields present -> one line appended, exit 0 ────────
 
     #[test]
     fn all_fields_present_appends_one_line() {
-        let _guard = TempEventsFile::new(None);
+        let path = temp_events_path("all_fields");
         let input =
             r#"{"cwd":"/tmp/project","session_id":"sess-123","hook_event_name":"tool_use"}"#;
 
-        let code = run_hook_in_test(input, None);
+        let code = run_hook_in_test(input, &path);
         assert_eq!(code, 0, "valid input must exit 0");
 
-        let path = swab::events::events_path();
         let content = std::fs::read_to_string(&path).unwrap_or_default();
         let lines: Vec<_> = content.split('\n').filter(|l| !l.is_empty()).collect();
         assert_eq!(lines.len(), 1, "one line appended: {content:?}");
@@ -167,11 +156,10 @@ mod hook_tests {
 
     #[test]
     fn malformed_json_exits_zero_no_append() {
-        let _guard = TempEventsFile::new(None);
-        let code = run_hook_in_test("not valid json {{{", None);
+        let path = temp_events_path("malformed_json");
+        let code = run_hook_in_test("not valid json {{{", &path);
         assert_eq!(code, 0, "must exit 0 on malformed JSON");
 
-        let path = swab::events::events_path();
         let content = std::fs::read_to_string(&path).unwrap_or_default();
         let lines: Vec<_> = content.split('\n').filter(|l| !l.is_empty()).collect();
         assert_eq!(
@@ -185,11 +173,10 @@ mod hook_tests {
 
     #[test]
     fn empty_stdin_exits_zero_no_append() {
-        let _guard = TempEventsFile::new(None);
-        let code = run_hook_in_test("", None);
+        let path = temp_events_path("empty_stdin");
+        let code = run_hook_in_test("", &path);
         assert_eq!(code, 0, "must exit 0 on empty stdin");
 
-        let path = swab::events::events_path();
         let content = std::fs::read_to_string(&path).unwrap_or_default();
         let lines: Vec<_> = content.split('\n').filter(|l| !l.is_empty()).collect();
         assert_eq!(lines.len(), 0, "no line appended on empty stdin");
@@ -199,12 +186,11 @@ mod hook_tests {
 
     #[test]
     fn camel_case_session_id_picked_up() {
-        let _guard = TempEventsFile::new(None);
+        let path = temp_events_path("camel_case");
         let input = r#"{"cwd":"/tmp/proj","sessionId":"camel-sess"}"#;
-        let code = run_hook_in_test(input, None);
+        let code = run_hook_in_test(input, &path);
         assert_eq!(code, 0);
 
-        let path = swab::events::events_path();
         let content = std::fs::read_to_string(&path).unwrap_or_default();
         let record: serde_json::Value = serde_json::from_str(content.trim()).expect("valid JSON");
         assert_eq!(
@@ -217,12 +203,11 @@ mod hook_tests {
 
     #[test]
     fn missing_cwd_exits_zero_no_append() {
-        let _guard = TempEventsFile::new(None);
+        let path = temp_events_path("missing_cwd");
         let input = r#"{"session_id":"sess-1","hook_event_name":"tool_use"}"#; // no cwd
-        let code = run_hook_in_test(input, None);
+        let code = run_hook_in_test(input, &path);
         assert_eq!(code, 0, "must exit 0 on missing cwd");
 
-        let path = swab::events::events_path();
         let content = std::fs::read_to_string(&path).unwrap_or_default();
         let lines: Vec<_> = content.split('\n').filter(|l| !l.is_empty()).collect();
         assert_eq!(
@@ -236,13 +221,12 @@ mod hook_tests {
 
     #[test]
     fn missing_hook_event_name_appends_with_null_event() {
-        let _guard = TempEventsFile::new(None);
+        let path = temp_events_path("missing_event_name");
         // `hook_event_name` absent entirely.
         let input = r#"{"cwd":"/tmp/proj","session_id":"sess-1"}"#;
-        let code = run_hook_in_test(input, None);
+        let code = run_hook_in_test(input, &path);
         assert_eq!(code, 0);
 
-        let path = swab::events::events_path();
         let content = std::fs::read_to_string(&path).unwrap_or_default();
         let record: serde_json::Value = serde_json::from_str(content.trim()).expect("valid JSON");
         assert_eq!(record["cwd"], "/tmp/proj");
@@ -276,8 +260,8 @@ mod hook_tests {
         }
 
         // Trivial case: valid JSON but no `cwd` -> event dropped, still exits 0.
-        let _guard = TempEventsFile::new(None);
-        let code = run_hook_in_test(r#"{"nope": true}"#, None);
+        let path = temp_events_path("panic_guard");
+        let code = run_hook_in_test(r#"{"nope": true}"#, &path);
         assert_eq!(code, 0, "even weird-shaped JSON must exit 0");
     }
 
@@ -285,13 +269,12 @@ mod hook_tests {
     /// return `Ok(())`. Used as an additional path beyond the wrap-level exit-code test.
     #[test]
     fn run_hook_direct_appends_one_line() {
-        let _guard = TempEventsFile::new(None);
+        let events_path = temp_events_path("run_hook_direct");
         let input = HookInput {
             cwd: Some("/tmp/direct-proj".into()),
             session_id: Some("sess-direct".into()),
             event: Some("prompt".into()),
         };
-        let events_path = swab::events::events_path();
         let result = run_hook(input, &events_path);
         assert!(result.is_ok(), "run_hook must succeed: {:?}", result);
 
@@ -305,8 +288,7 @@ mod hook_tests {
     /// Test run_hook dropped an empty `cwd`.
     #[test]
     fn run_hook_drops_empty_cwd() {
-        let _guard = TempEventsFile::new(None);
-        let events_path = swab::events::events_path();
+        let events_path = temp_events_path("drops_empty_cwd");
         let result = run_hook(
             HookInput {
                 cwd: Some("".into()),
@@ -331,11 +313,15 @@ mod hook_tests {
     /// calls, so calling it directly still exercises the same "never exit nonzero" contract.
     #[test]
     fn binary_main_exits_zero_on_malformed_stdin() {
-        let _guard = TempEventsFile::new(None);
+        let path = temp_events_path("binary_main_malformed");
 
-        assert_eq!(handle_hook_input(""), 0, "must exit 0 on empty stdin");
         assert_eq!(
-            handle_hook_input("not json"),
+            handle_hook_input("", &path),
+            0,
+            "must exit 0 on empty stdin"
+        );
+        assert_eq!(
+            handle_hook_input("not json", &path),
             0,
             "must exit 0 on malformed stdin"
         );

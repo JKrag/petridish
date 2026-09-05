@@ -111,16 +111,15 @@ fn as_string_list(table: &toml::value::Table, key: &str) -> Option<Vec<String>> 
 /// Path-string list (`roots` / `extra_paths`). Same shape as [`as_string_list`]
 /// but expands `~`/env prefixes and returns `PathBuf`s directly — so the caller
 /// doesn't have to remember to expand after reading a path field.
-fn as_path_list(table: &toml::value::Table, key: &str) -> Option<Vec<PathBuf>> {
+fn as_path_list(table: &toml::value::Table, key: &str, home: &str) -> Option<Vec<PathBuf>> {
     let items = as_string_list(table, key)?;
     if items.is_empty() {
         return Some(Vec::new());
     }
-    let home = std::env::var("HOME").unwrap_or_default();
     Some(
         items
             .iter()
-            .map(|s| PathBuf::from(expand_path(s, &home)))
+            .map(|s| PathBuf::from(expand_path(s, home)))
             .collect(),
     )
 }
@@ -188,6 +187,13 @@ fn as_str_table(table: &toml::value::Table, key: &str) -> Option<HashMap<String,
 /// `src/petridish/config.py`. Per the contract, this applies to file-provided values
 /// *and* defaults, since `load_config` seeds from `Config::default()` and then overrides
 /// in place (so the same expansion path handles both).
+///
+/// `$HOME` is special-cased against the `home` parameter rather than a live
+/// `std::env::var("HOME")` lookup, so callers (and their tests) can inject a home
+/// directory without mutating the process-wide `HOME` env var — see `load_config`'s
+/// doc comment for why that mutation is unsafe under parallel tests. Every other `$VAR`
+/// still resolves from the real environment; only `HOME` needed injectability, since it's
+/// the one variable tests plausibly want to fake.
 fn expand_path(s: &str, home: &str) -> String {
     let s = if s == "~" {
         home.to_string()
@@ -210,7 +216,9 @@ fn expand_path(s: &str, home: &str) -> String {
                     break;
                 }
             }
-            if let Ok(val) = std::env::var(&name) {
+            if name == "HOME" {
+                out.push_str(home);
+            } else if let Ok(val) = std::env::var(&name) {
                 out.push_str(&val);
             } else {
                 // Unknown var: leave `$NAME` untouched rather than silently stripping it.
@@ -234,14 +242,19 @@ fn expand_path(s: &str, home: &str) -> String {
 /// raw `~/...` strings so callers constructing a `Config` directly (bypassing this loader,
 /// e.g. in tests) aren't silently mutated — expansion is this function's job, not the
 /// `Default` impl's.
-pub fn load_config(path: &std::path::Path) -> Result<Config, ConfigError> {
+///
+/// `home` drives `~`/`$HOME` expansion (see `expand_path`'s doc comment) — callers pass
+/// the same directory `path` was resolved against (typically via `for_home`), so tests can
+/// inject a scratch home without touching the process-wide `HOME` env var.
+pub fn load_config(path: &std::path::Path, home: &std::path::Path) -> Result<Config, ConfigError> {
+    let home = home.to_string_lossy();
     let mut cfg = Config::default();
 
     // A missing config file is valid — defaults apply. Never raise here. Still falls
     // through to the unconditional expansion pass below, not an early return, so these
     // defaults come out expanded too.
     if !path.exists() {
-        return Ok(expand_config_paths(cfg));
+        return Ok(expand_config_paths(cfg, &home));
     }
 
     let raw = std::fs::read_to_string(path)
@@ -254,10 +267,10 @@ pub fn load_config(path: &std::path::Path) -> Result<Config, ConfigError> {
     // leaves the field alone. Path fields go through `as_path_list` which expands
     // `~`/env prefixes into absolute `PathBuf`s; non-path string lists keep raw
     // strings (no expansion needed).
-    if let Some(items) = as_path_list(&table, "roots") {
+    if let Some(items) = as_path_list(&table, "roots", &home) {
         cfg.roots = items;
     }
-    if let Some(items) = as_path_list(&table, "extra_paths") {
+    if let Some(items) = as_path_list(&table, "extra_paths", &home) {
         cfg.extra_paths = items;
     }
     if let Some(items) = as_string_list(&table, "author_patterns") {
@@ -286,16 +299,15 @@ pub fn load_config(path: &std::path::Path) -> Result<Config, ConfigError> {
         }
     }
 
-    Ok(expand_config_paths(cfg))
+    Ok(expand_config_paths(cfg, &home))
 }
 
 /// Unconditionally `~`/env-expands `cfg.roots`/`cfg.extra_paths`, whether they came from
 /// the file (already expanded by `as_path_list`, so this is a harmless no-op re-pass) or
 /// fell through untouched from `Config::default()`'s raw `~/...` seed strings (the case
 /// this function exists to fix — see `load_config`'s doc comment).
-fn expand_config_paths(mut cfg: Config) -> Config {
-    let home = std::env::var("HOME").unwrap_or_default();
-    let expand_one = |p: &PathBuf| PathBuf::from(expand_path(&p.to_string_lossy(), &home));
+fn expand_config_paths(mut cfg: Config, home: &str) -> Config {
+    let expand_one = |p: &PathBuf| PathBuf::from(expand_path(&p.to_string_lossy(), home));
     cfg.roots = cfg.roots.iter().map(expand_one).collect();
     cfg.extra_paths = cfg.extra_paths.iter().map(expand_one).collect();
     cfg
@@ -316,6 +328,12 @@ mod tests {
         path
     }
 
+    /// A fake home directory, injected explicitly rather than via `$HOME` mutation — see
+    /// `expand_path`'s doc comment for why tests must never call `std::env::set_var`.
+    fn test_home() -> std::path::PathBuf {
+        std::path::PathBuf::from("/fake/test/home")
+    }
+
     /// Test 1: nonexistent path -> Ok(defaults), EXPANDED — `load_config`'s output is
     /// never equal to raw `Config::default()` for `roots`, since expansion is this
     /// function's contract regardless of whether the file exists (see next test for the
@@ -323,7 +341,7 @@ mod tests {
     #[test]
     fn load_missing_path_returns_defaults() {
         let path = std::path::PathBuf::from("/tmp/nonexistent_swab_test_12345.toml");
-        let cfg = load_config(&path).expect("missing path must not error");
+        let cfg = load_config(&path, &test_home()).expect("missing path must not error");
         assert_eq!(cfg.max_depth, Config::default().max_depth);
         assert_eq!(cfg.author_patterns, Config::default().author_patterns);
         for root in &cfg.roots {
@@ -343,7 +361,7 @@ mod tests {
     #[test]
     fn omitted_roots_in_file_still_expand_the_defaults() {
         let path = with_tmp("no_roots.toml", "max_depth = 9\n");
-        let cfg = load_config(&path).expect("must parse");
+        let cfg = load_config(&path, &test_home()).expect("must parse");
         assert_eq!(cfg.max_depth, 9);
         assert!(!cfg.roots.is_empty(), "defaults must still populate roots");
         for root in &cfg.roots {
@@ -360,7 +378,7 @@ mod tests {
         // Top-level key — `toml::Table` flattens sections at parse time, so the
         // override must appear directly under the outer table.
         let path = with_tmp("valid.toml", "max_depth = 7\n");
-        let cfg = load_config(&path).expect("parse should succeed");
+        let cfg = load_config(&path, &test_home()).expect("parse should succeed");
         assert_eq!(cfg.max_depth, 7);
         // All other fields remain at defaults — roots come back EXPANDED, per
         // load_config's contract (see `omitted_roots_in_file_still_expand_the_defaults`).
@@ -380,7 +398,7 @@ mod tests {
     #[test]
     fn roots_string_falls_back_to_default() {
         let path = with_tmp("roots_bad.toml", "roots = \"~/repos\"\n");
-        let cfg = load_config(&path).expect("type mismatch must degrade to default");
+        let cfg = load_config(&path, &test_home()).expect("type mismatch must degrade to default");
         // Falls back to the default roots, expanded (same contract as the missing-file case).
         for root in &cfg.roots {
             assert!(!root.to_string_lossy().starts_with('~'));
@@ -391,16 +409,16 @@ mod tests {
     #[test]
     fn malformed_toml_returns_error() {
         let path = with_tmp("broken.toml", "roots = [\"a\", \"b\"\n"); // unterminated array
-        let err = load_config(&path).expect_err("broken TOML must error");
+        let err = load_config(&path, &test_home()).expect_err("broken TOML must error");
         assert!(!err.0.is_empty(), "error message must name the problem");
     }
 
     /// Test 5: `~` in roots is expanded to an absolute path.
     #[test]
     fn tilde_is_expanded() {
-        let home = std::env::var("HOME").expect("HOME must be set for this test");
+        let home = test_home();
         let path = with_tmp("tilde.toml", r#"roots = ["~/repos", "~/learning"]"#);
-        let cfg = load_config(&path).expect("expand must succeed");
+        let cfg = load_config(&path, &home).expect("expand must succeed");
 
         // Every root must be absolute (no leading `~`) — default-expansion guard.
         for root in &cfg.roots {
@@ -411,13 +429,7 @@ mod tests {
             );
         }
         // And order/contents match the input (after expansion).
-        assert_eq!(
-            cfg.roots,
-            vec![
-                PathBuf::from(format!("{home}/repos")),
-                PathBuf::from(format!("{home}/learning")),
-            ]
-        );
+        assert_eq!(cfg.roots, vec![home.join("repos"), home.join("learning"),]);
     }
 
     /// Test 6: for_home composes paths exactly — exercise `for_home` directly.
@@ -443,7 +455,7 @@ stale = 1440.0
 "*.py" = "python"
 "#;
         let path = with_tmp("tables.toml", toml_text);
-        let cfg = load_config(&path).expect("table fields must parse");
+        let cfg = load_config(&path, &test_home()).expect("table fields must parse");
 
         assert_eq!(cfg.bucket_thresholds.get("active"), Some(&72.0));
         // Provided + seeded defaults both present.
@@ -464,7 +476,7 @@ stale = 1440.0
     fn bucket_thresholds_partial_override_merges_with_defaults() {
         let toml_text = "[bucket_thresholds]\nactive = 72.0\n";
         let path = with_tmp("partial_thresholds.toml", toml_text);
-        let cfg = load_config(&path).expect("partial table must parse");
+        let cfg = load_config(&path, &test_home()).expect("partial table must parse");
 
         assert_eq!(cfg.bucket_thresholds.get("active"), Some(&72.0));
         assert_eq!(
@@ -487,7 +499,8 @@ stale = 1440.0
     fn category_overrides_drops_only_the_bad_key() {
         let toml_text = "[category_overrides]\n\"*.js\" = \"javascript\"\n\"*.bad\" = 42\n\"*.py\" = \"python\"\n";
         let path = with_tmp("partial_overrides.toml", toml_text);
-        let cfg = load_config(&path).expect("table with one bad value must still parse");
+        let cfg =
+            load_config(&path, &test_home()).expect("table with one bad value must still parse");
 
         assert_eq!(cfg.category_overrides.get("*.js").unwrap(), "javascript");
         assert_eq!(cfg.category_overrides.get("*.py").unwrap(), "python");
@@ -506,13 +519,10 @@ stale = 1440.0
     /// Sanity check: env-var prefix on a path string is expanded too.
     #[test]
     fn env_var_prefix_is_expanded() {
+        let home = test_home();
         let path = with_tmp("envvar.toml", "roots = [\"$HOME/repos\"]");
-        let cfg = load_config(&path).expect("env-expand must succeed");
+        let cfg = load_config(&path, &home).expect("env-expand must succeed");
         assert_eq!(cfg.roots.len(), 1);
-        let s = cfg.roots[0].to_string_lossy();
-        assert!(
-            !s.starts_with('$'),
-            "env var should have been expanded: {s:?}"
-        );
+        assert_eq!(cfg.roots[0], home.join("repos"));
     }
 }

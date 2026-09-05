@@ -14,7 +14,9 @@ use std::fs::OpenOptions;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 
-/// `$PETRIDISH_EVENTS_PATH` env var override (tests), else `$HOME/.petridish/events.ndjson`.
+/// `$PETRIDISH_EVENTS_PATH` env var override (a manual escape hatch — no test in the
+/// workspace relies on it, since `swab-hook`'s tests inject `events_path` directly instead
+/// of mutating this process-global var), else `$HOME/.petridish/events.ndjson`.
 pub fn events_path() -> PathBuf {
     if let Ok(override_path) = std::env::var("PETRIDISH_EVENTS_PATH") {
         return PathBuf::from(override_path);

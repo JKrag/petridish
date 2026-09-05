@@ -68,10 +68,7 @@ jobs:
       # `--locked` so a stale Cargo.lock fails loudly here instead of being
       # silently re-resolved — the same reasoning ARCHITECTURE.md §8.1 gives for
       # pinning it on `cargo install`.
-      #
-      # `--test-threads=1` because three tests in swab/src/cli.rs mutate $HOME,
-      # which is process-global. See the Makefile's `test` target.
-      - run: cargo test --locked --workspace -- --test-threads=1
+      - run: cargo test --locked --workspace
 
   # The floor declared in [workspace.package].rust-version. Without a job that
   # actually builds on it, that field is a claim rather than a guarantee.

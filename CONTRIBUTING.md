@@ -25,7 +25,7 @@ trains people to ignore it.
 make fmt        # cargo fmt --all
 make fmt-check  # cargo fmt --all --check
 make clippy     # cargo clippy --workspace --all-targets --all-features -- -D warnings
-make test       # cargo test --locked --workspace -- --test-threads=1
+make test       # cargo test --locked --workspace
 make check      # fmt-check + clippy + test
 make deny       # cargo-deny (licences + advisories)
 make msrv       # build on the rust-version floor
@@ -42,17 +42,6 @@ One-time setup so `git blame` skips the bulk reformat commit:
 ```sh
 git config blame.ignoreRevsFile .git-blame-ignore-revs
 ```
-
-## Why `--test-threads=1`
-
-Three tests in `swab/src/cli.rs` mutate `$HOME`, which is process-global, so in parallel
-they race every test that reads it. Measured: without the flag, `cargo test -p swab --lib`
-fails 3 runs out of 3.
-
-This file and `CLAUDE.md` both used to blame the Python test suite for this. That was
-wrong — the Python is gone and the requirement remains. Making those three tests stop
-touching the environment is a real improvement and would let the flag go; everything
-written since takes paths as parameters precisely to avoid adding a fourth.
 
 ## Non-negotiable invariants
 

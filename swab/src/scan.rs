@@ -65,7 +65,10 @@ impl ScanPaths {
     ///
     /// `events_path` is overridden via `events::events_path()` (rather than left as
     /// `for_home`'s plain `home`-relative default) so this still honors the
-    /// `PETRIDISH_EVENTS_PATH` env override that `swab-hook` and its tests rely on.
+    /// `PETRIDISH_EVENTS_PATH` env override — kept as a manual escape hatch, though no test
+    /// in the workspace relies on it any more (see `swab/src/bin/swab-hook.rs`'s test
+    /// module: `handle_hook_input`/`run_hook` take `events_path` as a parameter instead, to
+    /// avoid mutating this process-global var under parallel tests).
     pub fn production_defaults() -> Self {
         let home = std::env::var("HOME").expect("HOME must be set");
         let mut paths = Self::for_home(Path::new(&home));
