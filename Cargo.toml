@@ -47,7 +47,7 @@ serde = { version = "1", features = ["derive"] }
 # `events.ndjson` is unchanged because `swab::events::EventLine` was converted
 # from a `Map` to a struct for exactly this reason.
 serde_json = { version = "1", features = ["preserve_order"] }
-toml = "0.8"
+toml = "1.1"
 petridish-core = { path = "petridish-core", version = "1.0.0-beta.1" }
 
 # Release binaries are shipped as prebuilt tarballs (Homebrew tap + shell
