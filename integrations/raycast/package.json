@@ -24,7 +24,12 @@
       "description": "Open the best-matching project directly, no list view.",
       "mode": "no-view",
       "arguments": [
-        { "name": "query", "placeholder": "project name", "type": "text", "required": true }
+        {
+          "name": "query",
+          "placeholder": "project name",
+          "type": "text",
+          "required": true
+        }
       ]
     }
   ],
@@ -33,10 +38,10 @@
     "@raycast/utils": "^1.17.0"
   },
   "devDependencies": {
-    "@raycast/eslint-config": "^1.0.11",
+    "@raycast/eslint-config": "^2.2.0",
     "@types/node": "20.8.10",
     "@types/react": "19.0.10",
-    "eslint": "^8.57.0",
+    "eslint": "^10.10.0",
     "prettier": "^3.3.3",
     "typescript": "^5.4.5"
   },

@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { List, ActionPanel, Action, Icon } from "@raycast/api";
+import { List, ActionPanel, Action, Icon, Keyboard } from "@raycast/api";
 import { STATUS_BUCKETS } from "./types.ts";
 import type { Radar } from "./types.ts";
 import {
@@ -94,7 +94,7 @@ export default function Command() {
                     <Action
                       title="Reload"
                       icon={Icon.ArrowClockwise}
-                      shortcut={{ modifiers: ["cmd"], key: "r" }}
+                      shortcut={Keyboard.Shortcut.Common.Refresh}
                       onAction={load}
                     />
                   </ActionPanel>
