@@ -307,9 +307,12 @@ cargo install --path petri --locked
 petridish install
 ```
 
-`--locked` is load-bearing, not decoration: `cargo install` otherwise ignores `Cargo.lock`
-and re-resolves, and a yanked transitive `gix` dependency (`bisync`) makes that resolution
-fail outright. `README.md` carries the same warning where a new reader will meet it.
+`--locked` matters: `cargo install` otherwise ignores `Cargo.lock` and re-resolves, so an
+install gets whatever is newest rather than the set CI tested. Until `gix` 0.87 it was
+strictly mandatory — a yanked transitive dependency (`bisync`) made an unlocked resolve fail
+outright — and the historical note is worth keeping, because it is why `--locked` appears on
+every command in this document. `README.md` carries the same guidance where a new reader
+meets it.
 
 **Why the daemon is not a Homebrew `service` block.** Homebrew formulae can manage a
 launchd job directly, which would shorten the path for brew users. Rejected: everyone

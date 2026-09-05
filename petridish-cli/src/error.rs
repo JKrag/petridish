@@ -37,9 +37,10 @@ impl fmt::Display for InstallError {
             // missing binary — telling someone to `cargo install --path swab`
             // when `petridish` is what is missing sends them in a circle.
             //
-            // `--locked` is not decoration: `cargo install` otherwise ignores
-            // Cargo.lock and re-resolves, and a yanked transitive `gix`
-            // dependency makes that resolution fail outright (README.md,
+            // `--locked` installs the versions CI actually tested rather than
+            // re-resolving to whatever is newest. It was strictly mandatory
+            // until `gix` 0.87 dropped the yanked `bisync` transitive dependency
+            // that made an unlocked resolve fail outright (README.md,
             // ARCHITECTURE.md §8.1).
             InstallError::BinaryNotFound(name) => {
                 let crate_dir = match name.as_str() {
