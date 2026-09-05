@@ -16,7 +16,17 @@ is **generated** — never hand-edit it; change `dist-workspace.toml` and run
 
 2. **Create the tap repository:** `github.com/JKrag/homebrew-tap`, public. It must
    exist before the first release — cargo-dist pushes to it, it does not create
-   it. An empty repo with a README is enough.
+   it.
+
+   **It must have at least one commit.** A repository created with no README and
+   no initial commit has no branches at all, and `actions/checkout` in the
+   publish job fails with `fatal: couldn't find remote ref refs/heads/master`.
+   GitHub's API reports a `default_branch` for an empty repository even though no
+   such ref exists, so the error looks like a branch-name mismatch and is not one.
+   This happened on the first release of `v1.0.0-beta.1`; adding a README and
+   re-running the failed job was the whole fix.
+
+   Tick "Add a README file" when creating it, or push one commit afterwards.
 
 3. **Create `HOMEBREW_TAP_TOKEN`.** The release workflow needs a token with write
    access to the tap repo, because the default `GITHUB_TOKEN` is scoped to this
@@ -117,6 +127,19 @@ brew upgrade petridish
 launchctl list | grep petridish     # must still be running
 petridish doctor                    # the `plist` check catches a stale path
 ```
+
+### If `publish-homebrew-formula` fails
+
+It runs last, so the tarballs and the GitHub Release have already succeeded by
+then. **Do not re-tag.** Fix the cause and re-run just that job:
+
+```sh
+gh run rerun <run-id> --failed
+```
+
+Two causes seen or anticipated: an empty tap repository (above), and a
+`HOMEBREW_TAP_TOKEN` scoped to the wrong repository, which fails with a 403 at
+the push rather than at checkout.
 
 `petridish install` writes an absolute `swab` path into the launchd plist. It
 deliberately keeps Homebrew's stable `/opt/homebrew/bin` symlink rather than
