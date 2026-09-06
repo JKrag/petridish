@@ -438,6 +438,25 @@ fn git_history_is_bound_and_always_resolvable_thanks_to_its_fallback() {
 }
 
 #[test]
+fn reveal_in_finder_is_bound_and_uses_open() {
+    let reg = tools::registry();
+    let reveal = reg
+        .iter()
+        .find(|a| a.id == "reveal")
+        .expect("registry must carry a reveal action");
+    assert_eq!(reveal.key, 'f');
+    assert_eq!(reveal.target, Target::Path);
+    let got = tools::resolve(reveal, &PROJECT, None, &only(&["open"]));
+    match got {
+        Resolution::Ready(launch) => {
+            assert_eq!(launch.program, "open");
+            assert_eq!(launch.args, vec![PROJECT.path.to_string()]);
+        }
+        other => panic!("a machine with only `open` installed must resolve, got {other:?}"),
+    }
+}
+
+#[test]
 fn browse_is_the_only_url_targeted_action() {
     for action in tools::registry() {
         let expected = if action.id == "browse" {

@@ -225,6 +225,15 @@ pub fn registry() -> Vec<Action> {
                 .as_fallback(),
             ],
         },
+        Action {
+            id: "reveal",
+            key: 'f',
+            label: "reveal in Finder",
+            target: Target::Path,
+            // macOS only, same reasoning as `browse`'s `open {url}`: `open` hands the
+            // path to Finder, which is the correct amount of opinion for petri to have.
+            candidates: vec![Candidate::new("open", &["{path}"], ExecMode::Background)],
+        },
     ]
 }
 
