@@ -232,6 +232,25 @@ fn two_real_candidates_and_no_stored_answer_is_ambiguous() {
 }
 
 #[test]
+fn rescan_is_bound_and_uses_swab_scan() {
+    let reg = tools::registry();
+    let rescan = reg
+        .iter()
+        .find(|a| a.id == "rescan")
+        .expect("registry must carry a rescan action");
+    assert_eq!(rescan.key, 's');
+    assert_eq!(rescan.target, Target::Path);
+    let got = tools::resolve(rescan, &PROJECT, None, &only(&["swab"]));
+    match got {
+        Resolution::Ready(launch) => {
+            assert_eq!(launch.program, "swab");
+            assert_eq!(launch.args, vec!["scan".to_string()]);
+        }
+        other => panic!("a machine with only `swab` installed must resolve, got {other:?}"),
+    }
+}
+
+#[test]
 fn a_lone_fallback_never_opens_the_picker() {
     // THE load-bearing rule. `git` is installed on every machine that can run
     // this repo. If fallbacks counted toward ambiguity, `gitlog` would be

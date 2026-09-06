@@ -234,6 +234,17 @@ pub fn registry() -> Vec<Action> {
             // path to Finder, which is the correct amount of opinion for petri to have.
             candidates: vec![Candidate::new("open", &["{path}"], ExecMode::Background)],
         },
+        Action {
+            id: "rescan",
+            key: 's',
+            label: "rescan now",
+            target: Target::Path,
+            // `swab scan` otherwise only runs on the 60s launchd StartInterval;
+            // petri already polls projects.json's mtime every second and
+            // reloads on change (lib.rs's main loop), so firing the scan is
+            // the whole job here — no reload logic needed on petri's side.
+            candidates: vec![Candidate::new("swab", &["scan"], ExecMode::Background)],
+        },
     ]
 }
 
