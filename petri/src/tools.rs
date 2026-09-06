@@ -55,6 +55,15 @@ pub struct Candidate {
     /// URL. An argument containing neither is passed through verbatim.
     pub args: Vec<String>,
     pub mode: ExecMode,
+    /// Identity used for the stored preference and `launch_for`'s registry
+    /// lookup. Defaults to `program` in `Candidate::new` -- only diverges via
+    /// `as_app`, for candidates that share a `program` with a sibling (e.g.
+    /// multiple `open -a "<App>"` variants) and need a distinct identity.
+    pub id: String,
+    /// The key passed to the `installed` probe closure. Defaults to `program`
+    /// in `Candidate::new`; `as_app` sets it to `"app:<Name>"` so the caller's
+    /// probe can check `/Applications/<Name>.app` instead of a `PATH` lookup.
+    pub probe: String,
     /// A last-resort entry, not a menu item.
     ///
     /// This exists for exactly one reason, and without it the whole design
@@ -73,8 +82,11 @@ pub struct Candidate {
 
 impl Candidate {
     pub fn new<S: Into<String>>(program: S, args: &[&str], mode: ExecMode) -> Self {
+        let program = program.into();
         Candidate {
-            program: program.into(),
+            id: program.clone(),
+            probe: program.clone(),
+            program,
             args: args.iter().map(|a| (*a).to_string()).collect(),
             mode,
             fallback: false,
@@ -84,6 +96,16 @@ impl Candidate {
     /// Mark this candidate a last resort. See [`Candidate::fallback`].
     pub fn as_fallback(mut self) -> Self {
         self.fallback = true;
+        self
+    }
+
+    /// Marks this candidate as one of several sharing the same `program`
+    /// (e.g. multiple `open -a "<App>"` variants) that need a distinct
+    /// identity and a real, per-app installed check instead of the
+    /// `PATH`-lookup every other candidate gets.
+    pub fn as_app(mut self, id: &str, app_name: &str) -> Self {
+        self.id = id.to_string();
+        self.probe = format!("app:{app_name}");
         self
     }
 }
@@ -318,20 +340,37 @@ pub fn resolve(
     // extracted so a one-off launch — which has a name but nothing stored —
     // can be built in one place, without re-deriving the Terminal-is-the-safe-
     // guess reasoning here).
-    if let Some(name) = configured
-        && installed(name)
-    {
-        return Resolution::Ready(launch_for(action, facts, name));
+    //
+    // Two sub-cases, since `configured` may or may not name a real registry
+    // candidate: if it does, its own `probe` decides installedness (so an
+    // `as_app` candidate is checked by app-bundle presence, not a bare PATH
+    // lookup); if it doesn't -- the picker's "Other — specify path…" answer,
+    // e.g. a hand-typed program never in the registry -- fall back to a
+    // direct PATH/path check on the stored string itself, exactly as before
+    // candidate identity existed. Either way `launch_for` builds the actual
+    // `Launch` so the two paths (known candidate vs. free-typed program)
+    // never have to agree on anything beyond "found something to launch".
+    if let Some(id) = configured {
+        match action.candidates.iter().find(|c| c.id == id) {
+            Some(candidate) if installed(candidate.probe.as_str()) => {
+                return Resolution::Ready(build_launch(candidate, facts));
+            }
+            None if installed(id) => {
+                return Resolution::Ready(launch_for(action, facts, id));
+            }
+            _ => {}
+        }
     }
 
-    // Rule 3: a stored answer that is no longer installed is ignored entirely —
-    // fall through as though nothing were configured (`ACT-8`).
+    // Rule 3: a stored answer that is no longer installed (or no longer names
+    // a real candidate that is still installed) is ignored entirely — fall
+    // through as though nothing were configured (`ACT-8`).
     //
     // Rule 4: otherwise decide from what is actually installed on this machine.
     let installed_candidates: Vec<&Candidate> = action
         .candidates
         .iter()
-        .filter(|c| installed(c.program.as_str()))
+        .filter(|c| installed(c.probe.as_str()))
         .collect();
 
     match installed_candidates.iter().filter(|c| !c.fallback).count() {
@@ -391,12 +430,12 @@ fn action_target<'a>(target: Target, facts: &'a Facts<'a>) -> &'a str {
 /// corrupts the display, assuming `Terminal` for a GUI program merely blocks
 /// `petri` until that window is closed. One is a bug, the other an
 /// inconvenience.
-pub fn launch_for(action: &Action, facts: &Facts, program: &str) -> Launch {
-    if let Some(candidate) = action.candidates.iter().find(|c| c.program == program) {
+pub fn launch_for(action: &Action, facts: &Facts, id: &str) -> Launch {
+    if let Some(candidate) = action.candidates.iter().find(|c| c.id == id) {
         build_launch(candidate, facts)
     } else {
         Launch {
-            program: program.to_string(),
+            program: id.to_string(),
             // Already a concrete path/URL, not a template — deliberately not
             // run through `substitute`, which would be a no-op here and would
             // wrongly suggest a user-typed program name can carry placeholders
@@ -436,7 +475,7 @@ pub fn repick_candidates(
     let installed: Vec<Candidate> = action
         .candidates
         .iter()
-        .filter(|c| installed(c.program.as_str()))
+        .filter(|c| installed(c.probe.as_str()))
         .cloned()
         .collect();
     Some(installed)

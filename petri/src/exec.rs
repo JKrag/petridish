@@ -231,3 +231,35 @@ fn is_executable(path: &Path) -> bool {
 fn is_executable(path: &Path) -> bool {
     path.is_file()
 }
+
+/// Like `is_installed`, but understands the `"app:<Name>"` probe key
+/// `Candidate::as_app` produces: checks `/Applications/<Name>.app` exists
+/// instead of a `PATH` lookup. Any other string is passed straight through
+/// to `is_installed`.
+pub fn is_installed_probe(probe: &str) -> bool {
+    match probe.strip_prefix("app:") {
+        Some(app_name) => Path::new(&format!("/Applications/{app_name}.app")).exists(),
+        None => is_installed(probe),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn is_installed_probe_checks_the_applications_folder_for_an_app_probe() {
+        assert!(!is_installed_probe(
+            "app:Definitely Not A Real App That Exists"
+        ));
+    }
+
+    #[test]
+    fn is_installed_probe_behaves_like_is_installed_for_a_plain_program() {
+        assert_eq!(is_installed_probe("git"), is_installed("git"));
+        assert_eq!(
+            is_installed_probe("definitely-not-a-real-binary-xyz"),
+            is_installed("definitely-not-a-real-binary-xyz")
+        );
+    }
+}

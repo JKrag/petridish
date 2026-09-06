@@ -165,7 +165,11 @@ impl PickerState {
     fn choose(&mut self, persist: bool) -> Outcome {
         match &self.options[self.selected] {
             Choice::Candidate(c) => Outcome::Chosen {
-                program: c.program.clone(),
+                // Despite the field name, this is the candidate's `id`, not
+                // its `program` -- two candidates on the same action can
+                // share a `program` (e.g. multiple `open -a "<App>"`
+                // variants) but never an `id`. See `Candidate::as_app`.
+                program: c.id.clone(),
                 persist,
             },
             Choice::Other => {

@@ -886,7 +886,7 @@ fn begin_action(
         });
 
     match crate::tools::resolve(action, &facts, stored.as_deref(), &|p| {
-        crate::exec::is_installed(p)
+        crate::exec::is_installed_probe(p)
     }) {
         crate::tools::Resolution::Ready(launch) => {
             launch_now(terminal, &launch, std::path::Path::new(&project.path))
@@ -934,7 +934,7 @@ fn begin_repick(
         path: &project.path,
         url: project.git.github_url.as_deref(),
     };
-    match crate::tools::repick_candidates(action, &facts, &|p| crate::exec::is_installed(p)) {
+    match crate::tools::repick_candidates(action, &facts, &|p| crate::exec::is_installed_probe(p)) {
         // `ACT-9`'s per-project axis, phrased the same way `begin_action`
         // phrases it, so the two paths never disagree on screen.
         None => Some(format!("{} has no remote", project.name)),
