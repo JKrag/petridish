@@ -8,6 +8,7 @@ pub mod browser;
 pub mod dashboard;
 pub mod exec;
 pub mod feed;
+pub mod help;
 pub mod picker;
 pub mod prefs;
 pub mod theme;
@@ -191,6 +192,11 @@ fn poll_loop(
     // while it is up — a modal that let keys leak through to the list behind
     // it would be worse than no modal.
     let mut picker: Option<crate::picker::PickerState> = None;
+    // The ACT-2 `?` help popup. Unlike the picker it has no interaction beyond
+    // dismissal: any key while it is open closes it. Checked before the
+    // picker/quit/screen dispatch below so it can consume every keystroke
+    // while open, the same reason the picker is checked first.
+    let mut help_open = false;
     // A one-line message shown over the Browser: "no tool for that", "this
     // project has no remote". Cleared by the next keystroke, so it never
     // becomes stale chrome.
@@ -207,6 +213,7 @@ fn poll_loop(
         &dashboard_state,
         &browser_state,
         &picker,
+        help_open,
         &notice,
         &feed,
     );
@@ -223,7 +230,13 @@ fn poll_loop(
             // linger as stale chrome over a screen it no longer describes.
             notice = None;
 
-            let handled = if let Some(ref mut p) = picker {
+            let handled = if help_open {
+                // Any key closes the popup and nothing else happens this
+                // keystroke — including `q`, deliberately: accidentally
+                // quitting out of a help screen would be a bad surprise.
+                help_open = false;
+                true
+            } else if let Some(ref mut p) = picker {
                 // The picker is modal: it consumes EVERY key while open,
                 // including `q`. Letting `q` quit out from under an open
                 // dialog would be a surprising way to lose the answer the
@@ -562,6 +575,11 @@ fn poll_loop(
                             notice = yank_selected_path(&last_good, &browser_state);
                             true
                         }
+                        // `?` (IDEAS.md ACT-2): open the help popup.
+                        crossterm::event::KeyCode::Char('?') => {
+                            help_open = true;
+                            true
+                        }
                         // `Esc` in normal mode: no-op (only meaningful to
                         // close the filter; if filter isn't open, do nothing).
                         crossterm::event::KeyCode::Esc => true,
@@ -629,6 +647,7 @@ fn poll_loop(
                     &dashboard_state,
                     &browser_state,
                     &picker,
+                    help_open,
                     &notice,
                     &feed,
                 );
@@ -717,6 +736,7 @@ fn poll_loop(
                 &dashboard_state,
                 &browser_state,
                 &picker,
+                help_open,
                 &notice,
                 &feed,
             );
@@ -768,6 +788,7 @@ fn render_current(
     dashboard_state: &Option<crate::dashboard::DashboardState>,
     browser_state: &Option<crate::browser::BrowserState>,
     picker: &Option<crate::picker::PickerState>,
+    help_open: bool,
     notice: &Option<String>,
     feed: &crate::feed::FeedState,
 ) {
@@ -787,6 +808,8 @@ fn render_current(
                     // ordering is the whole mechanism (MECH-1).
                     if let Some(p) = picker {
                         crate::picker::render(frame, p);
+                    } else if help_open {
+                        crate::help::render(frame);
                     } else if let Some(text) = notice {
                         crate::browser::render_notice(frame, text);
                     }
