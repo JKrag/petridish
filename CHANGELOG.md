@@ -7,6 +7,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.0.0-beta.2] — unreleased
+
+### Added
+
+- `petri` Browser: `f` reveals the selected project in Finder, `s` triggers an
+  immediate rescan, `y` yanks the project path to the clipboard, and `?` opens a
+  help popup listing all bound action keys (ACT-2, #27).
+- `petri` Browser: named-browser, `ranger`/`nnn`, and `gitup`/`gitcomet` entries
+  as additional `browse`/`reveal`/`gitlog` tool candidates.
+
+### Fixed
+
+- App-bundle probes now also check `/System/Applications`, not just
+  `/Applications`.
+- Tool picker rows and the "no tool" message show a candidate's `id`, not its
+  `program`.
+- `yank_selected_path` reaps the `pbcopy` child on write failure instead of
+  leaking it.
+- `Candidate` now has an identity distinct from its `program`.
+
 ## [1.0.0-beta.1] — unreleased
 
 First public release. Everything before this lived only in git history.
@@ -61,5 +81,6 @@ First public release. Everything before this lived only in git history.
   requires MIT and this project is GPL-3.0-or-later. See
   `integrations/raycast/README.md`.
 
-[Unreleased]: https://github.com/JKrag/petridish/compare/v1.0.0-beta.1...HEAD
+[Unreleased]: https://github.com/JKrag/petridish/compare/v1.0.0-beta.2...HEAD
+[1.0.0-beta.2]: https://github.com/JKrag/petridish/compare/v1.0.0-beta.1...v1.0.0-beta.2
 [1.0.0-beta.1]: https://github.com/JKrag/petridish/releases/tag/v1.0.0-beta.1

@@ -72,9 +72,6 @@ dist init --yes                     # updates cargo-dist-version, regenerates
    announces every crate at that version together, which is what we want; a
    package-qualified tag (`swab-v1.0.0`) would release just that one.
 
-   Note this repo's remote quirk: pushes need the explicit SSH URL,
-   `git@github.com:JKrag/petridish.git`.
-
 ## What gets published
 
 Three Homebrew formulae, because cargo-dist builds one app per package and the
