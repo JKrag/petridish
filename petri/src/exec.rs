@@ -233,12 +233,21 @@ fn is_executable(path: &Path) -> bool {
 }
 
 /// Like `is_installed`, but understands the `"app:<Name>"` probe key
-/// `Candidate::as_app` produces: checks `/Applications/<Name>.app` exists
-/// instead of a `PATH` lookup. Any other string is passed straight through
-/// to `is_installed`.
+/// `Candidate::as_app` produces: checks whether `<Name>.app` exists under
+/// `/Applications` or `/System/Applications` instead of a `PATH` lookup. Any
+/// other string is passed straight through to `is_installed`.
+///
+/// Both directories are checked because macOS moved its own first-party
+/// apps (Safari, Mail, Preview, ...) into `/System/Applications` starting
+/// with Catalina/Big Sur — some installs keep a compatibility symlink under
+/// `/Applications`, but that isn't guaranteed everywhere, so checking only
+/// `/Applications` would wrongly report a built-in app as not installed.
 pub fn is_installed_probe(probe: &str) -> bool {
     match probe.strip_prefix("app:") {
-        Some(app_name) => Path::new(&format!("/Applications/{app_name}.app")).exists(),
+        Some(app_name) => {
+            Path::new(&format!("/Applications/{app_name}.app")).exists()
+                || Path::new(&format!("/System/Applications/{app_name}.app")).exists()
+        }
         None => is_installed(probe),
     }
 }
