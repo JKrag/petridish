@@ -552,6 +552,16 @@ fn poll_loop(
                             }
                             true
                         }
+                        // `y` (IDEAS.md ACT-2): yank the selected project's path
+                        // to the clipboard. Deliberately not a tools::registry()
+                        // entry — see tools.rs's module doc / IDEAS.md's ACT-2
+                        // table for why. `pbcopy` is spawned directly, piped
+                        // stdin, no terminal hand-off (MECH-2/MECH-3 do not
+                        // apply — nothing takes over the screen).
+                        crossterm::event::KeyCode::Char('y') => {
+                            notice = yank_selected_path(&last_good, &browser_state);
+                            true
+                        }
                         // `Esc` in normal mode: no-op (only meaningful to
                         // close the filter; if filter isn't open, do nothing).
                         crossterm::event::KeyCode::Esc => true,
@@ -947,6 +957,41 @@ fn run_action(
     };
     let launch = crate::tools::launch_for(action, &facts, program);
     launch_now(terminal, &launch, std::path::Path::new(&project.path))
+}
+
+/// Copy the selected project's path to the system clipboard via a piped
+/// `pbcopy` child. macOS-only tool (matches the rest of petridish), so on the
+/// Linux leg of the CI matrix this always degrades to a notice rather than
+/// panicking or silently doing nothing — see invariant 5's "sensors degrade,
+/// never abort" ethos, applied here even though this isn't a sensor.
+fn yank_selected_path(
+    radar: &Option<petridish_core::schema::Radar>,
+    browser_state: &Option<crate::browser::BrowserState>,
+) -> Option<String> {
+    let Some(project) = selected_project(radar, browser_state) else {
+        return Some("nothing selected".to_string());
+    };
+    let path = project.path.clone();
+    let mut child = match std::process::Command::new("pbcopy")
+        .stdin(std::process::Stdio::piped())
+        .spawn()
+    {
+        Ok(c) => c,
+        Err(e) => return Some(format!("could not copy to clipboard: {e}")),
+    };
+    if let Some(mut stdin) = child.stdin.take() {
+        use std::io::Write;
+        if let Err(e) = stdin.write_all(path.as_bytes()) {
+            return Some(format!("could not copy to clipboard: {e}"));
+        }
+    }
+    match child.wait() {
+        Ok(status) if status.success() => Some(format!("copied {path} to clipboard")),
+        Ok(status) => Some(format!(
+            "could not copy to clipboard: pbcopy exited {status}"
+        )),
+        Err(e) => Some(format!("could not copy to clipboard: {e}")),
+    }
 }
 
 /// Run one resolved launch, turning every failure into a notice rather than an
