@@ -466,6 +466,49 @@ Left open, deliberately:
 
 ---
 
+## Slice 7 — `ACT-2`'s `f`/`y`/`s`/`?`, delegated to a local model
+
+Landed 2026-09-06, issue [#27](https://github.com/JKrag/petridish/issues/27). Retrospective
+prediction 1 held again: three of the four keys were cheap `tools::registry()` table
+rows exactly because slice 1 built the mechanism. `f` (reveal in Finder) and `s`
+(rescan now) are both single `Action` entries — `s` needed no new reload logic at all,
+since `petri` already polls `projects.json`'s mtime every second and firing `swab
+scan` is the whole job. `y` (yank to clipboard) and `?` (help popup) are the two
+genuinely new pieces: `y` spawns `pbcopy` directly rather than going through the
+registry, since it needs no terminal hand-off and isn't a choice between programs;
+`?` is `MECH-1`'s second customer, a pure-content popup whose action-key list is
+generated from `tools::registry()` rather than hand-typed.
+
+This slice was built by delegating each of the four keys to a local model (oMLX,
+`delegate-afk`) rather than writing them directly, with the orchestrator reviewing
+and committing each round. Two findings worth keeping:
+
+1. **Model tier tracked task shape, not task size.** The smallest tier (a ~4B model)
+   failed all three attempts at even the simplest task — a single `Action` entry
+   inserted mid-`Vec` — either rewriting the entire 600-line test file, mangling
+   existing code while trying to insert around it, or giving up outright once it
+   could not make its edit tool's exact-string match land. A mid-sized tier (~9B)
+   got every one of its four rounds right on the first try, including the two
+   structurally harder tasks that touched the event loop and needed a new PTY test
+   file. The largest tier (~35B) was never actually exercised on a task, because it
+   hit a memory-ceiling rejection before generating anything — the machine did not
+   have headroom for a 35B model plus a long, detailed prompt at the same time.
+2. **`make check` cannot catch a widget that's built but never rendered.** The help
+   popup's `Block` (border + title) was constructed and had `.inner()` called on it
+   for layout, but the line actually painting it — `frame.render_widget(block,
+   popup)` — was missing. This compiles clean and passes clippy, since the `Block`
+   value is genuinely used (for its `.inner()` geometry), just never drawn. Caught
+   by reading the diff against `picker.rs`'s render function line-by-line, not by
+   any automated gate. A rendering module that builds a widget and computes its
+   inner area is worth a specific "did this actually get painted" check in review.
+
+The stretch `c` (`cd` here on exit) was intentionally left out of this slice — it
+needs a shell-wrapper design (petri hands a path back to the calling shell, `broot`/
+`zoxide`-style) settled first, and that design is written up as a comment on #27
+rather than built.
+
+---
+
 ## Retrospective
 
 Two predictions from the original brainstorm, worth checking against what actually
