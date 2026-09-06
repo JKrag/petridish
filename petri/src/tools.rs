@@ -199,6 +199,12 @@ pub fn registry() -> Vec<Action> {
                 Candidate::new("lazygit", &["-p", "{path}"], ExecMode::Terminal),
                 Candidate::new("gitui", &["-d", "{path}"], ExecMode::Terminal),
                 Candidate::new("tig", &[], ExecMode::Terminal),
+                // gitup and gitcomet are CLI-launchable GUI git clients,
+                // registered as ExecMode::Background since petri's
+                // spawn_detached path never blocks on the child regardless
+                // of the child's own process model.
+                Candidate::new("gitup", &[], ExecMode::Background),
+                Candidate::new("gitcomet", &[], ExecMode::Background),
                 // The always-available last resort (`ACT-3`). git pages
                 // through less by itself when stdout is a tty, so `q` returns
                 // to petri exactly as it does from the dedicated TUIs — this
