@@ -8,6 +8,7 @@ pub mod browser;
 pub mod dashboard;
 pub mod exec;
 pub mod feed;
+pub mod help;
 pub mod picker;
 pub mod prefs;
 pub mod theme;
@@ -191,6 +192,11 @@ fn poll_loop(
     // while it is up — a modal that let keys leak through to the list behind
     // it would be worse than no modal.
     let mut picker: Option<crate::picker::PickerState> = None;
+    // The ACT-2 `?` help popup. Unlike the picker it has no interaction beyond
+    // dismissal: any key while it is open closes it. Checked before the
+    // picker/quit/screen dispatch below so it can consume every keystroke
+    // while open, the same reason the picker is checked first.
+    let mut help_open = false;
     // A one-line message shown over the Browser: "no tool for that", "this
     // project has no remote". Cleared by the next keystroke, so it never
     // becomes stale chrome.
@@ -207,6 +213,7 @@ fn poll_loop(
         &dashboard_state,
         &browser_state,
         &picker,
+        help_open,
         &notice,
         &feed,
     );
@@ -223,7 +230,13 @@ fn poll_loop(
             // linger as stale chrome over a screen it no longer describes.
             notice = None;
 
-            let handled = if let Some(ref mut p) = picker {
+            let handled = if help_open {
+                // Any key closes the popup and nothing else happens this
+                // keystroke — including `q`, deliberately: accidentally
+                // quitting out of a help screen would be a bad surprise.
+                help_open = false;
+                true
+            } else if let Some(ref mut p) = picker {
                 // The picker is modal: it consumes EVERY key while open,
                 // including `q`. Letting `q` quit out from under an open
                 // dialog would be a surprising way to lose the answer the
@@ -552,6 +565,21 @@ fn poll_loop(
                             }
                             true
                         }
+                        // `y` (IDEAS.md ACT-2): yank the selected project's path
+                        // to the clipboard. Deliberately not a tools::registry()
+                        // entry — see tools.rs's module doc / IDEAS.md's ACT-2
+                        // table for why. `pbcopy` is spawned directly, piped
+                        // stdin, no terminal hand-off (MECH-2/MECH-3 do not
+                        // apply — nothing takes over the screen).
+                        crossterm::event::KeyCode::Char('y') => {
+                            notice = yank_selected_path(&last_good, &browser_state);
+                            true
+                        }
+                        // `?` (IDEAS.md ACT-2): open the help popup.
+                        crossterm::event::KeyCode::Char('?') => {
+                            help_open = true;
+                            true
+                        }
                         // `Esc` in normal mode: no-op (only meaningful to
                         // close the filter; if filter isn't open, do nothing).
                         crossterm::event::KeyCode::Esc => true,
@@ -619,6 +647,7 @@ fn poll_loop(
                     &dashboard_state,
                     &browser_state,
                     &picker,
+                    help_open,
                     &notice,
                     &feed,
                 );
@@ -707,6 +736,7 @@ fn poll_loop(
                 &dashboard_state,
                 &browser_state,
                 &picker,
+                help_open,
                 &notice,
                 &feed,
             );
@@ -758,6 +788,7 @@ fn render_current(
     dashboard_state: &Option<crate::dashboard::DashboardState>,
     browser_state: &Option<crate::browser::BrowserState>,
     picker: &Option<crate::picker::PickerState>,
+    help_open: bool,
     notice: &Option<String>,
     feed: &crate::feed::FeedState,
 ) {
@@ -777,6 +808,8 @@ fn render_current(
                     // ordering is the whole mechanism (MECH-1).
                     if let Some(p) = picker {
                         crate::picker::render(frame, p);
+                    } else if help_open {
+                        crate::help::render(frame);
                     } else if let Some(text) = notice {
                         crate::browser::render_notice(frame, text);
                     }
@@ -853,7 +886,7 @@ fn begin_action(
         });
 
     match crate::tools::resolve(action, &facts, stored.as_deref(), &|p| {
-        crate::exec::is_installed(p)
+        crate::exec::is_installed_probe(p)
     }) {
         crate::tools::Resolution::Ready(launch) => {
             launch_now(terminal, &launch, std::path::Path::new(&project.path))
@@ -869,7 +902,7 @@ fn begin_action(
             action
                 .candidates
                 .iter()
-                .map(|c| c.program.as_str())
+                .map(|c| c.id.as_str())
                 .collect::<Vec<_>>()
                 .join(", ")
         )),
@@ -901,7 +934,7 @@ fn begin_repick(
         path: &project.path,
         url: project.git.github_url.as_deref(),
     };
-    match crate::tools::repick_candidates(action, &facts, &|p| crate::exec::is_installed(p)) {
+    match crate::tools::repick_candidates(action, &facts, &|p| crate::exec::is_installed_probe(p)) {
         // `ACT-9`'s per-project axis, phrased the same way `begin_action`
         // phrases it, so the two paths never disagree on screen.
         None => Some(format!("{} has no remote", project.name)),
@@ -947,6 +980,43 @@ fn run_action(
     };
     let launch = crate::tools::launch_for(action, &facts, program);
     launch_now(terminal, &launch, std::path::Path::new(&project.path))
+}
+
+/// Copy the selected project's path to the system clipboard via a piped
+/// `pbcopy` child. macOS-only tool (matches the rest of petridish), so on the
+/// Linux leg of the CI matrix this always degrades to a notice rather than
+/// panicking or silently doing nothing — see invariant 5's "sensors degrade,
+/// never abort" ethos, applied here even though this isn't a sensor.
+fn yank_selected_path(
+    radar: &Option<petridish_core::schema::Radar>,
+    browser_state: &Option<crate::browser::BrowserState>,
+) -> Option<String> {
+    let Some(project) = selected_project(radar, browser_state) else {
+        return Some("nothing selected".to_string());
+    };
+    let path = project.path.clone();
+    let mut child = match std::process::Command::new("pbcopy")
+        .stdin(std::process::Stdio::piped())
+        .spawn()
+    {
+        Ok(c) => c,
+        Err(e) => return Some(format!("could not copy to clipboard: {e}")),
+    };
+    let write_result = child.stdin.take().map(|mut stdin| {
+        use std::io::Write;
+        stdin.write_all(path.as_bytes())
+    });
+    if let Some(Err(e)) = write_result {
+        let _ = child.wait();
+        return Some(format!("could not copy to clipboard: {e}"));
+    }
+    match child.wait() {
+        Ok(status) if status.success() => Some(format!("copied {path} to clipboard")),
+        Ok(status) => Some(format!(
+            "could not copy to clipboard: pbcopy exited {status}"
+        )),
+        Err(e) => Some(format!("could not copy to clipboard: {e}")),
+    }
 }
 
 /// Run one resolved launch, turning every failure into a notice rather than an

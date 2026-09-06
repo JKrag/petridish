@@ -231,6 +231,96 @@ fn two_real_candidates_and_no_stored_answer_is_ambiguous() {
     }
 }
 
+// ------------------------------------------------- candidate identity ------
+
+/// Two candidates that share a `program` (the whole point of `as_app`: e.g.
+/// several `open -a "<App>"` browser variants) but have distinct `id`s and
+/// `probe`s. Only one of the two probes is "installed" in this fixture.
+fn shared_program_fixture() -> Action {
+    Action {
+        id: "browse",
+        key: 'o',
+        label: "open remote",
+        target: Target::Url,
+        candidates: vec![
+            Candidate::new("open", &["-a", "Chrome", "{url}"], ExecMode::Background)
+                .as_app("chrome", "Chrome"),
+            Candidate::new("open", &["-a", "Firefox", "{url}"], ExecMode::Background)
+                .as_app("firefox", "Firefox"),
+        ],
+    }
+}
+
+#[test]
+fn rule_4_installed_check_uses_probe_not_program_when_candidates_share_one() {
+    // Both candidates run `program == "open"`, so an installed-check keyed on
+    // `program` would see both as installed the instant `open` is anywhere on
+    // PATH. Keyed on `probe` (each candidate's own "app:<Name>" key here),
+    // only the one whose app is actually present resolves.
+    let got = tools::resolve(
+        &shared_program_fixture(),
+        &PROJECT,
+        None,
+        &only(&["app:Firefox"]),
+    );
+    match got {
+        Resolution::Ready(launch) => {
+            assert_eq!(launch.args[1], "Firefox", "must resolve the installed one");
+        }
+        other => panic!("expected Ready(firefox), got {other:?}"),
+    }
+}
+
+#[test]
+fn rule_2_configured_lookup_uses_id_not_program_when_candidates_share_one() {
+    // A stored preference names an `id`. Before candidate identity existed,
+    // `launch_for` matched by `program`, so this would have resolved to
+    // whichever `open`-based candidate came first in the list regardless of
+    // which one the user actually stored. Matching by `id` picks the right
+    // one even though a different, earlier candidate shares its `program`.
+    // Both probes are installed here, deliberately: if `id`-matching ever
+    // regressed back to matching by `program`, rule 2 would fail to find
+    // "firefox" as a probe key, fall through to rule 4, and see *two*
+    // installed non-fallback candidates (both `program == "open"`) --
+    // Ambiguous, not Ready. That makes this test fail loudly on the
+    // regression it exists to catch, rather than accidentally still passing
+    // via rule 4 for the wrong reason.
+    let got = tools::resolve(
+        &shared_program_fixture(),
+        &PROJECT,
+        Some("firefox"),
+        &only(&["app:Chrome", "app:Firefox"]),
+    );
+    match got {
+        Resolution::Ready(launch) => {
+            assert_eq!(
+                launch.args[1], "Firefox",
+                "configured id must win over an earlier same-program candidate"
+            );
+        }
+        other => panic!("expected Ready(firefox), got {other:?}"),
+    }
+}
+
+#[test]
+fn rescan_is_bound_and_uses_swab_scan() {
+    let reg = tools::registry();
+    let rescan = reg
+        .iter()
+        .find(|a| a.id == "rescan")
+        .expect("registry must carry a rescan action");
+    assert_eq!(rescan.key, 's');
+    assert_eq!(rescan.target, Target::Path);
+    let got = tools::resolve(rescan, &PROJECT, None, &only(&["swab"]));
+    match got {
+        Resolution::Ready(launch) => {
+            assert_eq!(launch.program, "swab");
+            assert_eq!(launch.args, vec!["scan".to_string()]);
+        }
+        other => panic!("a machine with only `swab` installed must resolve, got {other:?}"),
+    }
+}
+
 #[test]
 fn a_lone_fallback_never_opens_the_picker() {
     // THE load-bearing rule. `git` is installed on every machine that can run
@@ -380,6 +470,26 @@ fn registry_action_ids_are_unique() {
 }
 
 #[test]
+fn registry_candidate_ids_are_unique_per_action() {
+    // A duplicate `id` within one action would make the stored preference
+    // and `launch_for`'s lookup ambiguous between two candidates -- the exact
+    // bug `Candidate::id` exists to prevent for candidates that share a
+    // `program` (e.g. multiple `open -a "<App>"` browser variants).
+    for action in tools::registry() {
+        let mut ids: Vec<&str> = action.candidates.iter().map(|c| c.id.as_str()).collect();
+        ids.sort_unstable();
+        let before = ids.len();
+        ids.dedup();
+        assert_eq!(
+            before,
+            ids.len(),
+            "action {:?} has a duplicate candidate id: {ids:?}",
+            action.id
+        );
+    }
+}
+
+#[test]
 fn registry_keys_are_unique() {
     let reg = tools::registry();
     let mut keys: Vec<char> = reg.iter().map(|a| a.key).collect();
@@ -434,6 +544,25 @@ fn git_history_is_bound_and_always_resolvable_thanks_to_its_fallback() {
     match got {
         Resolution::Ready(launch) => assert_eq!(launch.program, "git"),
         other => panic!("a machine with only git installed must still resolve, got {other:?}"),
+    }
+}
+
+#[test]
+fn reveal_in_finder_is_bound_and_uses_open() {
+    let reg = tools::registry();
+    let reveal = reg
+        .iter()
+        .find(|a| a.id == "reveal")
+        .expect("registry must carry a reveal action");
+    assert_eq!(reveal.key, 'f');
+    assert_eq!(reveal.target, Target::Path);
+    let got = tools::resolve(reveal, &PROJECT, None, &only(&["open"]));
+    match got {
+        Resolution::Ready(launch) => {
+            assert_eq!(launch.program, "open");
+            assert_eq!(launch.args, vec![PROJECT.path.to_string()]);
+        }
+        other => panic!("a machine with only `open` installed must resolve, got {other:?}"),
     }
 }
 

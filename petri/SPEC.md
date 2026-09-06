@@ -475,6 +475,10 @@ user's terminal in raw mode is a v1 blocker, not a polish item.
 | `Space` | Dashboard: collapse/expand the current section |
 | `o` / `g` / `e` | Browser: open remote / git history / open in editor (§5.1) |
 | `O` / `G` / `E` | Browser: re-pick the tool for that action (§5.1) |
+| `f` | Browser: reveal the project in Finder (§5.1) |
+| `s` | Browser: rescan now (§5.1) |
+| `y` | Browser: yank the project's path to the clipboard (§5.1) |
+| `?` | Browser: open the help popup; any key closes it |
 | `q` | quit |
 
 **`J`/`K`/`PageUp`/`PageDown`/`Home`/`End` are Browser-only, not Dashboard.**
@@ -528,8 +532,25 @@ installed on this machine, and whether this project has the target at all (a pro
 with no `github_url` leaves `o` nothing to open). Both degrade to a one-line notice,
 never a crash.
 
-Three actions are bound today: `o` (open remote), `g` (git history, which always
-resolves thanks to a pinned `git log --graph` fallback) and `e` (open in editor).
+Five actions are registry entries today: `o` (open remote), `g` (git history, which
+always resolves thanks to a pinned `git log --graph` fallback), `e` (open in editor),
+`f` (reveal in Finder, via `open {path}`) and `s` (rescan now, via `swab scan` —
+`petri` already polls `projects.json`'s mtime every second and reloads on change, so
+firing the scan is the whole job; no reload logic lives on `petri`'s side).
+
+Two more Browser keys are bound but are deliberately **not** registry entries,
+because neither one is "run an external program with a choice of candidates"
+(`ACT-1`'s whole reason for existing): `y` yanks the selected project's path to the
+clipboard by spawning `pbcopy` directly with piped stdin — no terminal hand-off, so
+`MECH-2`/`MECH-3` don't apply — and degrades to a notice on a machine without
+`pbcopy` (the Linux leg of CI, not a real target machine, but the workspace still
+builds and tests there). `?` opens a help popup (`MECH-1`'s second customer,
+`petri/src/help.rs`) listing every bound key; unlike the tool picker it has no
+interaction beyond dismissal — any key closes it, including `q`, since accidentally
+quitting out of a help screen would be a bad surprise. Its action-key half is
+generated from `tools::registry()`, per this section's "actions are data" rule above;
+`y` and `?` themselves are the one deliberate hardcoded exception in that list, since
+neither is a registry entry to generate from.
 
 **The shifted variant of any action key re-picks its tool** (`IDEAS.md` `ACT-11`),
 opening the picker for a *one-off* launch: `Enter` runs the highlighted tool once and

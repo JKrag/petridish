@@ -122,10 +122,12 @@ overrides only *which program* per action, not a full argv override — worth kn
 before extending it for `ACT-5`/`ACT-6`/`SURF-4`. Full reasoning: `IDEAS_LOG.md` slice 1.
 
 ### ACT-2 — Candidate action keys for the Browser
-**PARTLY DONE** (slice 1 + 2) — three of nine bound. The remaining six are tracked as
-issues rather than open bullets here: [#27](https://github.com/JKrag/petridish/issues/27)
-(`f`/`y`/`s`/`?`, stretch `c`) and [#28](https://github.com/JKrag/petridish/issues/28)
-(`t`, merged with `SURF-3` into a broader multiplexer discussion).
+**PARTLY DONE** (slice 1 + 2 + #27) — seven of nine bound. `f`/`y`/`s`/`?` landed via
+[#27](https://github.com/JKrag/petridish/issues/27); its stretch `c` was split off with
+implementation ideas left as a comment on that issue rather than built, pending a
+shell-wrapper design. `t` remains tracked as
+[#28](https://github.com/JKrag/petridish/issues/28) (merged with `SURF-3` into a
+broader multiplexer discussion).
 
 | key | action | mechanism | status |
 |-----|--------|-----------|--------|
@@ -133,11 +135,11 @@ issues rather than open bullets here: [#27](https://github.com/JKrag/petridish/i
 | `g` | git history / graph | `MECH-2`, fallback chain — `ACT-3` | **done** (`G` re-picks) |
 | `e` | open in editor | `MECH-2` or `MECH-3` depending on target — `ACT-4` | **done** (`E` re-picks) |
 | `t` | attach to the agent's tmux session | `MECH-2` (`attach`), or `switch-client` when already inside tmux | [#28](https://github.com/JKrag/petridish/issues/28) |
-| `f` | reveal in Finder | `MECH-3`, `open <path>` | [#27](https://github.com/JKrag/petridish/issues/27) |
-| `y` | yank path to clipboard | for pasting into another terminal; the one row that is *not* a registry entry, no child process involved | [#27](https://github.com/JKrag/petridish/issues/27) |
-| `c` | `cd` here on exit | print the path for a shell wrapper to consume; petri becomes a navigator | [#27](https://github.com/JKrag/petridish/issues/27) (stretch — needs a shell-wrapper story first) |
-| `s` | rescan now | invoke `swab scan` and refresh — `swab scan` otherwise only runs on `com.petridish.daemon.plist`'s 60s `StartInterval`, and hooks never trigger a full scan themselves | [#27](https://github.com/JKrag/petridish/issues/27) |
-| `?` | help popup | `MECH-1`'s first customer, now pure content | [#27](https://github.com/JKrag/petridish/issues/27) |
+| `f` | reveal in Finder | `MECH-3`, `open <path>` | **done** |
+| `y` | yank path to clipboard | for pasting into another terminal; the one row that is *not* a registry entry, no child process involved | **done** |
+| `c` | `cd` here on exit | print the path for a shell wrapper to consume; petri becomes a navigator | split off #27, not yet its own issue — needs a shell-wrapper story first |
+| `s` | rescan now | invoke `swab scan` and refresh — `swab scan` otherwise only runs on `com.petridish.daemon.plist`'s 60s `StartInterval`, and hooks never trigger a full scan themselves | **done** |
+| `?` | help popup | `MECH-1`'s second customer, pure content generated from `tools::registry()` | **done** |
 
 ### ACT-3 — Git history with a graceful fallback chain
 **DONE** (slice 1) — `registry()`'s `gitlog` action: `serie` → `lazygit` → `gitui` →

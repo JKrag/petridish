@@ -165,7 +165,11 @@ impl PickerState {
     fn choose(&mut self, persist: bool) -> Outcome {
         match &self.options[self.selected] {
             Choice::Candidate(c) => Outcome::Chosen {
-                program: c.program.clone(),
+                // Despite the field name, this is the candidate's `id`, not
+                // its `program` -- two candidates on the same action can
+                // share a `program` (e.g. multiple `open -a "<App>"`
+                // variants) but never an `id`. See `Candidate::as_app`.
+                program: c.id.clone(),
                 persist,
             },
             Choice::Other => {
@@ -336,7 +340,11 @@ pub fn render(frame: &mut ratatui::Frame, state: &PickerState) {
 
     for (i, option) in state.options().iter().enumerate() {
         let label = match option {
-            Choice::Candidate(c) => c.program.clone(),
+            // `id`, not `program` -- distinguishes candidates that share a
+            // `program` (e.g. every `open -a "<App>"` browser variant), which
+            // `program` alone cannot: it would show as "open" four times
+            // over. See `Candidate::as_app`.
+            Choice::Candidate(c) => c.id.clone(),
             Choice::Other => "Other — specify path…".to_string(),
         };
         // Selection is a solid reverse-video bar, the same convention both

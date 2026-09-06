@@ -231,3 +231,102 @@ fn is_executable(path: &Path) -> bool {
 fn is_executable(path: &Path) -> bool {
     path.is_file()
 }
+
+/// Like `is_installed`, but understands the `"app:<Name>"` probe key
+/// `Candidate::as_app` produces: checks whether `<Name>.app` exists under
+/// `/Applications` or `/System/Applications` instead of a `PATH` lookup. Any
+/// other string is passed straight through to `is_installed`.
+///
+/// Both directories are checked because macOS moved its own first-party
+/// apps (Safari, Mail, Preview, ...) into `/System/Applications` starting
+/// with Catalina/Big Sur — some installs keep a compatibility symlink under
+/// `/Applications`, but that isn't guaranteed everywhere, so checking only
+/// `/Applications` would wrongly report a built-in app as not installed.
+pub fn is_installed_probe(probe: &str) -> bool {
+    match probe.strip_prefix("app:") {
+        Some(app_name) => app_bundle_exists_in(
+            app_name,
+            &[
+                Path::new("/Applications"),
+                Path::new("/System/Applications"),
+            ],
+        ),
+        None => is_installed(probe),
+    }
+}
+
+/// The directory-scanning half of `is_installed_probe`'s `"app:"` branch,
+/// with the directories to search taken as a parameter rather than baked in
+/// -- the same "prefer a parameter over an environment read" reasoning the
+/// rest of this workspace follows (see `petridish-cli`'s `home`/`uid`
+/// parameters), applied here so the OR-across-directories logic can be
+/// proven against scratch directories instead of real machine paths.
+fn app_bundle_exists_in(app_name: &str, dirs: &[&Path]) -> bool {
+    dirs.iter()
+        .any(|dir| dir.join(format!("{app_name}.app")).exists())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn is_installed_probe_checks_the_applications_folder_for_an_app_probe() {
+        assert!(!is_installed_probe(
+            "app:Definitely Not A Real App That Exists"
+        ));
+    }
+
+    #[test]
+    fn is_installed_probe_behaves_like_is_installed_for_a_plain_program() {
+        assert_eq!(is_installed_probe("git"), is_installed("git"));
+        assert_eq!(
+            is_installed_probe("definitely-not-a-real-binary-xyz"),
+            is_installed("definitely-not-a-real-binary-xyz")
+        );
+    }
+
+    // Hermetic proof that `app_bundle_exists_in` actually searches every
+    // directory it's given, not just the first -- built against scratch
+    // dirs rather than the real /Applications and /System/Applications so
+    // it neither depends on which real apps happen to be installed nor
+    // needs read access to either real path (this dev sandbox has none on
+    // /System/Applications, confirmed via `nono why` -- a test against the
+    // real path would only prove what the sandbox allows, not what the code
+    // does).
+    fn scratch_dir(name: &str) -> std::path::PathBuf {
+        let dir =
+            std::env::temp_dir().join(format!("petri_exec_probe_{name}_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("scratch dir must be creatable");
+        dir
+    }
+
+    #[test]
+    fn app_bundle_exists_in_finds_it_in_the_first_directory() {
+        let first = scratch_dir("first_dir");
+        let second = scratch_dir("first_dir_second");
+        std::fs::create_dir_all(first.join("Thing.app")).expect("app bundle must be creatable");
+        assert!(app_bundle_exists_in("Thing", &[&first, &second]));
+    }
+
+    #[test]
+    fn app_bundle_exists_in_finds_it_in_a_later_directory() {
+        // The whole point of checking multiple directories: an app that
+        // lives ONLY in the second one (mirroring how a built-in macOS app
+        // may live only under /System/Applications, with no compatibility
+        // symlink under /Applications) must still resolve as installed --
+        // not just one that happens to be first.
+        let first = scratch_dir("second_dir_first");
+        let second = scratch_dir("second_dir");
+        std::fs::create_dir_all(second.join("Thing.app")).expect("app bundle must be creatable");
+        assert!(app_bundle_exists_in("Thing", &[&first, &second]));
+    }
+
+    #[test]
+    fn app_bundle_exists_in_rejects_an_app_in_neither_directory() {
+        let first = scratch_dir("neither_dir_first");
+        let second = scratch_dir("neither_dir_second");
+        assert!(!app_bundle_exists_in("Thing", &[&first, &second]));
+    }
+}
