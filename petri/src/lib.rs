@@ -1002,11 +1002,13 @@ fn yank_selected_path(
         Ok(c) => c,
         Err(e) => return Some(format!("could not copy to clipboard: {e}")),
     };
-    if let Some(mut stdin) = child.stdin.take() {
+    let write_result = child.stdin.take().map(|mut stdin| {
         use std::io::Write;
-        if let Err(e) = stdin.write_all(path.as_bytes()) {
-            return Some(format!("could not copy to clipboard: {e}"));
-        }
+        stdin.write_all(path.as_bytes())
+    });
+    if let Some(Err(e)) = write_result {
+        let _ = child.wait();
+        return Some(format!("could not copy to clipboard: {e}"));
     }
     match child.wait() {
         Ok(status) if status.success() => Some(format!("copied {path} to clipboard")),
