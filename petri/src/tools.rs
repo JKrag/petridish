@@ -238,7 +238,14 @@ pub fn registry() -> Vec<Action> {
             target: Target::Path,
             // macOS only, same reasoning as `browse`'s `open {url}`: `open` hands the
             // path to Finder, which is the correct amount of opinion for petri to have.
-            candidates: vec![Candidate::new("open", &["{path}"], ExecMode::Background)],
+            // ranger and nnn are TUI file managers -- ExecMode::Terminal, since
+            // they draw their own full-screen interface in the same terminal,
+            // the same reasoning as gitlog's serie/lazygit/tig entries.
+            candidates: vec![
+                Candidate::new("open", &["{path}"], ExecMode::Background),
+                Candidate::new("ranger", &["{path}"], ExecMode::Terminal),
+                Candidate::new("nnn", &["{path}"], ExecMode::Terminal),
+            ],
         },
         Action {
             id: "rescan",
