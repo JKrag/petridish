@@ -340,7 +340,11 @@ pub fn render(frame: &mut ratatui::Frame, state: &PickerState) {
 
     for (i, option) in state.options().iter().enumerate() {
         let label = match option {
-            Choice::Candidate(c) => c.program.clone(),
+            // `id`, not `program` -- distinguishes candidates that share a
+            // `program` (e.g. every `open -a "<App>"` browser variant), which
+            // `program` alone cannot: it would show as "open" four times
+            // over. See `Candidate::as_app`.
+            Choice::Candidate(c) => c.id.clone(),
             Choice::Other => "Other — specify path…".to_string(),
         };
         // Selection is a solid reverse-video bar, the same convention both

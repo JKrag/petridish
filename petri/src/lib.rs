@@ -902,7 +902,7 @@ fn begin_action(
             action
                 .candidates
                 .iter()
-                .map(|c| c.program.as_str())
+                .map(|c| c.id.as_str())
                 .collect::<Vec<_>>()
                 .join(", ")
         )),
