@@ -198,12 +198,20 @@ pub fn registry() -> Vec<Action> {
                 Candidate::new("open", &["{url}"], ExecMode::Background),
                 Candidate::new("open", &["-a", "Safari", "{url}"], ExecMode::Background)
                     .as_app("safari", "Safari"),
-                Candidate::new("open", &["-a", "Google Chrome", "{url}"], ExecMode::Background)
-                    .as_app("chrome", "Google Chrome"),
+                Candidate::new(
+                    "open",
+                    &["-a", "Google Chrome", "{url}"],
+                    ExecMode::Background,
+                )
+                .as_app("chrome", "Google Chrome"),
                 Candidate::new("open", &["-a", "Arc", "{url}"], ExecMode::Background)
                     .as_app("arc", "Arc"),
-                Candidate::new("open", &["-a", "Brave Browser", "{url}"], ExecMode::Background)
-                    .as_app("brave", "Brave Browser"),
+                Candidate::new(
+                    "open",
+                    &["-a", "Brave Browser", "{url}"],
+                    ExecMode::Background,
+                )
+                .as_app("brave", "Brave Browser"),
                 Candidate::new("open", &["-a", "Chromium", "{url}"], ExecMode::Background)
                     .as_app("chromium", "Chromium"),
                 Candidate::new(
