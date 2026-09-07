@@ -108,6 +108,89 @@ fn xml_unescape(s: &str) -> String {
         .replace("&amp;", "&")
 }
 
+/// 6. Every binary reports the same version as this build.
+///
+/// `petridish doctor` is itself one of the four binaries, so its own
+/// `CARGO_PKG_VERSION` is the reference. Any binary that reports a different
+/// one was built or installed separately — most often an older `swab` left in a
+/// prefix that a later `cargo install` did not replace — and the launchd job
+/// may run the stale one, which is a silent divergence worth flagging.
+///
+/// A binary that cannot be resolved (the "binaries" check already reports that)
+/// or that fails to answer `--version` (crashed, needs a flag, produced no
+/// output) is treated as "unknown" and left out of the comparison: it is not
+/// the same failure as being missing, and a flaky probe must not fail a healthy
+/// install. If nothing could be checked at all we still fail rather than
+/// silently omit the check.
+///
+/// Pure over what it is handed: it takes `path_var` and runs nothing global, so
+/// the test points it at a scratch directory of fake binaries.
+fn version_check(path_var: &str) -> Check {
+    const BINARIES: [&str; 4] = ["swab", "swab-hook", "petridish", "petri"];
+    let expected = env!("CARGO_PKG_VERSION");
+
+    // name -> version, for the binaries that actually resolved and answered
+    // `--version` with a parseable string. The version is owned so it can be
+    // kept past the loop body (the borrow of the command's stdout otherwise
+    // would not outlive the loop).
+    let mut versions: Vec<(&'static str, String)> = Vec::new();
+    for name in BINARIES.iter().copied() {
+        let path = match crate::paths::resolve_binary_in(name, path_var) {
+            Ok(p) => p,
+            Err(_) => continue, // already reported by the "binaries" check
+        };
+        let output = match std::process::Command::new(&path).arg("--version").output() {
+            Ok(o) => o,
+            Err(_) => continue, // could not even spawn it
+        };
+        if !output.status.success() {
+            continue;
+        }
+        let version = match String::from_utf8(output.stdout) {
+            Ok(s) => match s.split_whitespace().last().map(str::trim) {
+                Some(v) if !v.is_empty() => v.to_string(),
+                _ => continue, // no token, or nothing but whitespace
+            },
+            Err(_) => continue,
+        };
+        versions.push((name, version));
+    }
+
+    if versions.is_empty() {
+        return Check::fail(
+            "version",
+            "could not check versions — no binaries could be resolved or reported one",
+        );
+    }
+
+    let disagreements: Vec<(&'static str, String)> = versions
+        .iter()
+        .filter(|(_, v)| v.as_str() != expected)
+        .cloned()
+        .collect();
+
+    if disagreements.is_empty() {
+        let rendered = versions
+            .iter()
+            .map(|(name, version)| format!("{name} {}", version))
+            .collect::<Vec<_>>()
+            .join(", ");
+        return Check::pass("version", format!("{rendered} — all agree"));
+    }
+
+    let rendered = disagreements
+        .iter()
+        .map(|(name, version)| format!("{name} reports {version}"))
+        .collect::<Vec<_>>()
+        .join(", ");
+    Check::fail(
+        "version",
+        format!(
+            "{rendered}, expected {expected} (petridish) — binaries are out of sync, reinstall/upgrade to match"
+        ),
+    )
+}
+
 /// Run every install-surface check. Pure over the filesystem it is handed, so
 /// tests point it at a scratch layout.
 pub fn checks(layout: &Layout, path_var: &str) -> Vec<Check> {
@@ -208,6 +291,9 @@ pub fn checks(layout: &Layout, path_var: &str) -> Vec<Check> {
         ));
     }
 
+    // 6. Every binary reports the same version as this build.
+    out.push(version_check(path_var));
+
     out
 }
 
@@ -237,6 +323,7 @@ pub fn report(checks: &[Check], out: &mut dyn Write) -> i32 {
 mod tests {
     use super::*;
     use crate::plist;
+    use std::path::PathBuf;
 
     #[test]
     fn program_path_is_read_from_the_first_program_argument() {
@@ -365,5 +452,112 @@ mod tests {
         let text = String::from_utf8(buf).unwrap();
         assert!(text.contains("ok: a"), "{text}");
         assert!(text.contains("fail: b"), "{text}");
+    }
+
+    /// A fake binary: a shell script with a shebang, made executable, that
+    /// answers `--version` with `"<name> <version>"` and nothing else. A real
+    /// binary is exactly this shape on the surface `doctor` probes, so a fake
+    /// shell script is a faithful stand-in without pulling in a dependency.
+    fn write_fake_binary(dir: &Path, name: &str, version: &str) -> PathBuf {
+        use std::os::unix::fs::PermissionsExt;
+        let p = dir.join(name);
+        std::fs::write(
+            &p,
+            format!("#!/bin/sh\nprintf '%s %s\\n' \"{name}\" \"{version}\"\n"),
+        )
+        .unwrap();
+        std::fs::set_permissions(&p, std::fs::Permissions::from_mode(0o755)).unwrap();
+        p
+    }
+
+    #[test]
+    fn version_check_passes_when_every_binary_agrees() {
+        let tmp = TempDir::new("doctor_version_agree");
+        let version = env!("CARGO_PKG_VERSION");
+        for name in ["swab", "swab-hook", "petridish", "petri"] {
+            write_fake_binary(&tmp.path, name, version);
+        }
+        let check = version_check(tmp.path.to_str().unwrap());
+        assert!(check.ok, "expected pass, got fail: {}", check.detail);
+        assert!(check.detail.contains("all agree"), "{}", check.detail);
+        // The detail names every binary that agreed.
+        for name in ["swab", "swab-hook", "petridish", "petri"] {
+            assert!(
+                check.detail.contains(name),
+                "detail should name {name}: {}",
+                check.detail
+            );
+        }
+    }
+
+    #[test]
+    fn version_check_fails_and_names_the_binary_that_disagrees() {
+        let tmp = TempDir::new("doctor_version_disagree");
+        let version = env!("CARGO_PKG_VERSION");
+        write_fake_binary(&tmp.path, "swab", version);
+        write_fake_binary(&tmp.path, "swab-hook", version);
+        write_fake_binary(&tmp.path, "petridish", version);
+        write_fake_binary(&tmp.path, "petri", "1.0.0-beta.1");
+        let check = version_check(tmp.path.to_str().unwrap());
+        assert!(!check.ok, "expected fail");
+        assert!(
+            check.detail.contains("petri"),
+            "should name the disagreeing binary: {}",
+            check.detail
+        );
+        assert!(check.detail.contains("1.0.0-beta.1"), "{}", check.detail);
+        assert!(
+            check.detail.contains(version),
+            "should name the expected version: {}",
+            check.detail
+        );
+    }
+
+    #[test]
+    fn version_check_treats_a_binary_that_exits_nonzero_as_unknown() {
+        use std::os::unix::fs::PermissionsExt;
+        let tmp = TempDir::new("doctor_version_nonzero");
+        let version = env!("CARGO_PKG_VERSION");
+        // swab refuses to answer --version.
+        std::fs::write(tmp.path.join("swab"), "#!/bin/sh\nexit 1\n").unwrap();
+        std::fs::set_permissions(
+            tmp.path.join("swab"),
+            std::fs::Permissions::from_mode(0o755),
+        )
+        .unwrap();
+        for name in ["swab-hook", "petridish", "petri"] {
+            write_fake_binary(&tmp.path, name, version);
+        }
+        let check = version_check(tmp.path.to_str().unwrap());
+        // The three that did answer agree, so the check still passes — the
+        // failing binary was skipped, not treated as a mismatch.
+        assert!(
+            check.ok,
+            "a failing binary must not fail a healthy install: {}",
+            check.detail
+        );
+    }
+
+    #[test]
+    fn version_check_treats_unparseable_output_as_unknown() {
+        use std::os::unix::fs::PermissionsExt;
+        let tmp = TempDir::new("doctor_version_badoutput");
+        let version = env!("CARGO_PKG_VERSION");
+        // swab prints no version token at all.
+        std::fs::write(tmp.path.join("swab"), "#!/bin/sh\nprintf ''\n").unwrap();
+        std::fs::set_permissions(
+            tmp.path.join("swab"),
+            std::fs::Permissions::from_mode(0o755),
+        )
+        .unwrap();
+        for name in ["swab-hook", "petridish", "petri"] {
+            write_fake_binary(&tmp.path, name, version);
+        }
+        let check = version_check(tmp.path.to_str().unwrap());
+        assert!(
+            check.ok,
+            "unparseable output must be treated as unknown: {}",
+            check.detail
+        );
     }
 }
