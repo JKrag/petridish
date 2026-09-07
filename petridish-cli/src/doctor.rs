@@ -17,6 +17,7 @@ use petridish_core::schema::HOOK_EVENTS;
 use std::io::Write;
 use std::path::Path;
 
+#[derive(serde::Serialize)]
 pub struct Check {
     pub key: &'static str,
     pub ok: bool,
@@ -300,8 +301,11 @@ pub fn checks(layout: &Layout, path_var: &str) -> Vec<Check> {
 /// Print the checks and return the process exit code.
 pub fn report(checks: &[Check], out: &mut dyn Write) -> i32 {
     let mut failed = false;
+    let mut passed = 0;
     for c in checks {
-        if !c.ok {
+        if c.ok {
+            passed += 1;
+        } else {
             failed = true;
         }
         let _ = writeln!(
@@ -312,11 +316,27 @@ pub fn report(checks: &[Check], out: &mut dyn Write) -> i32 {
             c.detail
         );
     }
+    let total = checks.len();
+    let failed_count = total - passed;
+    if failed_count == 0 {
+        let _ = writeln!(out, "{total}/{total} checks passed");
+    } else {
+        let _ = writeln!(
+            out,
+            "{passed}/{total} checks passed ({failed_count} failed)"
+        );
+    }
     let _ = writeln!(
         out,
         "\nlaunchd job status: launchctl print gui/$(id -u)/{PLIST_LABEL}"
     );
     i32::from(failed)
+}
+
+/// The checks as a pretty-printed JSON array, for `doctor --json` — the same
+/// data the human-facing `report()` renders, without its grammar.
+pub fn checks_to_json(checks: &[Check]) -> String {
+    serde_json::to_string_pretty(checks).unwrap_or_else(|_| "[]".to_string())
 }
 
 #[cfg(test)]
@@ -452,6 +472,36 @@ mod tests {
         let text = String::from_utf8(buf).unwrap();
         assert!(text.contains("ok: a"), "{text}");
         assert!(text.contains("fail: b"), "{text}");
+        assert!(text.contains("1/2 checks passed (1 failed)"), "{text}");
+        assert!(text.contains("launchd job status"), "{text}");
+    }
+
+    #[test]
+    fn report_all_passing_shows_the_all_passed_summary() {
+        let checks: Vec<Check> = (0..5)
+            .map(|i| Check::pass("c", format!("ok {i}")))
+            .collect();
+        let mut buf = Vec::new();
+        assert_eq!(report(&checks, &mut buf), 0);
+        let text = String::from_utf8(buf).unwrap();
+        assert!(text.contains("5/5 checks passed"), "{text}");
+        let summary = text.find("5/5 checks passed").unwrap();
+        let launchd = text.find("launchd job status").unwrap();
+        assert!(summary < launchd, "{text}");
+    }
+
+    #[test]
+    fn checks_to_json_round_trips_as_an_array_of_the_same_length() {
+        let checks = vec![
+            Check::pass("binaries", "/opt/homebrew/bin/swab"),
+            Check::fail("plist", "missing: /tmp/l.plist"),
+        ];
+        let json = checks_to_json(&checks);
+        let parsed: Vec<serde_json::Value> = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed.len(), checks.len());
+        assert_eq!(parsed[0]["key"].as_str(), Some("binaries"));
+        assert_eq!(parsed[0]["ok"].as_bool(), Some(true));
+        assert_eq!(parsed[1]["ok"].as_bool(), Some(false));
     }
 
     /// A fake binary: a shell script with a shebang, made executable, that

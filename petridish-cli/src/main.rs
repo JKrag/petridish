@@ -47,6 +47,9 @@ enum Command {
         menubar_plugins_dir: Option<PathBuf>,
         #[arg(long)]
         no_menubar_plugin: bool,
+        /// Emit the checks as a JSON array instead of the human-readable report.
+        #[arg(long)]
+        json: bool,
     },
     /// Print xbar/SwiftBar plugin text for the current state file.
     ///
@@ -130,10 +133,15 @@ fn run() -> Result<i32, InstallError> {
         Command::Doctor {
             menubar_plugins_dir,
             no_menubar_plugin,
+            json,
         } => {
             let layout = layout(menubar_plugins_dir, no_menubar_plugin);
             let path_var = std::env::var("PATH").unwrap_or_default();
             let checks = doctor::checks(&layout, &path_var);
+            if json {
+                println!("{}", doctor::checks_to_json(&checks));
+                return Ok(i32::from(checks.iter().any(|c| !c.ok)));
+            }
             Ok(doctor::report(&checks, &mut std::io::stdout()))
         }
         Command::Menubar { state } => {
