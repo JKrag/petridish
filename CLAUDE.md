@@ -99,6 +99,31 @@ the fast loop; `make check-all` adds the three CI jobs that need extra tooling �
 `cargo-deny`, an MSRV toolchain, and node for the Raycast extension. Run
 `check-all` before opening a PR.
 
+**Iterate scoped to the crate you're touching; only the final check needs to be
+workspace-wide.** `make check` runs `--workspace`, which means a single-file edit still
+pays for fmt-check, clippy, and the full test suite across all four crates — measured at
+~28s versus ~9s for the equivalent scoped to the one crate actually touched (`cargo fmt -p
+<crate> --check && cargo clippy -p <crate> --all-targets --all-features -- -D warnings &&
+cargo test -p <crate>`), a ~3x difference that shows up on every iteration. Use the scoped
+form while developing; run the full `make check` once, as the last step before calling a
+change done — a scoped check only proves the touched crate is internally consistent, not
+that a crate depending on it (e.g. anything depending on `petridish-core`) still builds, so
+it cannot replace the full gate, only cheapen the loop leading up to it.
+
+**`target/` needs periodic pruning, not just `cargo clean` on notice.** `make check-all`'s
+MSRV job builds with a *different* pinned toolchain (`cargo +<rust-version floor>`), which
+fingerprints and caches its own full copy of the dependency tree inside the same `target/`
+— it never overlaps with or is reused by the stable-toolchain build, and neither cargo nor
+the MSRV job ever reclaims it. Combined with repeated `clippy --all-targets --all-features`
+invocations across many sessions, this compounds silently: one measured instance reached
+441,075 files / 22.7GiB before anyone noticed, and a `make check` run against that bloated
+cache was measurably slower than a check from a completely empty `target/` (~100s vs ~72s
+cold, ~27s once genuinely warm on a lean cache) — the bloat was actively making incremental
+builds *slower* than starting from nothing, not just wasting disk. `cargo-sweep` is
+installed for this (prunes by last-used time instead of a full wipe) — cadence/trigger
+(pre-AFK-session, scheduled, or a Makefile target) is not yet decided; whichever is chosen,
+document it here once settled so it isn't only tribal knowledge.
+
 **PTY tests:** `petri/tests/pty_support/` drives the real binary through a pseudo-terminal.
 Assert against a reconstructed screen grid, never the raw byte stream — a partially-painted
 frame must show up as wrong content in a specific cell, not as a coincidentally-passing
