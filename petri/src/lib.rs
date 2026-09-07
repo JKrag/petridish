@@ -394,7 +394,7 @@ fn poll_loop(
                     crossterm::event::KeyCode::PageUp => {
                         if let Some(ref mut state) = browser_state {
                             let step = crossterm::terminal::size()
-                                .map(|(_, h)| crate::browser::page_size(h) as i32)
+                                .map(|(w, h)| crate::browser::page_size(w, h) as i32)
                                 .unwrap_or(BROWSER_FAST_JUMP);
                             state.move_selection(-step);
                         }
@@ -403,7 +403,7 @@ fn poll_loop(
                     crossterm::event::KeyCode::PageDown => {
                         if let Some(ref mut state) = browser_state {
                             let step = crossterm::terminal::size()
-                                .map(|(_, h)| crate::browser::page_size(h) as i32)
+                                .map(|(w, h)| crate::browser::page_size(w, h) as i32)
                                 .unwrap_or(BROWSER_FAST_JUMP);
                             state.move_selection(step);
                         }
@@ -537,7 +537,7 @@ fn poll_loop(
                         crossterm::event::KeyCode::PageUp => {
                             if let Some(ref mut state) = browser_state {
                                 let step = crossterm::terminal::size()
-                                    .map(|(_, h)| crate::browser::page_size(h) as i32)
+                                    .map(|(w, h)| crate::browser::page_size(w, h) as i32)
                                     .unwrap_or(BROWSER_FAST_JUMP);
                                 state.move_selection(-step);
                             }
@@ -546,7 +546,7 @@ fn poll_loop(
                         crossterm::event::KeyCode::PageDown => {
                             if let Some(ref mut state) = browser_state {
                                 let step = crossterm::terminal::size()
-                                    .map(|(_, h)| crate::browser::page_size(h) as i32)
+                                    .map(|(w, h)| crate::browser::page_size(w, h) as i32)
                                     .unwrap_or(BROWSER_FAST_JUMP);
                                 state.move_selection(step);
                             }
@@ -580,9 +580,30 @@ fn poll_loop(
                             help_open = true;
                             true
                         }
-                        // `Esc` in normal mode: no-op (only meaningful to
-                        // close the filter; if filter isn't open, do nothing).
-                        crossterm::event::KeyCode::Esc => true,
+                        // `Space` (issue #35): toggle the detail popup. Not
+                        // modal like the help popup or picker — it lives on
+                        // `BrowserState`, not a local flag, so navigation
+                        // keeps working (and the popup's content keeps
+                        // following the selection) while it's open;
+                        // `browser::render` only actually draws it when the
+                        // window is too narrow AND too short for either
+                        // inline placement, so this is a harmless no-op
+                        // otherwise.
+                        crossterm::event::KeyCode::Char(' ') => {
+                            if let Some(ref mut state) = browser_state {
+                                state.detail_popup_open = !state.detail_popup_open;
+                            }
+                            true
+                        }
+                        // `Esc` in normal mode: closes the detail popup if
+                        // one is open (issue #35); otherwise a no-op (only
+                        // meaningful to close the filter, handled above).
+                        crossterm::event::KeyCode::Esc => {
+                            if let Some(ref mut state) = browser_state {
+                                state.detail_popup_open = false;
+                            }
+                            true
+                        }
                         // Action keys (IDEAS.md `ACT-2`). Last arm, so every
                         // navigation binding above keeps priority over the
                         // registry — a future action must never be able to

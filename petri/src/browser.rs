@@ -64,6 +64,16 @@ pub struct BrowserState {
     /// sources of truth for one mode, and the render would eventually
     /// disagree with the keymap.
     pub filter_input: bool,
+    /// True while the `Space`-triggered detail overlay (issue #35) is open.
+    /// Only consulted by `render` when the inline detail pane (beside or
+    /// below the list, per `detail_placement`)
+    /// isn't already showing — a terminal too narrow AND too short for
+    /// either inline placement still needs some way to reach the
+    /// detail-only fields (`github_url`, `session_id`, ...). Not modal:
+    /// `j`/`k` etc. keep moving the selection while it's open, and the
+    /// overlay's content just follows along, the same "live" feel the
+    /// inline pane already has.
+    pub detail_popup_open: bool,
 }
 
 impl BrowserState {
@@ -79,6 +89,7 @@ impl BrowserState {
             selected,
             filter_query: String::new(),
             filter_input: false,
+            detail_popup_open: false,
         }
     }
 
@@ -188,6 +199,82 @@ const DETAIL_PANE_THRESHOLD: u16 = 65;
 /// suppress it. 25 cols is plenty for path + one short field per row.
 const DETAIL_PANE_DETAIL_MIN: u16 = 25;
 
+/// Minimum OUTER height (borders included) for the detail pane once it is
+/// stacked BELOW the list rather than beside it (issue #35: a terminal too
+/// narrow for the side-by-side split, but tall enough to spend some of that
+/// height on the pane instead of hiding it). 8 rows is 6 content rows (path,
+/// branch, dirty, last commit, agent, last activity — the fields every
+/// project has) plus top/bottom borders; the handful of optional fields
+/// (`mine_last_commit_at`, `github_url`, `session_id`) may clip off the
+/// bottom on a terminal that's only just tall enough to qualify for `Below`
+/// at all — `below_detail_height` grows the pane past this floor whenever
+/// there's more height to spend.
+const DETAIL_PANE_BELOW_MIN_HEIGHT: u16 = 8;
+
+/// OUTER height (borders included) that fits every possible detail field —
+/// the two optional extras (`mine_last_commit_at`, `session_id`) plus the
+/// always-present ones and `github_url`, 9 content rows, plus top/bottom
+/// borders. `below_detail_height` never grows the pane past this: once every
+/// field is visible there is nothing more for extra height to buy, and
+/// growing further would just be giving the pane blank padding at the list's
+/// expense.
+const DETAIL_PANE_BELOW_MAX_HEIGHT: u16 = 11;
+
+/// Minimum OUTER height the list must keep once the detail pane has taken
+/// its slice off the bottom. Below this the list would show too few rows to
+/// tell "scrolled" from "empty" apart, so stacking is abandoned entirely
+/// (falls back to `Hidden`, reachable via the `Space` popup instead).
+const LIST_MIN_HEIGHT_FOR_BELOW: u16 = 5;
+
+/// Where the detail pane lands for a given main-area size — the three-way
+/// choice `render` makes every frame. Mirrors petri/SPEC.md §3.1: beside the
+/// list when there's room, below it when there's height AND enough width to
+/// avoid squeezing it into a sliver (issue #35), and hidden — reachable only
+/// via the `Space` popup overlay — when no placement is usable.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum DetailPlacement {
+    Side,
+    Below,
+    Hidden,
+}
+
+fn detail_placement(main: Rect) -> DetailPlacement {
+    if main.width >= DETAIL_PANE_THRESHOLD {
+        let list_width = (main.width * 2) / 3;
+        let detail_and_scrollbar_w = main.width - list_width;
+        let detail_width = detail_and_scrollbar_w.saturating_sub(1);
+        if detail_width >= DETAIL_PANE_DETAIL_MIN {
+            return DetailPlacement::Side;
+        }
+    }
+    // `Below` still enforces `DETAIL_PANE_DETAIL_MIN` on the FULL width
+    // (there's no separate list column to steal from, so the whole width is
+    // available to the pane) — without this, a merely-tall terminal that's
+    // also extremely narrow (e.g. 20 cols) would stack the pane into exactly
+    // the unreadable sliver `DETAIL_PANE_DETAIL_MIN` exists to forbid.
+    if main.width >= DETAIL_PANE_DETAIL_MIN
+        && main.height >= LIST_MIN_HEIGHT_FOR_BELOW + DETAIL_PANE_BELOW_MIN_HEIGHT
+    {
+        return DetailPlacement::Below;
+    }
+    DetailPlacement::Hidden
+}
+
+/// The OUTER height actually given to a `Below`-placed detail pane: grows
+/// past `DETAIL_PANE_BELOW_MIN_HEIGHT` to spend genuinely tall terminals'
+/// extra height on more of the pane's fields (issue #35's "if the window is
+/// tall enough, spend it" ask), capped at `DETAIL_PANE_BELOW_MAX_HEIGHT`
+/// (every field already fits, so there's nothing further to buy) and at
+/// leaving the list `LIST_MIN_HEIGHT_FOR_BELOW`. Pure geometry — no
+/// project's actual field count is consulted — so `page_size` (`lib.rs`'s
+/// `PageUp`/`PageDown`, which only has a terminal size to work with, not a
+/// selected project) can mirror this exactly.
+fn below_detail_height(main: Rect) -> u16 {
+    main.height
+        .saturating_sub(LIST_MIN_HEIGHT_FOR_BELOW)
+        .clamp(DETAIL_PANE_BELOW_MIN_HEIGHT, DETAIL_PANE_BELOW_MAX_HEIGHT)
+}
+
 /// Render the Browser screen: grouped list (section headers + counts, per
 /// `SECTION_ORDER`) on the left, detail pane on the right per petri/SPEC.md
 /// §3.1. Section headers are NOT selection stops in the Browser (that's a
@@ -201,10 +288,13 @@ const DETAIL_PANE_DETAIL_MIN: u16 = 25;
 /// - Every project in `state.visible` (i.e. every non-foreign, filter-passing
 ///   project) has its name appear somewhere in the rendered output, for as
 ///   many as fit — exact layout/truncation is your call.
-/// - At a narrow enough width, the detail pane must be **absent entirely**,
-///   never squeezed into an unreadable sliver (petri/SPEC.md §3.1 "If the
-///   window is too narrow to give it a usable width, hide it entirely rather
-///   than squeezing").
+/// - At a narrow enough width AND short enough height, the detail pane must
+///   be **absent entirely**, never squeezed into an unreadable sliver
+///   (petri/SPEC.md §3.1 "If the window is too narrow to give it a usable
+///   width, hide it entirely rather than squeezing") — reachable in that
+///   case only via the `Space` popup overlay (issue #35). A terminal too
+///   narrow for the side-by-side split but tall enough gets the pane
+///   reflowed below the list instead of losing it outright.
 /// - Must not panic on an empty `state.visible` (renders a "nothing
 ///   selected" state per petri/SPEC.md §3.1) or a degenerate 0×0/1×1 area.
 pub fn render(frame: &mut Frame, radar: &Radar, state: &BrowserState) {
@@ -252,9 +342,27 @@ pub fn render(frame: &mut Frame, radar: &Radar, state: &BrowserState) {
     )));
     frame.render_widget(rule, chunks[1]);
 
+    let main = chunks[2];
+    let placement = detail_placement(main);
+
     // Footer: the keymap (SPEC.md §5). The bar is "would a new user be misled?"
     // — don't advertise a key that does nothing — not a fixed list.
-    let footer = Paragraph::new(Line::from(Span::styled(
+    let mut footer_text = String::from(" ");
+    // `Space` (issue #35) only does anything observable when the inline
+    // detail pane (beside or below) isn't already showing — advertising it
+    // otherwise would be exactly the "would a new user be misled?" case the
+    // rest of this footer avoids. Geometry-driven, like the detail pane's
+    // own presence, not machine-driven, so it stays deterministic in tests.
+    // Placed FIRST, not appended at the end: the footer row is
+    // `Constraint::Length(1)` and never wraps, so anything past the right
+    // edge is simply lost — and `Hidden` is, by construction, exactly the
+    // narrow-or-short geometry where the tail is most likely to get clipped.
+    // The one case `Space` is worth advertising at all is also the case a
+    // trailing position couldn't be trusted to survive.
+    if placement == DetailPlacement::Hidden {
+        footer_text.push_str("Space detail  ");
+    }
+    footer_text.push_str(
         // The three action keys are advertised unconditionally, and deliberately
         // so — `g` always resolves thanks to ACT-3's git fallback, and `o`/`e`
         // always respond, with a notice when this machine or this project can't
@@ -268,34 +376,41 @@ pub fn render(frame: &mut Frame, radar: &Radar, state: &BrowserState) {
         // browser, and a rule that holds for every key stays true as the
         // registry grows. PgUp/PgDn dropped from the advertisement to make
         // room — still bound, but the least discoverable-by-need of the set.
-        " Tab Dashboard  j/k up-down  Shift+j/k ×10  / filter  o/O remote  g/G git log  e/E edit  q quit ",
+        "Tab Dashboard  j/k up-down  Shift+j/k ×10  / filter  o/O remote  g/G git log  e/E edit",
+    );
+    footer_text.push_str("  q quit ");
+    let footer = Paragraph::new(Line::from(Span::styled(
+        footer_text,
         Style::default().fg(theme::DIM),
     )))
     .wrap(Wrap { trim: false });
     frame.render_widget(footer, chunks[3]);
 
-    // Main area: split into list (left) + detail + scrollbar (right), if wide
-    // enough for both. Below `DETAIL_PANE_THRESHOLD` the detail pane is hidden
-    // entirely to avoid squeezing it into an unreadable sliver.
-    let (list_area, detail_inner): (Rect, Option<Rect>) = {
-        if area.width >= DETAIL_PANE_THRESHOLD {
-            let main = chunks[2];
+    // Main area: list plus detail pane, placed per `placement` — beside the
+    // list when wide enough, below it when tall-but-narrow (issue #35), or
+    // absent (reachable only via the `Space` popup) when neither fits.
+    let (list_area, detail_inner): (Rect, Option<Rect>) = match placement {
+        DetailPlacement::Side => {
             let list_width = (main.width * 2) / 3;
             let detail_and_scrollbar_w = main.width - list_width;
-            let detail_width = detail_and_scrollbar_w.saturating_sub(1);
-            if detail_width >= DETAIL_PANE_DETAIL_MIN {
-                let hsplit = Layout::horizontal([
-                    Constraint::Length(list_width),
-                    Constraint::Length(detail_and_scrollbar_w),
-                ])
-                .split(main);
-                (hsplit[0], Some(hsplit[1]))
-            } else {
-                (main, None)
-            }
-        } else {
-            (chunks[2], None)
+            let hsplit = Layout::horizontal([
+                Constraint::Length(list_width),
+                Constraint::Length(detail_and_scrollbar_w),
+            ])
+            .split(main);
+            (hsplit[0], Some(hsplit[1]))
         }
+        DetailPlacement::Below => {
+            let detail_height = below_detail_height(main);
+            let list_height = main.height - detail_height;
+            let vsplit = Layout::vertical([
+                Constraint::Length(list_height),
+                Constraint::Length(detail_height),
+            ])
+            .split(main);
+            (vsplit[0], Some(vsplit[1]))
+        }
+        DetailPlacement::Hidden => (main, None),
     };
 
     // List content: section headers + rows. Section headers are rendered as
@@ -329,9 +444,16 @@ pub fn render(frame: &mut Frame, radar: &Radar, state: &BrowserState) {
         .scroll((scroll_offset as u16, 0));
     frame.render_widget(list_para, list_area);
 
-    // Scrollbar: only when we also render a detail pane (so it serves the
-    // list that's actually scrolling).
-    if let Some(detail_area) = &detail_inner {
+    // Scrollbar: only for the side-by-side placement, where the horizontal
+    // split leaves a spare column next to the list to put it in. When the
+    // detail pane is stacked below instead (`Below`), there's no such spare
+    // column without shrinking the list's own width by one everywhere else,
+    // so the list falls back to scrolling without a visible thumb — the same
+    // trade-off it already makes today whenever no detail pane renders at
+    // all.
+    if placement == DetailPlacement::Side
+        && let Some(detail_area) = &detail_inner
+    {
         let scrollbar_area = Rect {
             x: detail_area.x + detail_area.width - 1,
             y: detail_area.y,
@@ -345,9 +467,19 @@ pub fn render(frame: &mut Frame, radar: &Radar, state: &BrowserState) {
         frame.render_stateful_widget(scrollbar, scrollbar_area, &mut sb_state);
     }
 
-    // Detail pane: only when the window is wide enough.
+    // Detail pane: beside or below the list, per `placement`.
     if let Some(detail_area) = detail_inner {
         render_detail_pane(frame, detail_area, radar, state);
+    }
+
+    // The `Space` popup (issue #35): the only way to reach the detail-only
+    // fields when the window is too narrow AND too short for either inline
+    // placement. Drawn last, over everything above, same `Clear`-then-draw
+    // technique as `help::render` (MECH-1). Gated on `placement == Hidden` so
+    // a stale `true` left over from a since-resized-wider terminal doesn't
+    // draw a redundant second copy of the pane that's already inline.
+    if placement == DetailPlacement::Hidden && state.detail_popup_open {
+        render_detail_popup(frame, area, radar, state);
     }
 }
 
@@ -363,15 +495,29 @@ fn list_content_rows(block_height: u16) -> usize {
 }
 
 /// Number of list rows a `PageUp`/`PageDown` press should jump by, given the
-/// full terminal height (not the list block's height — callers outside this
+/// full terminal size (not the list block's own size — callers outside this
 /// module, i.e. `lib.rs`'s key handler, only have `crossterm::terminal::size()`
 /// to work with). Mirrors `render`'s own layout exactly: 3 rows of screen
 /// chrome (header + heavy rule + footer, `render`'s `chunks`) surround the
-/// main area, whose full height becomes the list block's OUTER height (the
-/// list/detail split is horizontal only), which `list_content_rows` then
-/// reduces by the list block's own border rows.
-pub fn page_size(terminal_height: u16) -> usize {
-    list_content_rows(terminal_height.saturating_sub(3))
+/// main area, whose full height becomes the list block's OUTER height —
+/// reduced further by `below_detail_height` when `detail_placement` says the
+/// detail pane stacks below the list rather than beside it (issue #35: the
+/// list/detail split isn't always horizontal-only any more, so `width` now
+/// matters here too). `list_content_rows` then reduces that by the list
+/// block's own border rows.
+pub fn page_size(terminal_width: u16, terminal_height: u16) -> usize {
+    let main_height = terminal_height.saturating_sub(3);
+    let main = Rect {
+        x: 0,
+        y: 0,
+        width: terminal_width,
+        height: main_height,
+    };
+    let list_height = match detail_placement(main) {
+        DetailPlacement::Below => main_height.saturating_sub(below_detail_height(main)),
+        DetailPlacement::Side | DetailPlacement::Hidden => main_height,
+    };
+    list_content_rows(list_height)
 }
 
 /// Compute the scroll offset so that the selected row stays visible in a list
@@ -676,6 +822,59 @@ fn render_detail_pane(frame: &mut Frame, area: Rect, radar: &Radar, state: &Brow
         .block(detail_block)
         .wrap(Wrap { trim: false });
     frame.render_widget(para, area);
+}
+
+/// The `Space` detail popup (issue #35): a centred overlay carrying the same
+/// content as `render_detail_pane`, for terminals too narrow AND too short
+/// for either inline placement. Same `Clear`-then-draw technique as
+/// `help::render` (MECH-1) — must be called last in the frame. Not modal:
+/// unlike the help popup, `render` calling this is the only wiring here —
+/// dismissal and content updates while it's open are the event loop's job
+/// (`lib.rs`), so navigation keeps working underneath it, live, the same way
+/// the inline pane already tracks `state.selected` as it changes.
+fn render_detail_popup(frame: &mut Frame, area: Rect, radar: &Radar, state: &BrowserState) {
+    use ratatui::layout::Flex;
+    use ratatui::widgets::Clear;
+
+    let (title, body_lines): (&str, Vec<Line<'static>>) = match state.selected_project(radar) {
+        Some(project) => (" Detail ", render_detail_lines(project)),
+        None => (
+            " Detail ",
+            vec![Line::from(Span::styled(
+                "  No project selected",
+                Style::default().fg(theme::DIM),
+            ))],
+        ),
+    };
+
+    // Unlike the inline pane (competing with the list for width), the popup
+    // is the only thing on screen — so it takes as much of the frame as it
+    // reasonably can, capped at 70 (a github URL fits comfortably inside
+    // that) rather than the inline pane's much tighter `DETAIL_PANE_DETAIL_MIN`.
+    let width = 70.min(area.width.saturating_sub(4)).max(20);
+    let height = (body_lines.len() as u16 + 2)
+        .min(area.height.saturating_sub(2))
+        .max(3);
+    let [popup] = Layout::horizontal([Constraint::Length(width)])
+        .flex(Flex::Center)
+        .areas(area);
+    let [popup] = Layout::vertical([Constraint::Length(height)])
+        .flex(Flex::Center)
+        .areas(popup);
+
+    frame.render_widget(Clear, popup);
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(theme::ACCENT))
+        .title(Span::styled(
+            title,
+            Style::default()
+                .fg(theme::ACCENT)
+                .add_modifier(Modifier::BOLD),
+        ));
+    let inner = block.inner(popup);
+    frame.render_widget(block, popup);
+    frame.render_widget(Paragraph::new(body_lines).wrap(Wrap { trim: false }), inner);
 }
 
 /// Lines for the detail pane of one project. Each line is a label + value,
@@ -1014,17 +1213,40 @@ mod tests {
 
     /// `page_size` backs `PageUp`/`PageDown` (lib.rs) — it must account for
     /// exactly the same chrome `render` does: 3 screen rows (header, heavy
-    /// rule, footer) plus the list block's own 2 border rows, 5 total.
+    /// rule, footer) plus the list block's own 2 border rows, 5 total. Width
+    /// 80 keeps the detail pane (if any) beside the list, so it never eats
+    /// into the list's height here.
     #[test]
     fn page_size_accounts_for_screen_chrome_and_list_borders() {
         // 24-row terminal: 24 - 3 (header/rule/footer) - 2 (list borders) = 19.
-        assert_eq!(page_size(24), 19);
+        assert_eq!(page_size(80, 24), 19);
         // 80x50: 50 - 5 = 45.
-        assert_eq!(page_size(50), 45);
+        assert_eq!(page_size(80, 50), 45);
         // Degenerate terminals must floor at 1, never 0 (a 0-row page jump
         // would be a silent no-op) and must never underflow/panic.
-        assert_eq!(page_size(3), 1);
-        assert_eq!(page_size(0), 1);
+        assert_eq!(page_size(80, 3), 1);
+        assert_eq!(page_size(80, 0), 1);
+    }
+
+    /// A narrow-but-tall terminal (issue #35) stacks the detail pane below
+    /// the list instead of hiding it, which eats `below_detail_height` rows
+    /// out of the list's own height — `page_size` must reflect that, or
+    /// `PageDown` would jump the selection past what's actually visible.
+    /// Covers both ends of `below_detail_height`'s range: pinned at its
+    /// floor on a terminal that only just qualifies for `Below`, grown to
+    /// its cap on a genuinely tall one.
+    #[test]
+    fn page_size_accounts_for_a_stacked_detail_pane() {
+        // 40 wide (below DETAIL_PANE_THRESHOLD) x 16 tall: main height =
+        // 16 - 3 = 13, exactly `LIST_MIN_HEIGHT_FOR_BELOW` (5) +
+        // `DETAIL_PANE_BELOW_MIN_HEIGHT` (8) — the smallest terminal that
+        // still qualifies for `Below` at all, so the detail pane sits at
+        // its floor (8): list height = 13 - 8 = 5, minus 2 list borders = 3.
+        assert_eq!(page_size(40, 16), 3);
+        // 40 wide x 30 tall: main height = 27, well past the floor, so the
+        // detail pane grows to its cap (`DETAIL_PANE_BELOW_MAX_HEIGHT`, 11):
+        // list height = 27 - 11 = 16, minus 2 list borders = 14.
+        assert_eq!(page_size(40, 30), 14);
     }
 
     /// Regression test for a second, related real bug found via human

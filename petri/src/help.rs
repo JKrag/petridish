@@ -28,6 +28,12 @@ pub fn render(frame: &mut ratatui::Frame) {
     )));
     for (key, label) in [
         ("j/k, ↑/↓", "move selection"),
+        // Placed right after the most-used binding, not at the list's tail:
+        // `render`'s height clamp (below) can clip this popup's own content
+        // on a short terminal, and a narrow-AND-short terminal — exactly the
+        // geometry where `Space` is the only route to the detail pane's
+        // fields (issue #35) — is also the geometry most likely to clip it.
+        ("Space", "toggle detail popup (narrow/short terminals)"),
         ("J/K", "fast jump (~10 rows)"),
         ("PageUp/PageDown", "jump one screenful"),
         ("Home/End", "jump to first/last row"),

@@ -115,12 +115,25 @@ reuses all of it, and the Dashboard's `Enter` handoff needs somewhere to land.
   job.
 - Row: agent glyph (`●` working / `○` otherwise), name, uncommitted-file count,
   silence age.
-- **Detail pane on the right**, always right (never reflowed below — deferred, §7).
-  If the window is too narrow to give it a usable width, hide it entirely rather
-  than squeezing. Shows: path (`~`-abbreviated), branch, dirty file count, last
-  commit time (plus `mine_last_commit_at` when it differs), github url, agent
-  state / active agent / session id, `last_activity_at`. Renders a `nothing
-  selected` state when the filtered set is empty.
+- **Detail pane on the right** when the window is wide enough
+  (`DETAIL_PANE_THRESHOLD`), **reflowed below the list** when it's too narrow
+  for that but still wide enough to avoid a squeeze (`DETAIL_PANE_DETAIL_MIN`,
+  the same floor the side-by-side layout enforces — a below-placed pane has no
+  neighboring list column to steal width from, so it needs it just as much)
+  AND tall enough (`DETAIL_PANE_BELOW_MIN_HEIGHT` + `LIST_MIN_HEIGHT_FOR_BELOW`)
+  — issue #35, overturning an earlier "always right, never reflowed below"
+  deferral (§7 used to list this as cut from v1; it wasn't after all). Once
+  placed below, the pane's own height grows with the terminal's (up to
+  `DETAIL_PANE_BELOW_MAX_HEIGHT`, the height every field fits in) rather than
+  sitting pinned at the floor — a tall terminal should get more of the pane,
+  not just a fixed sliver of one. When no placement fits, the pane is hidden
+  from the normal layout entirely rather than squeezed, but stays reachable
+  via a `Space`-triggered popup overlay (not modal — navigation and the
+  popup's content both keep following the selection while it's open; `Esc`
+  or `Space` again closes it). Shows: path (`~`-abbreviated), branch, dirty
+  file count, last commit time (plus `mine_last_commit_at` when it differs),
+  github url, agent state / active agent / session id, `last_activity_at`.
+  Renders a `nothing selected` state when the filtered set is empty.
 - **Selection** moves by a delta, **crossing section boundaries** and skipping
   empty sections, **clamped — never wrapping** — at the top and bottom of the whole
   list. The empty selection must be representable and must not panic. Re-filtering
@@ -471,8 +484,8 @@ user's terminal in raw mode is a v1 blocker, not a polish item.
 | `Enter` | Dashboard: on a row, jump to Browser on this project; on a section header, toggle it. Browser: **unbound** (see below) |
 | `/` | Browser: open type-ahead filter |
 | `Backspace` | Browser: delete the last character of the filter query |
-| `Esc` | close/clear the filter |
-| `Space` | Dashboard: collapse/expand the current section |
+| `Esc` | close/clear the filter; Browser: also closes the detail popup if open |
+| `Space` | Dashboard: collapse/expand the current section. Browser: toggle the detail popup (§3.1, issue #35) |
 | `o` / `g` / `e` | Browser: open remote / git history / open in editor (§5.1) |
 | `O` / `G` / `E` | Browser: re-pick the tool for that action (§5.1) |
 | `f` | Browser: reveal the project in Finder (§5.1) |
@@ -590,8 +603,6 @@ Cut from v1 by explicit decision:
   the most likely first post-v1 addition.
 - **COLD as a `·`-joined one-line name list.** A collapsed COLD section plus the
   Browser covers it; the joined line is a curses-era space-saving trick.
-- **Responsive detail pane** (beside vs below). Always right, hidden when too
-  narrow.
 - **Inline card expansion** on the Dashboard.
 - **A non-interactive `petri dash`** printing one frame and exiting (pipeable into a
   tmux status pane). Free while screens were pure functions; now needs an explicit
@@ -603,6 +614,12 @@ earlier note assumed collapsible sections fully replaced the need for it; in
 practice a real narrow-but-tall split pane still needed a row-budget-driven switch
 independent of collapsing, which is what §3.2's `COMPACT_TIER_MAX_CONTENT_ROWS`
 does now.
+
+**Also un-deferred:** the responsive detail pane (beside vs below), formerly
+listed here as "always right, hidden when too narrow." Issue #35 reported a
+real case — a tall, narrow split pane — where hiding it entirely lost
+information the height had room for; §3.1 now describes the reflow-below and
+`Space`-popup behavior that replaced the flat "always right" rule.
 
 ---
 

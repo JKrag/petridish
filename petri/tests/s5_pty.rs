@@ -89,6 +89,90 @@ fn navigation_and_filter_keystrokes_do_not_crash_the_binary() {
     );
 }
 
+fn settle_grid(session: &mut Session, cols: u16, rows: u16) -> Vec<String> {
+    session.screen_retry(
+        cols,
+        rows,
+        Duration::from_secs(5),
+        Duration::from_millis(300),
+        5,
+    )
+}
+
+#[test]
+fn space_toggles_the_detail_popup_at_a_hidden_geometry() {
+    // Issue #35: at 60x10 (below DETAIL_PANE_THRESHOLD, and too short to
+    // stack the detail pane below the list either — see s5_snapshot.rs's
+    // identical geometry), the detail pane starts out absent, `Space` must
+    // bring it up as a popup, a second `Space` must dismiss it, and `Esc`
+    // must dismiss it too. This is the one seam s5_snapshot.rs's structural
+    // tests can't cover: they build `BrowserState` directly and can set
+    // `detail_popup_open` themselves, which would still pass even if the
+    // `Char(' ')`/`Esc` key-handling arms in lib.rs were deleted. Only a
+    // real keystroke against the compiled binary proves the wiring exists.
+    //
+    // Uses `screen_retry` (a reconstructed on-screen grid), not raw
+    // `settle` output — `settle`'s string is the cumulative escape-code
+    // stream, so a substring that appeared once (e.g. in the popup) stays
+    // `contains`-true forever afterward even once ratatui's diff-redraw has
+    // erased it on screen, which would make the "closed" assertions below
+    // pass vacuously.
+    let cols = 60u16;
+    let rows = 10u16;
+    let mut session = Session::spawn(&fixture_path("normal.json"), cols, rows);
+    let first_frame = settle_grid(&mut session, cols, rows).join("\n");
+    assert!(
+        !first_frame.contains("Branch:"),
+        "detail pane must start absent at 60x10 (too narrow AND too short for either inline placement), got:\n{first_frame}"
+    );
+
+    session
+        .writer
+        .write_all(b" ")
+        .expect("write 'Space' must succeed");
+    let after_open = settle_grid(&mut session, cols, rows).join("\n");
+    assert!(
+        after_open.contains("Branch:"),
+        "Space must open the detail popup at 60x10, got:\n{after_open}"
+    );
+
+    session
+        .writer
+        .write_all(b" ")
+        .expect("write 'Space' must succeed");
+    let after_close = settle_grid(&mut session, cols, rows).join("\n");
+    assert!(
+        !after_close.contains("Branch:"),
+        "a second Space must close the detail popup, got:\n{after_close}"
+    );
+
+    session
+        .writer
+        .write_all(b" ")
+        .expect("write 'Space' must succeed");
+    let _ = settle_grid(&mut session, cols, rows);
+    session
+        .writer
+        .write_all(&[0x1b])
+        .expect("write 'Esc' must succeed");
+    let after_esc = settle_grid(&mut session, cols, rows).join("\n");
+    assert!(
+        !after_esc.contains("Branch:"),
+        "Esc must also close the detail popup, got:\n{after_esc}"
+    );
+
+    session
+        .writer
+        .write_all(b"q")
+        .expect("write 'q' must succeed");
+    let status = session.wait_with_timeout(Duration::from_secs(5));
+    assert_eq!(
+        status.exit_code(),
+        0,
+        "'q' must still exit 0 after toggling the detail popup"
+    );
+}
+
 #[test]
 fn q_still_quits_cleanly_with_browser_active() {
     // Regression guard: S5 must not break S4's basic "q quits" contract while

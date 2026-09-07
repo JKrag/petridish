@@ -141,6 +141,61 @@ fn detail_pane_absent_entirely_at_40x10() {
 }
 
 #[test]
+fn detail_pane_reflows_below_at_tall_narrow_geometry() {
+    // Issue #35: a terminal too narrow for the side-by-side split (40 cols,
+    // same as the hidden-entirely case above) but tall enough (30 rows) must
+    // get the detail pane stacked BELOW the list rather than losing it —
+    // the reflow petri/SPEC.md §3.1 now documents instead of the old
+    // "always right, never reflowed below" deferral.
+    //
+    // Asserts on the "Branch:" label rather than a field value: at exactly
+    // 40 columns, a longer value (e.g. `github_url`) sits right at the
+    // content-width boundary and can get hard-wrapped across two lines by
+    // the pane's own `Wrap`, which would make a `contains` check on the
+    // whole value flaky depending on the fixture's exact string length. The
+    // label itself is short and detail-pane-only (list rows never print
+    // "Branch:"), so it proves the same thing without that fragility.
+    let radar = load("normal.json");
+    let state = BrowserState::new(&radar);
+
+    let lines = rendered_lines(&radar, &state, 40, 30);
+    let whole = lines.join("\n");
+    assert!(
+        whole.contains("Branch:"),
+        "detail-only field (Branch) must appear at 40x30 — tall enough to stack the detail pane below the list, got:\n{whole}"
+    );
+}
+
+#[test]
+fn detail_popup_reaches_detail_fields_when_neither_placement_fits() {
+    // 60 wide (below DETAIL_PANE_THRESHOLD, so no side-by-side split) x 10
+    // tall (too short to stack below, per `detail_pane_absent_entirely_at_40x10`'s
+    // own 40x10 case). The `Space` popup (issue #35) is the only way to
+    // reach the detail-only fields there — this asserts it actually does,
+    // once opened. Wide enough that the popup's own width (capped at 70,
+    // floored by `area.width - 4`) can fit a github URL without word-wrap
+    // splitting it across two lines, which a narrower frame like 40 cols
+    // cannot avoid regardless of how the popup itself is sized.
+    let radar = load("normal.json");
+    let mut state = BrowserState::new(&radar);
+    state.detail_popup_open = true;
+    let selected_idx = state.visible[state.selected.expect("normal.json is non-empty")];
+    let selected = &radar.projects[selected_idx];
+    let url = selected
+        .git
+        .github_url
+        .as_ref()
+        .expect("normal.json's first project has a github_url fixture value");
+
+    let lines = rendered_lines(&radar, &state, 60, 10);
+    let whole = lines.join("\n");
+    assert!(
+        whole.contains(url.as_str()),
+        "detail-only field (github_url) must appear at 60x10 once the Space popup is open, got:\n{whole}"
+    );
+}
+
+#[test]
 fn does_not_panic_on_empty_visible_list() {
     let radar = Radar {
         schema_version: 1,
