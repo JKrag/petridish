@@ -52,17 +52,27 @@ only writer. `petri` owns exactly one file, the preferences file (§6).
 
 ## 2. Crate layout
 
-A cargo workspace at the repo root. `swab/` stays where it is (it is referenced ~30
-times across the docs, `install.sh`, `pyproject.toml` and its own `scripts/`) — the
-workspace members do not need a common parent directory.
+A cargo workspace at the repo root, **four members**. The members do not need a common
+parent directory, and `swab/` in particular stays where it is because it is referenced by
+name from the docs and its own `scripts/`.
 
 ```
-Cargo.toml            # [workspace] members = ["petridish-core", "swab", "petri"]
-petridish-core/       # schema + presentation helpers, shared
-swab/                 # scanner: bins swab, swab-hook   (writes the state file)
-petri/                # TUI: bin petri                  (reads it)
-src/petridish/        # Python read-side: petripy, menubar, installer
+Cargo.toml            # members = ["petridish-core", "petridish-cli", "swab", "petri"]
+petridish-core/       # schema + presentation helpers, shared by everything
+petridish-cli/        # bin petridish: install/uninstall/doctor/menubar (ADR-0004)
+swab/                 # scanner:  bins swab, swab-hook   (writes the state file)
+petri/                # TUI:      bin petri              (reads it)
+fixtures/             # shared JSON fixtures, consumed by tests in every crate
+integrations/         # xbar/ (docs) and raycast/ (TS extension, gated in CI)
 ```
+
+**The Python tree is gone.** Earlier drafts of this section listed a fifth entry,
+`src/petridish/`, for the Python read-side (`petripy`, `menubar.py`, `installer.py`), and
+§9's build order still narrates its lifecycle. It was deleted under ADR-0004 once `petri`
+had earned trust and the installer had been ported to `petridish-cli`; `install.sh` and
+`pyproject.toml` went with it. Recorded rather than silently dropped because several
+sections below still reference `petripy` as the parity baseline, and a reader needs to know
+that is a historical comparison, not a thing they can run.
 
 `petri` is its own crate, not a third `[[bin]]` in `swab`, because `swab-hook` is
 the declared latency path and has no business with ratatui/crossterm anywhere in its
@@ -70,31 +80,64 @@ dependency tree. Full reasoning: ADR-0002.
 
 ### `petridish-core`
 
-- `schema` — the serde types: `Radar`, `Project`, `GitState`, `AgentSignal`,
-  `QuotaState`, `StatusBucket`, plus `read_json`. Moved out of `swab/src/schema.rs`;
-  `swab` depends on core for them rather than owning them.
-- `present` — the pure derivations both surfaces need:
-  `status_bucket_str`, `agent_activity_str`, `agent_label`, `dirty_marker`,
-  `worktree_parent_name`, `silence_seconds`, `humanize_duration`, `is_stale`.
+- `schema` — the serde wire types (`Radar`, `Project`, `GitState`, `AgentState`,
+  `AgentSignal`, `QuotaState`, `StatusBucket`, `AgentActivity`), the hook constants
+  (`HOOK_MARKER`, `HOOK_EVENTS`), the window/threshold constants
+  (`AGENT_WORKING_MAX_S`, `AGENT_RECENT_MAX_S`, `AGENT_ACTIVITY_WINDOW`,
+  `WAITING_MAX_LATCH_S`, `GIT_ACTIVITY_WINDOW_DAYS`), and three shared functions:
+  `agent_state_for_silence`, `waiting_latch_live` and `write_atomic`. Moved out of
+  `swab/src/schema.rs`; `swab` depends on core for them rather than owning them.
+- `present` — the pure derivations more than one frontend needs. Exactly seven functions:
+  `status_bucket_str`, `agent_activity_str`, `agent_label`, `agent_label_at`,
+  `dirty_marker`, `worktree_parent_name`, `name_cell`.
 
-`swab/src/cli.rs::_print_table` is refactored to call `present` rather than
-open-coding the agent label, dirty marker and `name (in parent)` cell. Its existing
-tests (`list_table_name_cell_shows_worktree_parent` and neighbours) are the safety
-net for that refactor and must not be modified.
+**Corrected against the code (2026-09-08).** This list previously named
+`silence_seconds`, `humanize_duration` and `is_stale` as members of `present`, and a
+`read_json` in `schema`. **None of those four exist anywhere in the workspace.** They were
+written when this section was a plan rather than a description, and never landed under
+those names. What actually happened: duration humanising and silence arithmetic stayed
+*inside each frontend*, because the two want different output — `swab list` formats for a
+fixed-width table column, `petri` formats for a card header — so `petri/src/dashboard.rs`
+owns `humanize_secs`, `commit_ago`, `silence_tier_color` and `abbreviate_home` as private
+helpers. That split is defensible and is not a bug to fix; what was wrong was this
+paragraph claiming otherwise. If you need one of those helpers in a new `petri` module,
+widen it to `pub(crate)` — do **not** add a second copy to core to make this doc true
+retroactively.
+
+`swab/src/cli.rs::_print_table` calls `present` rather than open-coding the agent label,
+dirty marker and `name (in parent)` cell. Its existing tests
+(`list_table_name_cell_shows_worktree_parent` and neighbours) are the safety net for that
+refactor and must not be modified.
 
 Column-width computation stays in `cli.rs`. It is CLI-specific — ratatui does its
 own layout.
 
 ### `petri`
 
-- `app.rs` — the S4 walking-skeleton entry point and its render function; superseded
-  as the real screen once `browser.rs`/`dashboard.rs` landed, kept as the harness
-  S4's own tests still exercise.
-- `browser.rs` — the Browser screen (§3.1).
-- `dashboard.rs` — the Dashboard screen (§3.2).
-- `theme.rs` — the shared truecolor palette both screens draw from (§4.1).
-- `prefs.rs` — the preferences file (§6).
-- `lib.rs` — the event loop, terminal setup/teardown, key handling, `run()` entry point.
+Thirteen modules. The five that render on-screen content are also the five
+`petri/tests/glyph_portability.rs` scans (§4.2) — **adding a render module means adding it
+to that list too.**
+
+| Module | Role | Renders? |
+|---|---|---|
+| `lib.rs` | event loop, terminal setup/teardown, key handling, `run()` | — |
+| `main.rs` | arg handling (`--version`, the positional state-path test hook) | — |
+| `browser.rs` | the Browser screen (§3.1) | ✓ |
+| `dashboard.rs` | the Dashboard screen (§3.2) | ✓ |
+| `feed.rs` | the `SPACE-1` activity feed: snapshot diffing + its rows | ✓ |
+| `picker.rs` | the `ACT-8`/`ACT-11` tool picker popup | ✓ |
+| `app.rs` | the S4 walking-skeleton screen; superseded by the two real screens, kept because S4's own tests still exercise it | ✓ |
+| `help.rs` | the `?` help popup, generated from the registry | — |
+| `tools.rs` | the `ACT-1` external-tool registry and its resolution | — |
+| `exec.rs` | `MECH-2`/`MECH-3` suspend-and-exec and spawn-and-detach | — |
+| `prefs.rs` | the preferences file (§6) | — |
+| `theme.rs` | the shared truecolor palette both screens draw from (§4.1) | — |
+| `width.rs` | terminal-**column** arithmetic (`width`, `take_width`); the fix for render paths that spent a column budget in `chars()` | — |
+
+`help.rs` is marked "—" deliberately: it builds strings but every glyph in it comes from
+`tools::registry()` or is ASCII. If that changes it belongs in the gate. Note also that the
+gate's own coverage has a known hole — it scans string literals, so ratatui's
+`Borders::ALL` glyphs reach the screen unreviewed (`IDEAS.md` §5).
 
 ---
 
@@ -756,8 +799,12 @@ installed and tested, not yet deleted.
 - `chrono`, `serde`, `serde_json` (state-file parsing at runtime — see
   `petri/Cargo.toml`'s own comment for why `serde_json` is a direct dependency
   here rather than re-exported from `petridish-core`)
-- `unicode-width`, dev-only (§4.2's glyph gate — pinned directly so the gate tests
-  against the actual crate ratatui/crossterm depend on, not a copy of its behavior)
+- `unicode-width` — **a real runtime dependency, not dev-only.** This line used to say
+  "dev-only (§4.2's glyph gate)", which was true when the gate was its only consumer.
+  `width.rs` now uses it in production for every column-budget calculation (§2), because a
+  render path that spends a ratatui *column* budget in `chars()` misaligns on the first CJK
+  ideograph. The original reason still holds on top of that: pinned directly so the gate
+  measures against the actual crate ratatui/crossterm depend on, not a copy of its behavior.
 - `portable-pty`, dev-only (§8 layer 3's PTY harness)
 
 Note for whoever next bumps ratatui: 0.30 split into `ratatui-core` /
