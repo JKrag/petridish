@@ -139,7 +139,7 @@ pub struct FocusCtx<'a> {
 /// | `LastEvent` | 1 | 30 | 6 | |
 /// | `Actions` | 3 if height ≥ 16 else 1 | 24 | 6 | the 3 buys a blank row + the `ACTIONS` label; the 1 is the bare-keys degradation of §3.3 |
 /// | `Path` | 1 | 30 | 10 | |
-/// | `Recent` | 3 | 40 | 15 | **and** `ctx.feed` carries ≥1 event for this project |
+/// | `Recent` | 3 | 40 | 15 | the 3 is the `RECENT` label + two event rows, so unlike `Actions` this rung has no label-less reduced form; **and** `ctx.feed` must carry ≥1 event for this project |
 /// | `Repo` | 1 | 56 | 28 | |
 /// | `Tree` | 2 | 56 | 32 | |
 ///

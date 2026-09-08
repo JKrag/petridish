@@ -95,7 +95,7 @@ const COLUMN_GUTTER: usize = 2;
 const ROOMY_CARD_BOX_ROWS: usize = 6;
 /// Indent for a roomy card's `git`/`agent`/path rows relative to its header — shorter than the
 /// pre-border design's 5 spaces since the border itself now provides the card's left edge.
-const ZONE_INDENT: &str = "  ";
+pub(crate) const ZONE_INDENT: &str = "  ";
 
 // The dashboard's truecolor palette lives in `crate::theme` — shared with
 // `browser.rs` so the two screens read as one app. See that module's doc
@@ -1152,23 +1152,30 @@ fn split_line(
 /// "two similar bars thrown at the wall," per the design review that prompted this file's
 /// rewrite. Label color carries the zone identity; the scale tag is the non-color fallback
 /// so the two rows stay distinguishable under `NO_COLOR` too.
-const ZONE_LABEL_WIDTH: usize = 7;
+pub(crate) const ZONE_LABEL_WIDTH: usize = 7;
 
 /// Parameters for `zone_row` — bundled into a struct (rather than nine positional
 /// arguments) purely to keep the call sites in `roomy_card_lines` readable and to stay
 /// under clippy's too-many-arguments threshold.
-struct ZoneRowSpec {
-    indent: &'static str,
-    label: &'static str,
-    label_style: Style,
-    facts: String,
-    facts_style: Style,
-    sparkline: String,
-    spark_style: Style,
-    tag: String,
+///
+/// `pub(crate)` (as are `zone_row`, `sparkline_glyphs`, `agent_sparkline_width_for`,
+/// `silence_tier_color`, `commit_ago`, `humanize_secs`, `abbreviate_home` and the two zone
+/// constants) so `focus.rs` can render the same `git`/`agent` rows the roomy card does
+/// instead of growing a second, quietly-diverging copy of them — the focus panel's R2/R3
+/// rungs are the card's zone rows, shown at a different size (`PROPOSAL-focus-panel.md` §2
+/// marks them "shipped"). Visibility only: no behaviour, signature or call site changed.
+pub(crate) struct ZoneRowSpec {
+    pub(crate) indent: &'static str,
+    pub(crate) label: &'static str,
+    pub(crate) label_style: Style,
+    pub(crate) facts: String,
+    pub(crate) facts_style: Style,
+    pub(crate) sparkline: String,
+    pub(crate) spark_style: Style,
+    pub(crate) tag: String,
 }
 
-fn zone_row(spec: ZoneRowSpec, width: usize) -> Line<'static> {
+pub(crate) fn zone_row(spec: ZoneRowSpec, width: usize) -> Line<'static> {
     let label_padded = format!("{:<ZONE_LABEL_WIDTH$}", spec.label);
     let left_len =
         spec.indent.chars().count() + label_padded.chars().count() + spec.facts.chars().count();
@@ -1354,7 +1361,7 @@ fn section_header_line(
 /// glyph *allowlist* (petri/SPEC.md §4.2) is a separate concern — provenance
 /// is a real macOS `wcwidth` bug, not the planning-doc caution this color
 /// rule used to be — and this palette choice doesn't relax or affect it.
-fn silence_tier_color(secs: i64) -> Color {
+pub(crate) fn silence_tier_color(secs: i64) -> Color {
     // Reuses the canonical Working/Recent/Idle thresholds
     // (`AGENT_WORKING_MAX_S` = 90s, `AGENT_RECENT_MAX_S` = 30m) rather than a
     // separate set of cutoffs invented for color alone — one silence
@@ -1592,7 +1599,7 @@ const SPARKLINE_WIDTH: usize = 20;
 /// the trailing scale tag) is subtracted first, then clamped to `[SPARKLINE_WIDTH,
 /// AGENT_ACTIVITY_WINDOW]` so a narrow card still gets a legible sparkline and a very wide one
 /// doesn't ask for more samples than the ring actually keeps.
-fn agent_sparkline_width_for(card_width: usize) -> usize {
+pub(crate) fn agent_sparkline_width_for(card_width: usize) -> usize {
     let overhead = ZONE_INDENT.len() + ZONE_LABEL_WIDTH + 20 /* minimal facts */ + 2 /* gap */ + 4 /* tag */;
     card_width.saturating_sub(overhead).clamp(
         SPARKLINE_WIDTH,
@@ -1611,7 +1618,7 @@ fn agent_sparkline_width_for(card_width: usize) -> usize {
 /// `width = SPARKLINE_WIDTH`) and the git daily-commits sparkline (`p.git.daily_commits`,
 /// `width = GIT_ACTIVITY_WINDOW_DAYS`) -- same visual language, deliberately different colors
 /// at the call site so the two timelines stay visually distinguishable.
-fn sparkline_glyphs(samples: &[u32], width: usize) -> String {
+pub(crate) fn sparkline_glyphs(samples: &[u32], width: usize) -> String {
     let start = samples.len().saturating_sub(width);
     let window = &samples[start..];
     let max = window.iter().copied().max().unwrap_or(0);
@@ -1745,7 +1752,7 @@ fn footer_line() -> Line<'static> {
 /// Format a past timestamp as `"Xs ago"` / `"Xm ago"` / `"Xh ago"` / `"Xd ago"`.
 /// Future timestamps (a clock-skew edge case, not expected in practice) clamp
 /// to zero rather than printing a negative duration.
-fn commit_ago(dt: chrono::DateTime<chrono::Utc>) -> String {
+pub(crate) fn commit_ago(dt: chrono::DateTime<chrono::Utc>) -> String {
     let secs = chrono::Utc::now()
         .signed_duration_since(dt)
         .num_seconds()
@@ -1754,7 +1761,7 @@ fn commit_ago(dt: chrono::DateTime<chrono::Utc>) -> String {
 }
 
 /// Format a duration in seconds to "3m", "1h", "6d", or "Xs".
-fn humanize_secs(secs: u64) -> String {
+pub(crate) fn humanize_secs(secs: u64) -> String {
     if secs < 60 {
         format!("{secs}s")
     } else if secs < 3600 {
@@ -1768,7 +1775,7 @@ fn humanize_secs(secs: u64) -> String {
 
 /// Abbreviate `$HOME/...` to `~/...` for display. Returns the input unchanged
 /// when `$HOME` is unset or the path doesn't start with it.
-fn abbreviate_home(path: &str) -> String {
+pub(crate) fn abbreviate_home(path: &str) -> String {
     if let Ok(home) = std::env::var("HOME")
         && let Ok(p) = std::path::Path::new(path).strip_prefix(&home)
     {

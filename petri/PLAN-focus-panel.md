@@ -192,17 +192,42 @@ Every function body is `unimplemented!()` at the end of this phase. Add
 Create `petri/scripts/afk-verify.sh` from §2, `chmod +x`, and confirm it prints a non-zero
 integer (not `9999` — that means it doesn't compile).
 
+### A.4 T0b, pulled forward out of Phase B
+
+**Landed in Phase A, not Phase B** (see §5's T0b entry for what it is). The ratchet cannot
+grade it: widening a visibility keyword makes no test go from fail to pass, so `NEW == BASE`
+and §2's keep rule reverts it — taking with it the one task T1a–T4 all wait on. It is
+mechanical, it is verifiable by `make check` plus a `git diff` review rather than by a score,
+and doing it here also removes the three-way `dashboard.rs` claim §8 warns about.
+
 **Phase A exit criteria:** `cargo test -p petri` compiles; `afk-verify.sh` prints N > 0;
 `git status` clean after commit.
+
+**Actual result (2026-09-08):** `afk-verify.sh` prints **39** — that is `BASE` for Phase B.
+32 test binaries report, which is what `EXPECTED_BINARIES` is pinned to in the script.
+`cargo test --workspace --no-fail-fast` fails in `s11_focus_plan.rs` and
+`s11_focus_render.rs` and nowhere else, so §10's "confirm `make check` is green at BASE"
+is satisfied in the only sense available: everything the job does not own is green.
 
 ---
 
 ## 5. Phase B — the ladder (delegable)
 
-All tasks mutate `petri/src/focus.rs` only, plus their named test file. This is deliberate:
-it makes B.1–B.4 conflict-free for a parallel fan-out.
+All tasks mutate `petri/src/focus.rs` only. (Not "plus their named test file": Phase A wrote
+every test these tasks are graded by, and `petri/tests/` is protected — §3.)
 
-### T0b — `pub(crate)` extraction, no behaviour change · `[easy]`
+**Every task below moves the score by at least one**, which the ratchet requires and which
+does not come for free: `s11_focus_render.rs` deliberately asserts one rung per test rather
+than several at once, because a test covering six rungs scores zero for five of the six
+tasks that own them and gets their correct work reverted. Preserve that property if you add
+tests.
+
+### T0b — `pub(crate)` extraction, no behaviour change · `[easy]` · **DONE in Phase A**
+
+> Pulled forward and landed as cloud work — see §4's A.4 for why the ratchet structurally
+> cannot grade it. `ZONE_INDENT` and `ZONE_LABEL_WIDTH` were widened too, beyond the list
+> below: a `ZoneRowSpec` cannot be constructed from outside `dashboard.rs` without them.
+
 - **Mutable:** `petri/src/dashboard.rs`
 - **Do:** widen these `dashboard.rs`-private helpers to `pub(crate)` so `focus.rs` can reuse
   them, changing nothing else: `zone_row` + `ZoneRowSpec`, `sparkline_glyphs`,
@@ -230,8 +255,15 @@ it makes B.1–B.4 conflict-free for a parallel fan-out.
 ### T1b — rungs R0–R3: identity, path, git, agent · `[medium]`
 - **Depends on:** T0b, T1a
 - **Mutable:** `petri/src/focus.rs`
-- **Do:** the `Identity`/`Path`/`Git`/`Agent` renderers, reusing T0b's helpers.
-- **Done when:** the `Identity`/`Git`/`Agent` cases in `s11_focus_render.rs` pass.
+- **Do:** the `Identity`/`Path`/`Git`/`Agent` renderers, reusing T0b's helpers, **plus the
+  `FocusTarget::Section` and `FocusTarget::Nothing` empty states**.
+- **Done when:** the `r0_`/`r1_`/`r2_`/`r3_`, waiting-latch and empty-state cases in
+  `s11_focus_render.rs` pass.
+- **Why the empty states moved here from T5:** they are `focus.rs`-only, so they stay
+  conflict-free with the other rung tasks — and leaving them in Phase D made Phase B's own
+  exit criterion ("`afk-verify.sh` prints 0") unreachable, since three tests in
+  `s11_focus_render.rs` exercise them. An unattended loop would have spent its whole round
+  budget discovering that.
 - **Gotcha:** the waiting latch must be re-derived at render time via
   `waiting_latch_live(.., now)` — never read `agent.waiting_since.is_some()` directly. A
   stale state file otherwise pins a dead `▲` forever (`SPEC.md` §3.2).
@@ -294,8 +326,10 @@ implementations exist, same as Phase A.
 ### T5 — mount #30: the Dashboard popup · `[hard]`
 - **Mutable:** `petri/src/dashboard.rs`, `petri/src/lib.rs`, `petri/src/focus.rs`
 - **Do:** contextual `Space` per the proposal §7 table; `MECH-1` popup; the
-  `FocusTarget::Section` empty state; the ≤80%-of-terminal rule that switches to the
-  full-screen render.
+  ≤80%-of-terminal rule that switches to the full-screen render. (The
+  `FocusTarget::Section` empty state is **no longer part of this task** — T1b builds it, so
+  T5 is purely the mount wiring: deciding the target from the cursor, and the popup's
+  lifetime and geometry.)
 - **Gotcha — this is the behaviour change:** `lib.rs:310` currently calls
   `dstate.toggle_selected(radar)` for `Space` unconditionally. It must branch on
   `DashRow::Header` vs `DashRow::Project`. `Enter` (`lib.rs:320`) already branches exactly
@@ -372,8 +406,8 @@ concurrently with it and you get a three-way conflict on the one file.
 ```
                     ┌── TQ-a ──┐                        (dashboard.rs)
                     ├── T8 ────┤                        (dashboard.rs)
-  A ──► T0b ────────┤          │
-   (dashboard.rs)   │          │
+  A (incl. T0b) ────┤          │
+                    │          │
                     └── T1a ──┬┴─ T1b ──┬── T2          (focus.rs)
                               │         ├── T3
                               │         └── T4
@@ -386,9 +420,9 @@ concurrently with it and you get a three-way conflict on the one file.
 
 Two rules this graph encodes, both learned by drawing it wrong first:
 
-- **`dashboard.rs` has three claimants** (T0b, TQ-a, T8). T0b must land first — the other
-  two are then order-independent but must still not run *concurrently* with each other on
-  the same tree.
+- **`dashboard.rs` has three claimants** (T0b, TQ-a, T8). T0b landed in Phase A, which
+  leaves two — order-independent, but they must still not run *concurrently* with each other
+  on the same tree.
 - **`focus.rs` has five claimants** (T1a, T1b, T2, T3, T4). T2/T3/T4 are logically
   independent of one another but all edit the same file, so a genuine parallel fan-out needs
   them on separate branches with a merge step. Sequential is the simpler default; parallelism
