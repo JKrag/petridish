@@ -1,0 +1,377 @@
+# Implementation plan — the focus panel (`SURF-8`)
+
+Companion to `petri/PROPOSAL-focus-panel.md`, which is the *what* and *why*. This is the
+*how*, broken into units small enough to delegate.
+
+**Written to survive three different execution paths**, because the choice isn't made yet:
+
+| Path | What changes |
+|---|---|
+| **AFK against the local model** | Copy a phase's task queue into `.afk/program.md`. §2's verify script is the global verify command; §3's protected-file list is not optional. |
+| **Direct implementation** | Ignore the tier tags and the budget. The task boundaries are still the commit boundaries. |
+| **Fan-out to Haiku agents** | §8's dependency graph says what can run in parallel. Each task's "mutable files" list is the conflict-avoidance contract. |
+
+What does **not** change across the three: the scaffold phases (§4, §6) are **cloud work,
+not delegate work** — see §1 for why that is a correctness requirement rather than a
+preference.
+
+---
+
+## 1. The verification problem, stated up front
+
+`make check` **passes on unwritten code.** A delegate told to "add a focus panel" can add an
+empty module, run the gate, see green, and report success — the exact false-done the
+`delegate-to-local` start-gate exists to prevent. TUI layout makes this worse than usual:
+the failure mode is "renders something plausible but wrong," which no exit code catches.
+
+So this plan inverts the order: **the tests are the spec, and they are written before the
+implementation, by whoever is planning — not by whoever is implementing.** If the delegate
+writes both, the tests describe whatever it happened to build, and the gate is theatre.
+
+That gives a real metric:
+
+> **failing tests in `petri`, lower is better, 0 required to pass.**
+
+and it makes each task a ratchet: a round either reduces the failing count or gets reverted.
+
+**Consequence for AFK:** the default keep/revert rule in `templates/program.md` (pass →
+commit, fail → revert) is **wrong for this job** and must be overridden in `program.md`.
+The whole suite will not be green until the phase's last task. Use §2's rule instead.
+
+---
+
+## 2. The verify command and the keep rule
+
+Phase 0 creates this file. It is the global verify command for every AFK round.
+
+```bash
+#!/usr/bin/env bash
+# petri/scripts/afk-verify.sh — prints the number of failing tests in `petri`.
+#
+# Prints a single integer on stdout and always exits 0, so the AFK loop's
+# "verify command errored" escalation stays reserved for a genuinely broken
+# environment (no cargo, no toolchain) rather than firing on a bad round.
+#
+# A build failure prints a large sentinel rather than 0. Without that guard the
+# awk below sums zero "test result:" lines and prints 0 — i.e. a round that
+# broke the build would score as a perfect one. That inversion is the single
+# most dangerous thing that can happen to an unattended ratchet.
+set -uo pipefail
+
+out=$(cargo test -p petri --no-fail-fast 2>&1)
+
+if ! grep -q '^test result:' <<<"$out"; then
+  echo 9999
+  exit 0
+fi
+
+grep '^test result:' <<<"$out" \
+  | awk '{for (i = 1; i <= NF; i++) if ($i == "failed;") s += $(i-1)} END {print s+0}'
+```
+
+**Keep/revert rule (overrides the template default):**
+
+- Let `BASE` = the score at the start of the round, `NEW` = the score after it.
+- `NEW < BASE` → **commit**.
+- `NEW >= BASE` → **revert** (`git restore . && git clean -fd`) and re-prompt.
+- `NEW == 0` → the phase is done; run `make check` (workspace-wide) before the final commit
+  and stop.
+
+**Never let a round reduce the score by deleting or weakening a test.** This is the one
+failure mode the ratchet is blind to, and it is why §3's protected list is load-bearing
+rather than tidy. Add a cheap tripwire to the round loop:
+
+```bash
+git diff --stat "$BASE_SHA" -- petri/tests/ | tail -1   # must stay empty for T-tasks
+```
+
+---
+
+## 3. Files: mutable and protected
+
+**Protected for every task below** (a change to any of these is an automatic revert,
+regardless of the score):
+
+- `swab/`, `petridish-core/`, `petridish-cli/` — different crates, not this job.
+- `petri/SPEC.md` — spec changes are a human decision (§9).
+- `fixtures/` — shared across all four crates; a fixture edit silently rewrites other
+  crates' tests.
+- **every file already present under `petri/tests/`** at the start of the phase. Tasks add
+  new test files only where explicitly listed; they never edit existing ones.
+- `petri/src/theme.rs` — the palette is settled (`SPEC.md` §4.1). New colors are a design
+  decision, not an implementation detail.
+
+Per-task mutable lists are given below and are meant to be enforced, not advisory —
+they double as the merge-conflict contract for the parallel fan-out in §8.
+
+---
+
+## 4. Phase A — scaffold (**cloud work, do not delegate**)
+
+Deliverable: an API that compiles, plus a full failing test suite. Nothing implemented.
+
+### A.1 `petri/src/focus.rs` — the API surface
+
+The important structural decision, mirroring `dashboard.rs`'s existing `plan_layout`/
+`DashPlan` idiom: **separate the "which rungs fit" arithmetic from the rendering**, so the
+responsive behaviour is unit-testable at a pinned `Rect` with no `TestBackend` involved.
+
+```rust
+/// What the panel is pointed at. Not a bare `usize`: the Dashboard's cursor
+/// visits section headers too (SPEC.md §3.2), and the empty selection must be
+/// representable — same requirement §3.1 already places on the Browser's
+/// detail pane.
+pub enum FocusTarget {
+    Project(usize),
+    Section(StatusBucket, usize), // bucket + project count
+    Nothing,
+}
+
+/// Ladder rungs, in priority order. `plan_rungs` returns a prefix of this.
+pub enum Rung { Identity, Path, Git, Agent, LastEvent, Actions, Recent, Repo, Tree }
+
+pub struct FocusCtx<'a> {
+    pub radar: &'a Radar,
+    pub target: FocusTarget,
+    pub now: DateTime<Utc>,
+    pub feed: Option<&'a FeedState>,
+    pub prefs: &'a Prefs,
+}
+
+/// Pure: which rungs fit, given the room. No `Frame`, no `Buffer`.
+pub fn plan_rungs(area: Rect, ctx: &FocusCtx) -> Vec<Rung>;
+
+/// Renders the planned rungs. Every rung is its own `fn rung_*_lines`, so a
+/// task can implement one without touching the others.
+pub fn focus_lines(area: Rect, ctx: &FocusCtx) -> Vec<Line<'static>>;
+```
+
+Every function body is `unimplemented!()` at the end of this phase. Add
+`#![allow(unused_variables)]` locally if clippy objects; remove it in the last task.
+
+### A.2 Tests, all failing
+
+- `petri/tests/s11_focus_plan.rs` — `plan_rungs` at every §10 size from the proposal
+  (120×40, 100×30, 80×24, 60×20, 48×14, 36×10, 24×6, and below-floor), against all four
+  fixtures including `hostile.json`. Assert the exact rung prefix. **These are the highest-
+  value tests in the job** — they pin the responsive behaviour, which is the part a
+  delegate is least likely to get right and least likely to notice getting wrong.
+- `petri/tests/s11_focus_render.rs` — `TestBackend` structural snapshots per §8's
+  "content that must appear, not byte-for-byte" rule. Pin a fixed `now`; §8's own
+  requirement, and the silence strings are derived at render time.
+- Add `focus.rs` to `glyph_portability.rs`'s module list **in this phase**. `SPEC.md` §4.2
+  is explicit that a module added after the gate was written is exactly the one whose
+  glyphs nobody has width-checked — `feed.rs` and `picker.rs` both slipped through.
+
+### A.3 The verify script
+
+Create `petri/scripts/afk-verify.sh` from §2, `chmod +x`, and confirm it prints a non-zero
+integer (not `9999` — that means it doesn't compile).
+
+**Phase A exit criteria:** `cargo test -p petri` compiles; `afk-verify.sh` prints N > 0;
+`git status` clean after commit.
+
+---
+
+## 5. Phase B — the ladder (delegable)
+
+All tasks mutate `petri/src/focus.rs` only, plus their named test file. This is deliberate:
+it makes B.1–B.4 conflict-free for a parallel fan-out.
+
+### T1 — rungs R0–R3: identity, path, git, agent · `[medium]`
+- **Mutable:** `petri/src/focus.rs`
+- **Do:** implement `plan_rungs` fully (all sizes), plus `Identity`/`Path`/`Git`/`Agent`.
+- **Reuse, don't reinvent:** `dashboard::zone_row`, `sparkline_glyphs`,
+  `agent_sparkline_width_for`, `present::dirty_marker`, `abbreviate_home`, `humanize_secs`,
+  `is_waiting`. These are `dashboard.rs`-private today — **making them `pub(crate)` is part
+  of this task**, and is the only change to `dashboard.rs` it may make.
+- **Done when:** every test in `s11_focus_plan.rs` passes, plus the `Identity`/`Git`/`Agent`
+  cases in `s11_focus_render.rs`.
+- **Gotcha:** the waiting latch must be re-derived at render time via
+  `waiting_latch_live(.., now)` — never read `agent.waiting_since.is_some()` directly. A
+  stale state file otherwise pins a dead `▲` forever (`SPEC.md` §3.2).
+
+### T2 — rungs R4 + R7: last event, repo · `[easy]`
+- **Mutable:** `petri/src/focus.rs`
+- **Do:** `last  {event} · {n files} · {HH:MM}` from `agent.last_event`/`last_event_at`;
+  `repo  yours {age} · newest {age} · {url}` from `mine_last_commit_at` vs `last_commit_at`.
+- **Gotcha:** `agent.last_event` is legitimately `None` — the sensor derives names from an
+  allowlist and an unmodelled record type yields `None` *on purpose*. Fall back to
+  `feed::agent_detail(p)`; a row reading `claude-code activity` is correct output, not a bug
+  (`SPEC.md` §3.2). Do not "fix" it by widening the allowlist — that's in `swab`, protected.
+- **Gotcha:** `mine_last_commit_at == last_commit_at` is the common case. Render one age,
+  not two identical ones.
+
+### T3 — rung R5: actions as affordances · `[medium]`
+- **Mutable:** `petri/src/focus.rs`, `petri/src/tools.rs`
+- **Do:** for each registry action, resolve against this project and render per the
+  proposal's §4 table: live → `e edit nvim`; `NoTarget` → dimmed `o remote ─ no url`;
+  `NoTool` → omitted entirely.
+- **Gotcha:** `SPEC.md` §5 forbids advertising a key that does nothing — that is what makes
+  `NoTool` an omission and `NoTarget` a dimmed entry, and the two must not be collapsed.
+- **Gotcha:** resolution must not shell out per frame. If `Resolution` probes `PATH` on
+  every call, cache it per reload, not per render — this runs at 2–5s poll cadence.
+- **Non-color fallback required:** the `─` glyph and the words carry the disabled state.
+  Dimming alone fails `NO_COLOR` and fails CVD readers.
+
+### T4 — rung R6: per-project recent · `[medium]`
+- **Mutable:** `petri/src/focus.rs`
+- **Do:** filter `FeedState::events()` by `FeedEvent.project`, newest first, render with the
+  existing stamp/tint rules (`FRESH` for today's clocks, `COLD` for earlier dates).
+- **Gotcha:** reuse `FeedEvent::stamp`/`body_text` rather than reformatting. The date-vs-
+  clock switch is already solved there and getting it wrong reads as a sorting bug.
+- **Gotcha:** `feed: None` is a real state (`--mini` may start before two snapshots exist).
+  Render the rung as absent, not as an empty box.
+
+**Phase B exit:** `afk-verify.sh` prints 0; `make check` green; the panel is complete but
+mounted nowhere.
+
+---
+
+## 6. Phase C — scaffold #2 (**cloud work, do not delegate**)
+
+The mounts change key handling and app lifetime, so their tests need writing before the
+implementations exist, same as Phase A.
+
+- `petri/tests/s11_focus_mount.rs` — Dashboard state: `Space` on a header still toggles;
+  `Space` on a project row opens the popup and **does not** move the cursor or toggle the
+  section; `Esc` closes; the popup follows `j`/`k`; a header stop renders `FocusTarget::
+  Section`. Pure-state, no terminal.
+- `petri/tests/s12_mini_resolve.rs` — cwd → project resolution, the git-toplevel walk, the
+  `--mini <PATH|NAME>` override, the not-a-project message, and re-resolution by name across
+  a simulated re-sorted `Radar`.
+- **Decide and write down the arg-parsing contract** — see T7's gotcha, it is a real trap.
+
+---
+
+## 7. Phase D — the mounts (delegable)
+
+### T5 — mount #30: the Dashboard popup · `[hard]`
+- **Mutable:** `petri/src/dashboard.rs`, `petri/src/lib.rs`, `petri/src/focus.rs`
+- **Do:** contextual `Space` per the proposal §7 table; `MECH-1` popup; the
+  `FocusTarget::Section` empty state; the ≤80%-of-terminal rule that switches to the
+  full-screen render.
+- **Gotcha — this is the behaviour change:** `lib.rs:310` currently calls
+  `dstate.toggle_selected(radar)` for `Space` unconditionally. It must branch on
+  `DashRow::Header` vs `DashRow::Project`. `Enter` (`lib.rs:320`) already branches exactly
+  this way — copy that shape rather than inventing one.
+- **Gotcha:** `Enter` is unaffected. Do not "unify" the two keys.
+
+### T6 — re-point the Browser's popup · `[easy]`
+- **Mutable:** `petri/src/browser.rs`
+- **Do:** the `Space` popup renders `focus_lines` instead of the fact sheet. The binding,
+  the popup geometry and the `Esc` behaviour are all unchanged.
+- **Gotcha:** the *inline* detail pane (beside/below, issue #35) is **not** in scope and
+  must keep working. Only the popup changes. Existing `s5_*` tests are the safety net and
+  are protected — if one of them fails, the change is wrong; do not edit the test.
+
+### T7 — `petri --mini` · `[hard]`
+- **Mutable:** `petri/src/main.rs`, `petri/src/lib.rs`, `petri/src/focus.rs`
+- **Do:** arg parsing, cwd resolution, alt-screen run loop reusing the existing poll loop.
+- **Gotcha — the arg-parsing trap:** `main.rs` today treats **the first positional arg as a
+  state-file path**, a documented test hook the PTY suite depends on, and deliberately has
+  no `clap` (`SPEC.md` §10 doesn't list it). So `petri --mini foo` is ambiguous. Contract to
+  implement: `--mini` takes its optional target as the argument **immediately following
+  it**; the state-path hook remains the first argument that is not a flag and not `--mini`'s
+  operand. Do not add `clap` to win this.
+- **Gotcha:** re-resolve the project by path/name **every tick**. Never cache the index —
+  the scanner re-sorts `radar.projects` on every scan and `SPEC.md` §4.3 records this as a
+  live bug already found once.
+- **Gotcha:** the missing-state-file check happens *before* entering the alternate screen
+  (§4.4). The not-a-project message follows the same rule.
+
+**Phase D exit:** `afk-verify.sh` prints 0; `make check` green.
+
+---
+
+## 8. Phase E — independent work (parallelisable any time)
+
+Neither depends on `focus.rs`. Both are good candidates to run first if you want a warm-up,
+or to fan out to Haiku in parallel with Phase B.
+
+### TQ — quota in the header · `[easy]`
+- **Mutable:** `petri/src/dashboard.rs` (`header_lines`), plus `focus.rs` once `--mini`
+  exists
+- **Do:** `5h {n}% · 7d {n}%` in the header's right group, with the elision ladder
+  `scan` → `projects` → clock → compress to `16%/1%` → drop.
+- **Gotcha:** the sensor is already built and populating `Radar.quota` — this is display
+  only. Do not touch `swab/src/sensors/quota.rs`.
+- **Gotcha:** **do not render `context_used_pct`.** It is owned by whichever session wrote
+  `last-status.json` last and is not attributable to any project (`DATA-5`).
+- **Gotcha:** `None` omits the segment. Never `0%`.
+
+### T8 — the lush tier (#33) · `[medium]`
+- **Mutable:** `petri/src/dashboard.rs`
+- **Do:** a third density tier: roomy + rungs R4 and R7 as two extra card rows, plus the
+  surplus-priority rule — cards take a **bounded** +2 rows first, the feed takes the
+  remainder under its existing `events + 2` bound.
+- **Gotcha:** the tier must be driven by the row budget, like `COMPACT_TIER_MAX_CONTENT_ROWS`
+  — not by width (`SPEC.md` §3.2 is explicit, and the earlier width-driven assumption was
+  already wrong once).
+- **Gotcha:** the feed must still yield entirely when any section was skipped or truncated.
+  That rule is unchanged and its test must keep passing.
+
+### Dependency graph
+
+```
+  TQ ──────────────────────────────┐
+  T8 ──────────────────────────────┤
+                                   │
+  A ──┬── T1 ──┬── T2              │
+      │        ├── T3              ├──► make check ──► PTY (§9) ──► done
+      │        └── T4              │
+      └────────────┴──► C ──┬── T5 ─── T6
+                            └── T7
+```
+
+T2/T3/T4 are mutually independent **only if** T1's `pub(crate)` extraction landed first;
+they all edit `focus.rs`, so a parallel fan-out needs them on separate branches with a merge
+step, or run them sequentially.
+
+---
+
+## 9. What must **not** go in an AFK queue
+
+- **PTY tests.** `SPEC.md` §8 and `IDEAS.md` §5 both call this the flakiest layer in the
+  repo, and an unattended loop cannot tell a flake from a defect — it either halts on a
+  false failure or learns to ignore the layer. Add `s11_pty_focus.rs` and `s12_pty_mini.rs`
+  **attended**, after Phase D, as the last step before opening a PR.
+- **Any `SPEC.md` edit.** Three decisions in this plan change the spec — contextual `Space`,
+  the surplus-priority rule, quota in the header. Those are yours to make; the delegate
+  implements the decision, it does not record it.
+- **Glyph allowlist additions.** If a task needs a new glyph, that's a signal to stop and
+  look, not a line to add. (The `┌┐└┘` gap noted in `IDEAS.md` §5 is a separate pre-existing
+  issue — fix it deliberately, not as a side effect of a round trying to go green.)
+
+---
+
+## 10. AFK-specific setup
+
+If you do go the AFK route:
+
+- **`cargo sweep` first.** `CLAUDE.md` records `target/` reaching 441k files / 22.7GiB, with
+  a bloated cache measurably *slower* than a cold one. An overnight run of repeated
+  `clippy --all-targets --all-features` compounds exactly this. Prune before starting.
+- **Iterate scoped, gate wide.** The round loop uses `cargo test -p petri` (~9s); `make
+  check` (~28s, workspace-wide) runs only at a phase exit. That's `CLAUDE.md`'s own rule and
+  it's worth ~3x on every round.
+- **Clean tree + `BASE=$(git rev-parse HEAD)` before starting**, per the skill's start-gate.
+- **Suggested budget per phase:** Phase B — 6 rounds, 90 min, retry cap 3. Phase D — 8
+  rounds, 2h, retry cap 3 (T5/T7 are the two `hard` ones and where escalation is most
+  likely). Phase E — 4 rounds, 45 min.
+- **Escalate rather than guess** if `afk-verify.sh` prints `9999` twice in a row: two
+  consecutive build failures on a scaffolded API usually means the scaffold's signature is
+  wrong, which is a planning bug the delegate cannot fix by trying harder.
+
+---
+
+## 11. Definition of done for the whole job
+
+1. `make check` exits 0 (workspace-wide, all four crates).
+2. `make check-all` exits 0 — run before the PR, per `CLAUDE.md`.
+3. PTY coverage added attended (§9).
+4. `SPEC.md` updated with the three decisions from §9, by a human.
+5. `IDEAS.md`'s `SURF-8` gets its `DONE` pointer and the narrative moves to `IDEAS_LOG.md`
+   — that's `IDEAS.md`'s own stated convention, and the deferred-rung list stays behind.
+6. Issues #30, #31, #32 closed; #33 closed if T8 landed; #29 partially (MVP only — the
+   dedicated-token-TUI half and `DATA-5` stay open).
