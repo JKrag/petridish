@@ -341,7 +341,9 @@ concurrently with it and you get a three-way conflict on the one file.
 - **Do:** `5h {n}% · 7d {n}%` in the header's right group, with the elision ladder
   `scan` → `projects` → clock → compress to `16%/1%` → drop.
 - **Gotcha:** the sensor is already built and populating `Radar.quota` — this is display
-  only. Do not touch `swab/src/sensors/quota.rs`.
+  only. `petri` never calls `read_quota`; it reads the already-parsed `Radar.quota` off the
+  state file like every other field. So there is no reason for this task to open
+  `swab/src/sensors/quota.rs` at all, and `swab/` is protected (§3).
 - **Gotcha:** **do not render `context_used_pct`.** It is owned by whichever session wrote
   `last-status.json` last and is not attributable to any project (`DATA-5`).
 - **Gotcha:** `None` omits the segment. Never `0%`.
@@ -420,6 +422,18 @@ If you do go the AFK route:
   check` (~28s, workspace-wide) runs only at a phase exit. That's `CLAUDE.md`'s own rule and
   it's worth ~3x on every round.
 - **Clean tree + `BASE=$(git rev-parse HEAD)` before starting**, per the skill's start-gate.
+- **Confirm `make check` is green at `BASE` before starting — this is not ceremony.** The
+  round loop scores `cargo test -p petri`, so a failure anywhere else in the workspace is
+  invisible to the ratchet right up until a phase exit, where it surfaces as "the phase
+  didn't pass" with no indication the cause predates the job. An unattended loop will then
+  burn its remaining rounds trying to fix code it never touched.
+
+  This is not hypothetical. On 2026-09-08 two tests in `swab/src/sensors/quota.rs` began
+  failing with no code change: they pinned a literal `"2026-08-09T06:32:11Z"` against a live
+  `Utc::now()`, and the 30-day `MAX_RESET_HORIZON_S` guard started dropping it exactly
+  thirty days later. Fixed in `90aed29` by injecting the clock, but the general shape —
+  **a time-bomb test in a crate this job does not touch** — is exactly what a baseline check
+  catches and nothing else in the loop would.
 - **Suggested budget per phase:** Phase B — 6 rounds, 90 min, retry cap 3. Phase D — 8
   rounds, 2h, retry cap 3 (T5/T7 are the two `hard` ones and where escalation is most
   likely). Phase E — 4 rounds, 45 min.
