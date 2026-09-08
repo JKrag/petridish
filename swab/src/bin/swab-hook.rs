@@ -89,6 +89,14 @@ pub fn handle_hook_input(stdin: &str, events_path: &std::path::Path) -> i32 {
 }
 
 pub fn main() {
+    if std::env::args()
+        .nth(1)
+        .is_some_and(|a| a == "--version" || a == "-V")
+    {
+        println!("swab-hook {}", env!("CARGO_PKG_VERSION"));
+        std::process::exit(0);
+    }
+
     let mut stdin_buf = String::new();
     if io::stdin().read_to_string(&mut stdin_buf).is_err() {
         return;

@@ -12,7 +12,7 @@ use std::io::Write;
 use std::path::PathBuf;
 
 #[derive(Parser)]
-#[command(name = "swab")]
+#[command(name = "swab", version)]
 pub struct Cli {
     /// Path to the state file (default: ~/.petridish/projects.json).
     #[arg(long, global = true)]

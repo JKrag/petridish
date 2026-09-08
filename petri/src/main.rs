@@ -3,6 +3,14 @@
 //! kept a plain positional rather than pulling in `clap` as a dependency for one
 //! flag; petri/SPEC.md §10 does not list `clap` among petri's dependencies).
 fn main() -> std::io::Result<()> {
+    if std::env::args()
+        .nth(1)
+        .is_some_and(|a| a == "--version" || a == "-V")
+    {
+        println!("petri {}", env!("CARGO_PKG_VERSION"));
+        std::process::exit(0);
+    }
+
     let state_path = std::env::args()
         .nth(1)
         .map(std::path::PathBuf::from)

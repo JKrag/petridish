@@ -399,6 +399,49 @@ impl Session {
         grid
     }
 
+    /// Like `screen_retry`, but retries against a caller-supplied predicate
+    /// over the reconstructed grid instead of a fixed "is it blank" check.
+    ///
+    /// `screen_retry` only catches the empty-output race (nothing painted
+    /// yet). It does NOT catch a different race this module hadn't needed
+    /// until a post-keystroke assertion needed it: after writing a key that
+    /// should trigger a redraw (e.g. `Space` opening a popup), the settle
+    /// window can elapse and return a grid *before* the child has actually
+    /// processed the key and repainted — which produces a perfectly
+    /// well-formed, non-blank grid (the PREVIOUS frame), indistinguishable
+    /// from a real content mismatch to a single-shot check or to
+    /// `screen_retry`'s blank-only retry. Confirmed as the actual failure
+    /// mode via CI (petri/tests/s5_pty.rs's popup-toggle test failed
+    /// deterministically on both `macos-14` and `ubuntu-latest` runners with
+    /// a fully-painted but stale pre-keystroke frame, not a blank one, while
+    /// passing locally every time — consistent with CI's timing making this
+    /// narrower race land more often than on a lightly-loaded dev machine).
+    ///
+    /// Retries until `predicate` returns true or `attempts` is exhausted,
+    /// returning the LAST grid either way — same "never silently pass a
+    /// genuine regression" contract as `screen_retry` and
+    /// `spawn_and_settle_nonempty`.
+    pub fn screen_until(
+        &mut self,
+        cols: u16,
+        rows: u16,
+        timeout: Duration,
+        quiet_for: Duration,
+        attempts: u32,
+        mut predicate: impl FnMut(&[String]) -> bool,
+    ) -> Vec<String> {
+        let mut grid = self.screen(cols, rows, timeout, quiet_for);
+        let mut attempt = 1;
+        while !predicate(&grid) && attempt < attempts {
+            attempt += 1;
+            eprintln!(
+                "screen_until attempt {attempt}/{attempts}: predicate not yet satisfied, retrying"
+            );
+            grid = self.screen(cols, rows, timeout, quiet_for);
+        }
+        grid
+    }
+
     /// Wait for the child to exit, with a hard timeout so a genuine hang fails
     /// this test instead of the whole suite. The drain thread keeps running
     /// throughout (it owns its own reader clone), so this cannot deadlock the

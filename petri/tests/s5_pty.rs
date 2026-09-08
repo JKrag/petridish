@@ -99,6 +99,31 @@ fn settle_grid(session: &mut Session, cols: u16, rows: u16) -> Vec<String> {
     )
 }
 
+/// Like `settle_grid`, but for a check that must observe the RESULT of a
+/// keystroke just sent, not just the eventual first non-blank frame.
+/// `screen_retry` (behind `settle_grid`) only retries on a blank grid; a
+/// still-painted PREVIOUS frame (the redraw for this keystroke hasn't
+/// happened yet) is not blank and would be returned as-is, failing the
+/// assertion below even though the binary is about to do the right thing —
+/// confirmed as the actual CI failure mode (see `screen_until`'s doc
+/// comment in pty_support). Retries until `predicate` holds or the attempt
+/// budget is spent, so a genuine regression still fails loudly.
+fn settle_grid_until(
+    session: &mut Session,
+    cols: u16,
+    rows: u16,
+    predicate: impl FnMut(&[String]) -> bool,
+) -> Vec<String> {
+    session.screen_until(
+        cols,
+        rows,
+        Duration::from_secs(5),
+        Duration::from_millis(300),
+        10,
+        predicate,
+    )
+}
+
 #[test]
 fn space_toggles_the_detail_popup_at_a_hidden_geometry() {
     // Issue #35: at 60x10 (below DETAIL_PANE_THRESHOLD, and too short to
@@ -117,10 +142,47 @@ fn space_toggles_the_detail_popup_at_a_hidden_geometry() {
     // `contains`-true forever afterward even once ratatui's diff-redraw has
     // erased it on screen, which would make the "closed" assertions below
     // pass vacuously.
+    //
+    // Uses a scratch HOME, not bare `Session::spawn` — Space's detail-popup
+    // toggle only does anything when `browser_state` is `Some`, and
+    // `lib.rs`'s startup dispatch only populates that on `LastScreen::
+    // Browser` (`Dashboard => (Screen::Dashboard, None)`). Bare `spawn`
+    // inherits the ambient `$HOME`, so this test's real behavior depended on
+    // whatever `last_screen` happened to be persisted in the machine
+    // running it — passed reliably on a dev machine with a real
+    // `~/.petridish/petri.toml` left at `last_screen = "browser"` from
+    // manual testing, and failed deterministically in CI (a fresh `$HOME`,
+    // defaulting to `LastScreen::Dashboard`) with a fully-painted Dashboard
+    // frame that Space could never affect — not a timing race at all, this
+    // was the exact ambient-prefs contamination `s7_pty.rs`'s module doc
+    // comment already documents for a different test. Fix: isolate `$HOME`
+    // (same convention as `s7_pty.rs`) and press `Tab` to reach the Browser
+    // screen deterministically before testing Space, rather than depending
+    // on any prefs file's default.
     let cols = 60u16;
     let rows = 10u16;
-    let mut session = Session::spawn(&fixture_path("normal.json"), cols, rows);
-    let first_frame = settle_grid(&mut session, cols, rows).join("\n");
+    let home = std::env::temp_dir().join(format!("petri_s5_pty_popup_home_{}", std::process::id()));
+    std::fs::create_dir_all(&home).expect("scratch home dir must be creatable");
+    let mut session = Session::spawn_with_home(&fixture_path("normal.json"), cols, rows, &home);
+
+    let initial_screen = settle_grid(&mut session, cols, rows).join("\n");
+    assert!(
+        initial_screen.contains("dashboard"),
+        "petri must start on the Dashboard (S6 default) with a scratch HOME, got:\n{initial_screen}"
+    );
+
+    session
+        .writer
+        .write_all(b"\t")
+        .expect("write Tab must succeed");
+    let first_frame = settle_grid_until(&mut session, cols, rows, |grid| {
+        grid.first().is_some_and(|row0| row0.contains("browser"))
+    })
+    .join("\n");
+    assert!(
+        first_frame.contains("browser"),
+        "Tab must switch to the Browser screen before the popup toggle can be tested, got:\n{first_frame}"
+    );
     assert!(
         !first_frame.contains("Branch:"),
         "detail pane must start absent at 60x10 (too narrow AND too short for either inline placement), got:\n{first_frame}"
@@ -130,7 +192,10 @@ fn space_toggles_the_detail_popup_at_a_hidden_geometry() {
         .writer
         .write_all(b" ")
         .expect("write 'Space' must succeed");
-    let after_open = settle_grid(&mut session, cols, rows).join("\n");
+    let after_open = settle_grid_until(&mut session, cols, rows, |grid| {
+        grid.iter().any(|line| line.contains("Branch:"))
+    })
+    .join("\n");
     assert!(
         after_open.contains("Branch:"),
         "Space must open the detail popup at 60x10, got:\n{after_open}"
@@ -140,7 +205,10 @@ fn space_toggles_the_detail_popup_at_a_hidden_geometry() {
         .writer
         .write_all(b" ")
         .expect("write 'Space' must succeed");
-    let after_close = settle_grid(&mut session, cols, rows).join("\n");
+    let after_close = settle_grid_until(&mut session, cols, rows, |grid| {
+        !grid.iter().any(|line| line.contains("Branch:"))
+    })
+    .join("\n");
     assert!(
         !after_close.contains("Branch:"),
         "a second Space must close the detail popup, got:\n{after_close}"
@@ -150,12 +218,22 @@ fn space_toggles_the_detail_popup_at_a_hidden_geometry() {
         .writer
         .write_all(b" ")
         .expect("write 'Space' must succeed");
-    let _ = settle_grid(&mut session, cols, rows);
+    // Wait for the popup to actually be open again before sending Esc — not
+    // just any settled frame. Without this, Esc could race ahead of the
+    // reopen and dismiss nothing, and the assertion below would pass
+    // vacuously (the exact class of trap this module's doc comment already
+    // calls out for raw substring matching, just one keystroke later).
+    let _ = settle_grid_until(&mut session, cols, rows, |grid| {
+        grid.iter().any(|line| line.contains("Branch:"))
+    });
     session
         .writer
         .write_all(&[0x1b])
         .expect("write 'Esc' must succeed");
-    let after_esc = settle_grid(&mut session, cols, rows).join("\n");
+    let after_esc = settle_grid_until(&mut session, cols, rows, |grid| {
+        !grid.iter().any(|line| line.contains("Branch:"))
+    })
+    .join("\n");
     assert!(
         !after_esc.contains("Branch:"),
         "Esc must also close the detail popup, got:\n{after_esc}"
