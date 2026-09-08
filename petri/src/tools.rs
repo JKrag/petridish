@@ -271,13 +271,14 @@ pub fn registry() -> Vec<Action> {
                 // The pager is pinned rather than inherited: git's own default
                 // is `less -F -X`, and `-F` makes less print-and-exit when the
                 // output fits one screen, so a short history would flash past
-                // instead of behaving like a TUI. Measured on a real machine,
-                // not assumed.
+                // instead of behaving like a TUI. `-+F` is explicit because git
+                // also exports `LESS=FRX` when LESS is otherwise unset.
+                // Measured on a real machine, not assumed.
                 Candidate::new(
                     "git",
                     &[
                         "-c",
-                        "core.pager=less -R",
+                        "core.pager=less -+F -R",
                         "log",
                         "--graph",
                         "--oneline",
