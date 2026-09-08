@@ -1184,3 +1184,236 @@ fn tree_lines(p: &Project, ctx: &FocusCtx, width: usize) -> Vec<Line<'static>> {
     }
     lines
 }
+
+// ---------------------------------------------------------------------------
+// The `--mini` mount (issue #31, `PLAN-focus-panel.md` T7).
+//
+// Lives here rather than in `lib.rs` because it is chrome around the panel, not run-loop
+// logic — the same split `dashboard::render_focus_overlay` makes for the popup mount.
+// ---------------------------------------------------------------------------
+
+/// `--mini` grows a header + rule only once the frame can spare two rows for them AND is
+/// wide enough for the title to say something. Below either threshold the panel takes the
+/// whole frame, per `PROPOSAL-focus-panel.md` §3.4: "no header, no rule, no zone labels —
+/// at 24 columns a 7-cell label costs 29% of the line."
+const MINI_CHROME_MIN_WIDTH: u16 = 30;
+
+/// See `MINI_CHROME_MIN_WIDTH`. 8 = the 6-row panel floor plus the two rows the chrome
+/// costs, so growing a header can never push the panel below the floor.
+const MINI_CHROME_MIN_HEIGHT: u16 = MIN_FOCUS_HEIGHT + 2;
+
+/// Above this many rows the header rule is the Dashboard's HEAVY `═`; below it, a light
+/// `─`. Both mockups in `PROPOSAL-focus-panel.md` §3.2/§3.3 draw it that way — the heavy
+/// rule reads as a title bar, which a ten-row pane has no room to be.
+const MINI_HEAVY_RULE_MIN_HEIGHT: u16 = 15;
+
+/// Render a whole `petri --mini` frame: `--mini`'s own chrome plus the panel.
+///
+/// **No border** (`PROPOSAL-focus-panel.md` §9, "border-nesting depth: 0 for `--mini`"):
+/// the terminal edge already frames it. The footer the mockups show is not chrome either —
+/// it is the `Actions` rung in its degraded, label-less form, which `plan_rungs` already
+/// admits at every size down to the floor.
+///
+/// The below-the-floor message is `--mini`'s own wording, not the popup's
+/// (`PROPOSAL-focus-panel.md` §10's last row): it names the binary and the dimensions,
+/// because someone who typed `petri --mini` into a split needs to know what to resize to.
+pub fn render_mini(frame: &mut ratatui::Frame, area: Rect, ctx: &FocusCtx) {
+    use ratatui::widgets::Paragraph;
+
+    if area.width == 0 || area.height == 0 {
+        return;
+    }
+
+    let chrome = area.width >= MINI_CHROME_MIN_WIDTH && area.height >= MINI_CHROME_MIN_HEIGHT;
+    let content = if chrome {
+        Rect::new(area.x, area.y + 2, area.width, area.height - 2)
+    } else {
+        area
+    };
+
+    let mut lines: Vec<Line<'static>> = Vec::new();
+    if chrome {
+        lines.push(mini_header_line(ctx, area.width as usize));
+        let rule = if area.height >= MINI_HEAVY_RULE_MIN_HEIGHT {
+            "═"
+        } else {
+            "─"
+        };
+        lines.push(Line::from(Span::styled(
+            rule.repeat(area.width as usize),
+            Style::default().fg(theme::DIMMER),
+        )));
+    }
+
+    let body = focus_lines(content, ctx);
+    if body.is_empty() {
+        lines.extend(mini_too_small_lines(content));
+    } else {
+        lines.extend(body);
+    }
+
+    lines.truncate(area.height as usize);
+    frame.render_widget(Paragraph::new(lines), area);
+}
+
+/// ` petri · {project}` — the pane's identity, since a `--mini` pane in a corner is often
+/// the only thing on screen saying which project it is watching.
+///
+/// The right-hand group (`5h 16% · 7d 1% · ▲ 4m` in the §3.2 mockup) is `TQ-b`'s, in
+/// Phase E, and deliberately left empty here rather than half-built.
+fn mini_header_line(ctx: &FocusCtx, width: usize) -> Line<'static> {
+    let name = focused_project(ctx)
+        .map(|p| p.name.clone())
+        .unwrap_or_else(|| "petri".to_string());
+    Line::from(vec![
+        Span::raw(INDENT),
+        Span::styled(
+            elide(&format!("petri · {name}"), width.saturating_sub(1)),
+            Style::default()
+                .fg(theme::ACCENT)
+                .add_modifier(Modifier::BOLD),
+        ),
+    ])
+}
+
+/// `PROPOSAL-focus-panel.md` §3.5's exact wording, naming the dimensions rather than just
+/// refusing — the same honesty rule as `SPEC.md` §4.4's missing-state-file message.
+fn mini_too_small_lines(area: Rect) -> Vec<Line<'static>> {
+    let dim = Style::default().fg(theme::DIM);
+    let full = format!("petri --mini needs {MIN_FOCUS_WIDTH}x{MIN_FOCUS_HEIGHT}");
+    let mut lines = if area.width as usize >= full.chars().count() {
+        vec![Line::from(Span::styled(full, dim))]
+    } else {
+        // Two short lines, because the frame that triggers this is by definition too
+        // narrow to hold the one-line form.
+        vec![
+            Line::from(Span::styled("--mini needs", dim)),
+            Line::from(Span::styled(
+                format!("{MIN_FOCUS_WIDTH}x{MIN_FOCUS_HEIGHT}"),
+                dim,
+            )),
+        ]
+    };
+    lines.truncate(area.height as usize);
+    lines
+}
+
+#[cfg(test)]
+mod mini_mount_tests {
+    //! `render_mini`'s chrome arithmetic, which is the one part of the `--mini` mount that
+    //! is neither `plan_rungs`' (already pinned size-by-size in `s11_focus_plan.rs`) nor the
+    //! run loop's. Structural assertions against a reconstructed grid, per `SPEC.md` §8 —
+    //! what matters is *which rows* the chrome occupies and that the panel below it still
+    //! clears the floor, not the exact glyphs.
+
+    use super::*;
+    use ratatui::{Terminal, backend::TestBackend};
+
+    fn load_normal() -> Radar {
+        let path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("..")
+            .join("fixtures")
+            .join("normal.json");
+        serde_json::from_str(&std::fs::read_to_string(&path).expect("fixtures/normal.json"))
+            .expect("normal.json deserializes")
+    }
+
+    /// Render one `--mini` frame at `w`x`h` and hand back its rows as strings.
+    fn rows(radar: &Radar, w: u16, h: u16) -> Vec<String> {
+        let prefs = Prefs::default();
+        let ctx = FocusCtx {
+            radar,
+            target: FocusTarget::Project(0),
+            now: Utc::now(),
+            feed: None,
+            prefs: &prefs,
+        };
+        let mut terminal = Terminal::new(TestBackend::new(w, h)).expect("TestBackend");
+        terminal
+            .draw(|frame| render_mini(frame, frame.area(), &ctx))
+            .expect("draw");
+        let buf = terminal.backend().buffer().clone();
+        (0..h)
+            .map(|y| {
+                (0..w)
+                    .map(|x| buf[(x, y)].symbol())
+                    .collect::<String>()
+                    .trim_end()
+                    .to_string()
+            })
+            .collect()
+    }
+
+    #[test]
+    fn the_roomy_pane_grows_a_title_and_a_rule() {
+        // `PROPOSAL-focus-panel.md` §3.2's 60x20 mockup: title row, rule row, then panel.
+        let radar = load_normal();
+        let out = rows(&radar, 60, 20);
+        assert!(
+            out[0].contains("petri ·") && out[0].contains(&radar.projects[0].name),
+            "row 0 must name the pane's project, got {:?}",
+            out[0]
+        );
+        assert!(
+            out[1].chars().all(|c| c == '═'),
+            "row 1 must be the heavy rule, got {:?}",
+            out[1]
+        );
+        assert!(
+            out[2].contains(&radar.projects[0].name),
+            "the panel starts on row 2, got {:?}",
+            out[2]
+        );
+    }
+
+    #[test]
+    fn the_narrow_pane_uses_the_light_rule() {
+        // §3.3's 36x10 mockup keeps the header but drops to `─`: a ten-row pane has no
+        // room to read as a title bar.
+        let radar = load_normal();
+        let out = rows(&radar, 36, 10);
+        assert!(out[0].contains("petri ·"), "got {:?}", out[0]);
+        assert!(
+            out[1].chars().all(|c| c == '─'),
+            "row 1 must be the light rule, got {:?}",
+            out[1]
+        );
+    }
+
+    #[test]
+    fn the_floor_pane_has_no_chrome_at_all() {
+        // §3.4: at 24x6 a header would eat two of the six rows and push the panel below
+        // its own floor, so the panel takes the whole frame instead.
+        let radar = load_normal();
+        let out = rows(&radar, 24, 6);
+        assert!(
+            !out[0].contains("petri ·"),
+            "no title at the floor, got {:?}",
+            out[0]
+        );
+        assert!(
+            out.iter().any(|r| r.contains(&radar.projects[0].name)),
+            "the panel itself must still render, got {out:?}"
+        );
+    }
+
+    #[test]
+    fn below_the_floor_says_what_to_resize_to() {
+        // §3.5, and it must be `--mini`'s wording rather than the popup's.
+        let radar = load_normal();
+        let out = rows(&radar, 40, 4);
+        let whole = out.join("\n");
+        assert!(
+            whole.contains("--mini needs") && whole.contains("24x6"),
+            "got {whole:?}"
+        );
+    }
+
+    #[test]
+    fn a_degenerate_frame_does_not_panic() {
+        let radar = load_normal();
+        for (w, h) in [(1, 1), (1, 40), (40, 1)] {
+            let _ = rows(&radar, w, h);
+        }
+    }
+}

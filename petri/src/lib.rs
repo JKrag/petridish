@@ -93,8 +93,58 @@ pub struct CliArgs {
 ///    an error, returned as the message to print. Failing loudly beats silently ignoring
 ///    an argument the user clearly meant something by.
 pub fn parse_args(argv: &[String]) -> Result<CliArgs, String> {
-    let _ = argv;
-    unimplemented!("T7: --mini argv contract")
+    // Rule 1, and it short-circuits: `--version` anywhere means the rest of the line is
+    // never parsed, so `petri --mini --version` cannot fail on the operand it does not have.
+    if argv.iter().any(|a| a == "--version" || a == "-V") {
+        return Ok(CliArgs {
+            version: true,
+            ..CliArgs::default()
+        });
+    }
+
+    let mut out = CliArgs::default();
+    let mut i = 0;
+    while i < argv.len() {
+        let arg = &argv[i];
+
+        if arg == "--mini" {
+            if out.mini.is_some() {
+                return Err("--mini given twice: a pane shows one project".to_string());
+            }
+            // Rule 2: the operand is the *immediately following* argument, and only if it
+            // is not itself a flag. This is what outranks the state-path positional, so
+            // `petri --mini state.json` is a pin rather than a path.
+            match argv.get(i + 1).filter(|a| !a.starts_with('-')) {
+                Some(target) => {
+                    out.mini = Some(MiniTarget::Pinned(target.clone()));
+                    i += 2;
+                }
+                None => {
+                    out.mini = Some(MiniTarget::Cwd);
+                    i += 1;
+                }
+            }
+            continue;
+        }
+
+        if arg.starts_with('-') {
+            return Err(format!(
+                "unrecognised argument {arg}\nusage: petri [STATE_PATH] [--mini [PATH|NAME]]"
+            ));
+        }
+
+        // Rule 3, then rule 4: the first bare positional is the state path, and a second
+        // one is an error rather than a silently discarded argument.
+        if out.state_path.is_some() {
+            return Err(format!(
+                "unexpected extra argument {arg}: the state path is given once\nusage: petri [STATE_PATH] [--mini [PATH|NAME]]"
+            ));
+        }
+        out.state_path = Some(std::path::PathBuf::from(arg));
+        i += 1;
+    }
+
+    Ok(out)
 }
 
 /// Why a `--mini` target could not be turned into a project.
@@ -112,8 +162,19 @@ pub enum MiniError {
 
 impl std::fmt::Display for MiniError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let _ = f;
-        unimplemented!("T7: --mini error messages")
+        match self {
+            MiniError::NotAProject(path) => write!(
+                f,
+                "{} is not in projects.json\n\
+                 run 'swab scan' to pick it up, or 'petri --mini <name>' to pin another project",
+                crate::dashboard::abbreviate_home(&path.display().to_string())
+            ),
+            MiniError::UnknownName(name) => write!(
+                f,
+                "no project named '{name}' in projects.json\n\
+                 run 'swab scan' if it is new, or 'petri --mini <path>' to name it by path"
+            ),
+        }
     }
 }
 
@@ -180,8 +241,71 @@ pub fn resolve_mini(
     target: &MiniTarget,
     cwd: &std::path::Path,
 ) -> Result<usize, MiniError> {
-    let _ = (radar, target, cwd);
-    unimplemented!("T7: --mini project resolution")
+    match target {
+        MiniTarget::Cwd => {
+            project_containing(radar, cwd).ok_or_else(|| MiniError::NotAProject(cwd.to_path_buf()))
+        }
+        MiniTarget::Pinned(s) => {
+            // Path first, then name — so a pin that *is* a path can never be shadowed by a
+            // project that happens to be named after it.
+            if let Some(idx) = project_containing(radar, std::path::Path::new(s)) {
+                return Ok(idx);
+            }
+            project_named(radar, s).ok_or_else(|| MiniError::UnknownName(s.clone()))
+        }
+    }
+}
+
+/// The project whose root is `path` or an ancestor of it, deepest match first.
+///
+/// Ancestry is component-wise (`Path::ancestors`), never a string prefix: `/repos/foo-old`
+/// is not inside `/repos/foo`, and a `starts_with` on the raw strings says it is.
+///
+/// Deepest-first is what makes a project checked out inside another project's tree — a
+/// worktree under its parent, a vendored repo — resolve to itself rather than to the
+/// enclosing root.
+fn project_containing(
+    radar: &petridish_core::schema::Radar,
+    path: &std::path::Path,
+) -> Option<usize> {
+    for ancestor in path.ancestors() {
+        if let Some(idx) = radar
+            .projects
+            .iter()
+            .position(|p| std::path::Path::new(&p.path) == ancestor)
+        {
+            return Some(idx);
+        }
+    }
+    None
+}
+
+/// The project called `name`, or the most recently active one when several share it.
+///
+/// `swab`'s own ordering (`scan.rs`'s sort): `last_activity_at` descending with `None`
+/// last, ties broken by path. `Option`'s derived `Ord` already puts `None` below every
+/// `Some`, so a plain descending compare gives the None-last half for free.
+///
+/// **The tie-break compares paths case-insensitively first**, then byte-wise for
+/// determinism when two paths differ only in case. Plain byte order is not the
+/// "alphabetically first path" anyone reading a fleet list would name: real roots live
+/// under mixed-case directories (`~/repos/JKrag/...`), and ASCII puts every capital ahead
+/// of every lowercase letter, so a raw compare sorts `repos/JKrag/lantern` ahead of
+/// `repos/aaa-first/lantern`. macOS paths are case-insensitive anyway, which is the fleet
+/// this tool watches.
+fn project_named(radar: &petridish_core::schema::Radar, name: &str) -> Option<usize> {
+    radar
+        .projects
+        .iter()
+        .enumerate()
+        .filter(|(_, p)| p.name == name)
+        .min_by(|(_, a), (_, b)| {
+            b.last_activity_at
+                .cmp(&a.last_activity_at)
+                .then_with(|| a.path.to_lowercase().cmp(&b.path.to_lowercase()))
+                .then_with(|| a.path.cmp(&b.path))
+        })
+        .map(|(idx, _)| idx)
 }
 
 /// Read and deserialize the state file. The error message is promoted to
@@ -190,6 +314,181 @@ fn read_state_file(path: &std::path::Path) -> std::io::Result<petridish_core::sc
     let text = std::fs::read_to_string(path)?;
     serde_json::from_str(&text)
         .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e.to_string()))
+}
+
+/// `petri --mini` (issue #31): one project, whole screen, no list.
+///
+/// Structurally `run`'s sibling rather than a mode inside it — the two share the
+/// pre-alternate-screen preflight and the panic hook, but nothing about the key handling
+/// or the reload bookkeeping, and folding a screen with no cursor into `poll_loop`'s
+/// screen/picker/help/notice state machine would add branches to the hot key path for no
+/// shared behaviour.
+///
+/// **Every failure that can be diagnosed before the terminal is touched, is**
+/// (`SPEC.md` §4.4): the missing state file, an unreadable one, and — the one this mount
+/// adds — a target that resolves to no project. Discovering "that isn't a project" only
+/// after the alternate screen swallowed the message is the failure §4.4 exists to prevent.
+pub fn run_mini(
+    state_path: &std::path::Path,
+    target: &MiniTarget,
+    cwd: &std::path::Path,
+) -> std::io::Result<u8> {
+    if !state_path.exists() {
+        eprintln!(
+            "no state file at {}; run 'swab scan' first",
+            state_path.display()
+        );
+        return Ok(1);
+    }
+
+    let radar = match read_state_file(state_path) {
+        Ok(r) => r,
+        Err(e) => {
+            eprintln!("petri: initial state read failed: {e}");
+            return Ok(1);
+        }
+    };
+
+    // The resolution preflight. Its *answer* is thrown away deliberately: an index is
+    // valid for one tick only (`resolve_mini`'s doc comment), so the loop re-resolves the
+    // `MiniTarget` every frame. What this call buys is the error, on a normal stderr.
+    if let Err(e) = resolve_mini(&radar, target, cwd) {
+        eprintln!("petri --mini: {e}");
+        return Ok(1);
+    }
+
+    let prefs = prefs::load(&prefs::default_prefs_path());
+
+    crossterm::terminal::enable_raw_mode()?;
+    let mut stdout = std::io::stdout();
+    crossterm::execute!(stdout, crossterm::terminal::EnterAlternateScreen)?;
+    let backend = ratatui::backend::CrosstermBackend::new(stdout);
+    let mut terminal = ratatui::Terminal::new(backend)?;
+    install_panic_hook();
+
+    let exit_code = mini_poll_loop(state_path, &mut terminal, radar, target, cwd, &prefs)?;
+
+    {
+        let mut out = std::io::stdout().lock();
+        let _ = crossterm::execute!(out, crossterm::terminal::LeaveAlternateScreen);
+    }
+    let _ = crossterm::terminal::disable_raw_mode();
+
+    Ok(exit_code)
+}
+
+/// `--mini`'s event loop. Same poll cadence and same quiet-tick rule as `poll_loop` (draw
+/// only on a real event or an mtime change, so an idle pane leaves the output stream
+/// still), and the same feed bookkeeping via `absorb_snapshot` — the `Recent` rung is a
+/// slice of the same activity feed the Dashboard shows.
+///
+/// `q` and `Esc` both quit. There is nothing for `Esc` to dismiss here, and a pane whose
+/// only binding is a letter is a trap in a tmux split.
+fn mini_poll_loop(
+    state_path: &std::path::Path,
+    terminal: &mut ratatui::Terminal<ratatui::backend::CrosstermBackend<std::io::Stdout>>,
+    initial: petridish_core::schema::Radar,
+    target: &MiniTarget,
+    cwd: &std::path::Path,
+    prefs: &Prefs,
+) -> std::io::Result<u8> {
+    let mut feed = crate::feed::FeedState::seeded(&initial);
+    let mut last_good = Some(initial);
+    let mut last_mtime = std::fs::metadata(state_path)
+        .ok()
+        .and_then(|m| m.modified().ok());
+
+    render_mini_frame(terminal, &last_good, target, cwd, &feed, prefs);
+
+    loop {
+        let event_ready =
+            crossterm::event::poll(std::time::Duration::from_secs(1)).unwrap_or(false);
+        if event_ready
+            && let Ok(crossterm::event::Event::Key(key)) = crossterm::event::read()
+            && matches!(
+                key.code,
+                crossterm::event::KeyCode::Char('q') | crossterm::event::KeyCode::Esc
+            )
+        {
+            return Ok(0);
+        }
+
+        let new_mtime = std::fs::metadata(state_path)
+            .ok()
+            .and_then(|m| m.modified().ok());
+        let mtime_changed = match (&last_mtime, new_mtime) {
+            (Some(prev), Some(now)) => *prev != now,
+            _ => false,
+        };
+
+        if mtime_changed {
+            // A failed read is swallowed on purpose: under the alternate screen there is
+            // nowhere to print, and the pane keeps showing the last good snapshot —
+            // degrade in place, same as `poll_loop`'s mid-run reads. `swab` writes via
+            // temp-file + atomic rename, so a torn read here is a transient the next tick
+            // fixes, not a state worth reporting.
+            if let Ok(r) = read_state_file(state_path) {
+                last_good = absorb_snapshot(&mut feed, last_good.take(), r);
+            }
+        }
+
+        if event_ready || mtime_changed {
+            render_mini_frame(terminal, &last_good, target, cwd, &feed, prefs);
+        }
+
+        last_mtime = new_mtime;
+    }
+}
+
+/// Draw one `--mini` frame, re-resolving the target first.
+///
+/// **The resolution happens here, every frame, and its result is never held across one**
+/// (`SPEC.md` §4.3): the scanner re-sorts `radar.projects` on every scan, so a cached
+/// index would silently start pointing at a different project — and a corner pane is the
+/// worst place for that, since there is no list on screen to make the swap visible.
+///
+/// A target that stops resolving mid-run (the project left the fleet) renders the same
+/// message the preflight would have printed, in-pane. The alternative — exiting out from
+/// under the user because one scan dropped a project — is worse for something pinned in a
+/// split for days.
+fn render_mini_frame(
+    terminal: &mut ratatui::Terminal<ratatui::backend::CrosstermBackend<std::io::Stdout>>,
+    radar: &Option<petridish_core::schema::Radar>,
+    target: &MiniTarget,
+    cwd: &std::path::Path,
+    feed: &crate::feed::FeedState,
+    prefs: &Prefs,
+) {
+    let Some(r) = radar else { return };
+    let resolved = resolve_mini(r, target, cwd);
+    let _ = terminal.draw(|frame| {
+        let area = frame.area();
+        match resolved {
+            Ok(idx) => {
+                let ctx = crate::focus::FocusCtx {
+                    radar: r,
+                    target: crate::focus::FocusTarget::Project(idx),
+                    now: chrono::Utc::now(),
+                    feed: Some(feed),
+                    prefs,
+                };
+                crate::focus::render_mini(frame, area, &ctx);
+            }
+            Err(ref e) => {
+                let text: Vec<ratatui::text::Line<'static>> = e
+                    .to_string()
+                    .lines()
+                    .map(|l| {
+                        ratatui::text::Line::from(ratatui::text::Span::styled(
+                            l.to_string(),
+                            ratatui::style::Style::default().fg(crate::theme::DIM),
+                        ))
+                    })
+                    .collect();
+                frame.render_widget(ratatui::widgets::Paragraph::new(text), area);
+            }
+        }
+    });
 }
 
 /// Entry point. Checks `state_path` exists *before* entering the alternate screen

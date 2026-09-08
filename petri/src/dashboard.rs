@@ -932,9 +932,12 @@ pub fn render_focus_overlay(frame: &mut ratatui::Frame, area: Rect, ctx: &crate:
     match focus_placement(area) {
         FocusPlacement::Popup(popup) => {
             frame.render_widget(Clear, popup);
+            // Default border set (`┌┐└┘─│`), NOT `BorderType::Rounded`: `╭╮╰╯` are not on
+            // `glyph_portability.rs`'s allowlist, and `PLAN-focus-panel.md` §9 makes a new
+            // glyph a stop-and-escalate signal rather than a line to add. `focus.rs`'s
+            // module doc already settled this for the mount.
             let block = Block::default()
                 .borders(Borders::ALL)
-                .border_type(BorderType::Rounded)
                 .border_style(Style::default().fg(crate::theme::ACCENT))
                 .title(Span::styled(
                     " Focus ",
