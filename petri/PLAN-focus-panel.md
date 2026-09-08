@@ -52,22 +52,46 @@ Phase 0 creates this file. It is the global verify command for every AFK round.
 # "verify command errored" escalation stays reserved for a genuinely broken
 # environment (no cargo, no toolchain) rather than firing on a bad round.
 #
-# A build failure prints a large sentinel rather than 0. Without that guard the
-# awk below sums zero "test result:" lines and prints 0 — i.e. a round that
-# broke the build would score as a perfect one. That inversion is the single
-# most dangerous thing that can happen to an unattended ratchet.
+# TWO separate build guards, because there are two distinct ways a build
+# failure can make a bad round score as a good one:
+#
+#  1. Nothing builds at all -> zero "test result:" lines -> awk sums nothing
+#     and prints 0, a perfect score for a round that broke everything.
+#  2. *One* integration target fails to compile. `cargo test -p petri` builds
+#     each file under tests/ as its own binary, so the others still run and
+#     still print "test result:". The failing target's tests simply stop being
+#     counted, and the score DROPS. This is the nastier of the two: it looks
+#     like progress, and deleting a test file has the same signature.
+#
+# Guard 1 is `--no-run` (compiles every target, runs nothing). Guard 2 is the
+# binary count, pinned at the end of each scaffold phase.
 set -uo pipefail
 
-out=$(cargo test -p petri --no-fail-fast 2>&1)
+# Pinned by the scaffold phase: how many test binaries must report a result.
+# Update it in the same commit that adds or removes a test file, never in a
+# commit that is trying to move the score.
+EXPECTED_BINARIES=${EXPECTED_BINARIES:?set this from the scaffold phase}
 
-if ! grep -q '^test result:' <<<"$out"; then
-  echo 9999
+if ! cargo test -p petri --no-run >/dev/null 2>&1; then
+  echo 9999            # guard 1: something does not compile
+  exit 0
+fi
+
+out=$(cargo test -p petri --no-fail-fast 2>&1)
+seen=$(grep -c '^test result:' <<<"$out")
+
+if [ "$seen" -lt "$EXPECTED_BINARIES" ]; then
+  echo 9999            # guard 2: a target vanished from the run
   exit 0
 fi
 
 grep '^test result:' <<<"$out" \
   | awk '{for (i = 1; i <= NF; i++) if ($i == "failed;") s += $(i-1)} END {print s+0}'
 ```
+
+`--no-run` costs one extra link pass per round and buys the guard that matters most; take
+the trade. Note it also makes guard 2 nearly unreachable in practice — it is kept because
+guard 2 is the one that catches a *deleted* test file, which compiles perfectly.
 
 **Keep/revert rule (overrides the template default):**
 
@@ -178,15 +202,36 @@ integer (not `9999` — that means it doesn't compile).
 All tasks mutate `petri/src/focus.rs` only, plus their named test file. This is deliberate:
 it makes B.1–B.4 conflict-free for a parallel fan-out.
 
-### T1 — rungs R0–R3: identity, path, git, agent · `[medium]`
+### T0b — `pub(crate)` extraction, no behaviour change · `[easy]`
+- **Mutable:** `petri/src/dashboard.rs`
+- **Do:** widen these `dashboard.rs`-private helpers to `pub(crate)` so `focus.rs` can reuse
+  them, changing nothing else: `zone_row` + `ZoneRowSpec`, `sparkline_glyphs`,
+  `agent_sparkline_width_for`, `silence_tier_color`, `commit_ago`, `humanize_secs`,
+  `abbreviate_home`. (`is_waiting` and `present::dirty_marker` are already public.)
+- **Done when:** `make check` is green and `git diff` shows only visibility changes.
+- **Why it is its own task:** it is the only thing T1a–T4 wait on, it is mechanically
+  verifiable without any new test, and it touches the one file three other tasks also want.
+  Folding it into T1 made a revert-loop there stall the whole phase.
+- **Where these helpers actually live — verify, don't trust the doc.** `SPEC.md` §2 says
+  `petridish-core`'s `present` module carries `silence_seconds`, `humanize_duration` and
+  `is_stale`. **It does not** — `present` exports seven functions and none of those three
+  are among them. The helpers you want are the `dashboard.rs`-private ones listed above.
+  This is spec-lagging-code drift of the kind §1 of `SPEC.md` explicitly tells you to
+  resolve in the code's favour; do **not** "fix" it by adding duplicates to core.
+
+### T1a — `plan_rungs`: the responsive arithmetic · `[medium]`
 - **Mutable:** `petri/src/focus.rs`
-- **Do:** implement `plan_rungs` fully (all sizes), plus `Identity`/`Path`/`Git`/`Agent`.
-- **Reuse, don't reinvent:** `dashboard::zone_row`, `sparkline_glyphs`,
-  `agent_sparkline_width_for`, `present::dirty_marker`, `abbreviate_home`, `humanize_secs`,
-  `is_waiting`. These are `dashboard.rs`-private today — **making them `pub(crate)` is part
-  of this task**, and is the only change to `dashboard.rs` it may make.
-- **Done when:** every test in `s11_focus_plan.rs` passes, plus the `Identity`/`Git`/`Agent`
-  cases in `s11_focus_render.rs`.
+- **Do:** implement `plan_rungs` for every size in the proposal's §10 ladder.
+- **Done when:** every test in `s11_focus_plan.rs` passes. No rendering yet.
+- **Why separate:** this is the part a delegate is least likely to get right and least
+  likely to notice getting wrong, and it is verifiable with zero rendering. Keep it alone so
+  a revert here costs one cheap round rather than four renderers' worth of work.
+
+### T1b — rungs R0–R3: identity, path, git, agent · `[medium]`
+- **Depends on:** T0b, T1a
+- **Mutable:** `petri/src/focus.rs`
+- **Do:** the `Identity`/`Path`/`Git`/`Agent` renderers, reusing T0b's helpers.
+- **Done when:** the `Identity`/`Git`/`Agent` cases in `s11_focus_render.rs` pass.
 - **Gotcha:** the waiting latch must be re-derived at render time via
   `waiting_latch_live(.., now)` — never read `agent.waiting_since.is_some()` directly. A
   stale state file otherwise pins a dead `▲` forever (`SPEC.md` §3.2).
@@ -284,14 +329,15 @@ implementations exist, same as Phase A.
 
 ---
 
-## 8. Phase E — independent work (parallelisable any time)
+## 8. Phase E — near-independent work
 
-Neither depends on `focus.rs`. Both are good candidates to run first if you want a warm-up,
-or to fan out to Haiku in parallel with Phase B.
+Neither needs `focus.rs`. **But both mutate `dashboard.rs`, as does T0b** — so they are not
+freely parallel with Phase B. Sequence them *after* T0b and they are conflict-free; run them
+concurrently with it and you get a three-way conflict on the one file.
 
-### TQ — quota in the header · `[easy]`
-- **Mutable:** `petri/src/dashboard.rs` (`header_lines`), plus `focus.rs` once `--mini`
-  exists
+### TQ-a — quota in the header · `[easy]`
+- **Depends on:** T0b (file-ordering only, not logically)
+- **Mutable:** `petri/src/dashboard.rs` (`header_lines`)
 - **Do:** `5h {n}% · 7d {n}%` in the header's right group, with the elision ladder
   `scan` → `projects` → clock → compress to `16%/1%` → drop.
 - **Gotcha:** the sensor is already built and populating `Radar.quota` — this is display
@@ -300,7 +346,15 @@ or to fan out to Haiku in parallel with Phase B.
   `last-status.json` last and is not attributable to any project (`DATA-5`).
 - **Gotcha:** `None` omits the segment. Never `0%`.
 
+### TQ-b — the same header line in `--mini` · `[easy]`
+- **Depends on:** T7 and TQ-a
+- **Mutable:** `petri/src/focus.rs`
+- **Do:** reuse TQ-a's segment builder in `--mini`'s header. Split out from TQ-a precisely
+  because it is the only part that depends on `--mini` existing — leaving it inside TQ-a
+  made a task drawn as independent silently depend on the last task in Phase D.
+
 ### T8 — the lush tier (#33) · `[medium]`
+- **Depends on:** T0b (file-ordering only)
 - **Mutable:** `petri/src/dashboard.rs`
 - **Do:** a third density tier: roomy + rungs R4 and R7 as two extra card rows, plus the
   surplus-priority rule — cards take a **bounded** +2 rows first, the feed takes the
@@ -314,19 +368,29 @@ or to fan out to Haiku in parallel with Phase B.
 ### Dependency graph
 
 ```
-  TQ ──────────────────────────────┐
-  T8 ──────────────────────────────┤
-                                   │
-  A ──┬── T1 ──┬── T2              │
-      │        ├── T3              ├──► make check ──► PTY (§9) ──► done
-      │        └── T4              │
-      └────────────┴──► C ──┬── T5 ─── T6
-                            └── T7
+                    ┌── TQ-a ──┐                        (dashboard.rs)
+                    ├── T8 ────┤                        (dashboard.rs)
+  A ──► T0b ────────┤          │
+   (dashboard.rs)   │          │
+                    └── T1a ──┬┴─ T1b ──┬── T2          (focus.rs)
+                              │         ├── T3
+                              │         └── T4
+                              │              │
+                              └──► C ──┬── T5 ─── T6
+                                       └── T7 ─── TQ-b
+                                                   │
+                          ──► make check ──► PTY (§9) ──► done
 ```
 
-T2/T3/T4 are mutually independent **only if** T1's `pub(crate)` extraction landed first;
-they all edit `focus.rs`, so a parallel fan-out needs them on separate branches with a merge
-step, or run them sequentially.
+Two rules this graph encodes, both learned by drawing it wrong first:
+
+- **`dashboard.rs` has three claimants** (T0b, TQ-a, T8). T0b must land first — the other
+  two are then order-independent but must still not run *concurrently* with each other on
+  the same tree.
+- **`focus.rs` has five claimants** (T1a, T1b, T2, T3, T4). T2/T3/T4 are logically
+  independent of one another but all edit the same file, so a genuine parallel fan-out needs
+  them on separate branches with a merge step. Sequential is the simpler default; parallelism
+  buys little here since each is a small task.
 
 ---
 
@@ -373,5 +437,12 @@ If you do go the AFK route:
 4. `SPEC.md` updated with the three decisions from §9, by a human.
 5. `IDEAS.md`'s `SURF-8` gets its `DONE` pointer and the narrative moves to `IDEAS_LOG.md`
    — that's `IDEAS.md`'s own stated convention, and the deferred-rung list stays behind.
-6. Issues #30, #31, #32 closed; #33 closed if T8 landed; #29 partially (MVP only — the
-   dedicated-token-TUI half and `DATA-5` stay open).
+6. Issues closed, with one scope caveat worth stating rather than discovering on the issue:
+   - **#30, #31** — fully.
+   - **#32 — for the popup only.** T6 re-points the Browser's `Space` popup at the focus
+     panel; the **inline** detail pane (beside/below, issue #35) keeps its fact-sheet layout.
+     `ACT-7`'s text says "the detail pane," so either widen T6 to cover the inline pane too,
+     or close #32 noting the inline pane is unchanged and open a follow-up. Decide before
+     closing, don't let the issue imply more than shipped.
+   - **#33** — if T8 landed.
+   - **#29 — MVP only.** The dedicated-token-TUI hand-off and `DATA-5` (`ctx%`) stay open.
