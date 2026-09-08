@@ -181,7 +181,9 @@ mod tests {
     #[test]
     fn full_valid_payload_populates_all_fields() {
         // Use timestamps we can predict relative to "now".
-        let now = Utc::now();
+        let now = DateTime::parse_from_rfc3339("2026-08-09T06:32:11Z")
+            .unwrap()
+            .with_timezone(&Utc);
         let five_hour_ts_str = "2026-08-09T06:32:11Z";
         // Pick a resets_at within the horizon window, relative to now.
         let five_hour_resets = (now + chrono::Duration::hours(2)).timestamp();
@@ -363,7 +365,9 @@ mod tests {
     // Test: measured_at with a string that parses cleanly.
     #[test]
     fn measured_at_parses_rfc3339() {
-        let now = Utc::now();
+        let now = DateTime::parse_from_rfc3339("2026-08-09T06:32:11Z")
+            .unwrap()
+            .with_timezone(&Utc);
         let result = parse_ts(Some(&serde_json::json!("2026-08-09T06:32:11Z")), now);
         assert!(result.is_some(), "valid ISO-8601 string must parse");
     }
