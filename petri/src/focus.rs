@@ -3,10 +3,12 @@
 //! §1): a popup over the Dashboard (#30), the whole screen (`petri --mini`, #31), and the
 //! Browser's existing detail popup (#32).
 //!
-//! **Phase A scaffold.** Every function below is `unimplemented!()`. The tests in
-//! `petri/tests/s11_focus_plan.rs` and `petri/tests/s11_focus_render.rs` were written
-//! against this signature *before* any implementation exists and are the spec for it
-//! (`petri/PLAN-focus-panel.md` §1) — they fail on purpose until Phase B lands.
+//! **The tests came first.** `petri/tests/s11_focus_plan.rs` and
+//! `petri/tests/s11_focus_render.rs` were written against this module's signature before
+//! any of it was implemented, by the planner rather than the implementer, and they are the
+//! spec (`petri/PLAN-focus-panel.md` §1). `plan_rungs`' gate table below is the part worth
+//! reading before changing anything: it is fitted to the proposal's mockups, so it is a
+//! design decision expressed as constants, and both sides of every threshold are pinned.
 //!
 //! ## The structural decision
 //!
@@ -26,10 +28,6 @@
 //! see ratatui-generated border characters at all is a real, pre-existing hole in it,
 //! recorded in `IDEAS.md` §5 — it is not this feature's to fix, and not this feature's to
 //! widen either.
-
-// Scaffold-only: every body is `unimplemented!()`, so every parameter is unused. Removed in
-// the last task of Phase B, once no body is a stub any more.
-#![allow(unused_variables)]
 
 use chrono::{DateTime, Utc};
 use petridish_core::present;
@@ -980,8 +978,68 @@ fn tool_status(action: &crate::tools::Action, configured: Option<&str>) -> Optio
     status
 }
 
+/// R6: this project's slice of the activity feed — the rung that makes the panel a
+/// dashboard rather than a taller fact sheet.
+///
+/// `feed.rs` already diffs successive `Radar` snapshots fleet-wide; filtering that stream to
+/// one project is close to free, and everything above this rung is a fact sheet while this
+/// one is a history.
+///
+/// `rows` is the whole rung including its label, so the caller's elastic budget and this
+/// function's output cannot disagree.
 fn recent_lines(p: &Project, ctx: &FocusCtx, width: usize, rows: u16) -> Vec<Line<'static>> {
-    Vec::new() // T4
+    let Some(feed) = ctx.feed else {
+        return Vec::new();
+    };
+    let budget = rows.saturating_sub(1) as usize; // one row goes to the label
+    if budget == 0 {
+        return Vec::new();
+    }
+
+    // `FeedState` is already newest-first, so the filter preserves the order.
+    let events: Vec<_> = feed
+        .events()
+        .iter()
+        .filter(|e| e.project == p.name)
+        .take(budget)
+        .collect();
+    if events.is_empty() {
+        return Vec::new();
+    }
+
+    let mut lines = vec![Line::from(Span::styled(
+        format!("{INDENT}RECENT"),
+        Style::default()
+            .fg(theme::DIMMER)
+            .add_modifier(Modifier::BOLD),
+    ))];
+
+    for e in events {
+        // `stamp` and `detail`, not `row_text`/`body_text`: the latter two prefix the
+        // project name, which every row here would repeat back at the panel's own header.
+        // The stamp's date-vs-clock switch is already solved in `feed.rs` and getting it
+        // wrong reads as a sorting bug, so it is reused rather than reformatted.
+        let stamp = e.stamp(ctx.now);
+        // Today's events tint fresh, earlier dates cold — the same rule the fleet-wide
+        // feed uses, so a row does not change meaning when it moves between the two.
+        let stamp_style = if e.is_today(ctx.now) {
+            Style::default().fg(theme::FRESH)
+        } else {
+            Style::default().fg(theme::COLD)
+        };
+        let lead = format!("{INDENT} {stamp}  ");
+        let detail_budget = width.saturating_sub(crate::width::width(&lead));
+        lines.push(Line::from(vec![
+            Span::raw(format!("{INDENT} ")),
+            Span::styled(stamp, stamp_style),
+            Span::raw("  "),
+            Span::styled(
+                elide(&e.detail, detail_budget),
+                Style::default().fg(theme::DIM),
+            ),
+        ]));
+    }
+    lines
 }
 
 /// R7: the repository facts nothing else in the UI shows — whether the newest commit here
@@ -1087,19 +1145,23 @@ fn tree_lines(p: &Project, ctx: &FocusCtx, width: usize) -> Vec<Line<'static>> {
     )];
 
     // Second row: the family itself, indented under the label column so it reads as a
-    // continuation rather than as another zone.
-    let indent = format!("{INDENT}{}", " ".repeat(crate::dashboard::ZONE_LABEL_WIDTH));
-    let names = if family.is_empty() {
-        String::new()
-    } else {
-        family.join(" \u{00B7} ")
-    };
-    lines.push(Line::from(Span::styled(
-        format!(
-            "{indent}{}",
-            elide(&names, width.saturating_sub(crate::width::width(&indent)))
-        ),
-        Style::default().fg(theme::DIMMER),
-    )));
+    // continuation rather than as another zone. Skipped entirely when there is no family —
+    // this rung is admitted on geometry alone, and a labelled row followed by a blank one
+    // is exactly the "renders something plausible but wrong" failure a row budget cannot
+    // catch. The row it gives back is not reclaimed by `Recent`'s budget, which is sized
+    // from `rung_rows`' table; spending it on nothing would be worse than leaving it empty.
+    if !family.is_empty() {
+        let indent = format!("{INDENT}{}", " ".repeat(crate::dashboard::ZONE_LABEL_WIDTH));
+        lines.push(Line::from(Span::styled(
+            format!(
+                "{indent}{}",
+                elide(
+                    &family.join(" \u{00B7} "),
+                    width.saturating_sub(crate::width::width(&indent))
+                )
+            ),
+            Style::default().fg(theme::DIMMER),
+        )));
+    }
     lines
 }
