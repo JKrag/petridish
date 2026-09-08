@@ -707,8 +707,43 @@ fn agent_line(p: &Project, ctx: &FocusCtx, width: usize) -> Line<'static> {
 // planned-but-unbuilt rung costs no rows and misreports nothing.
 // ---------------------------------------------------------------------------
 
+/// R4: `last  pre tool use · 2 files · 09:14` — what the agent last *did*.
+///
+/// Carried in the schema since the beginning and shown nowhere outside the feed, which
+/// means only for projects that happened to change between two scans.
+///
+/// **`agent.last_event` being `None` is legitimate, not a defect.** `swab` derives event
+/// names from an allowlist, and an unmodelled record type yields `None` on purpose. The row
+/// falls back to `feed::agent_detail`, so `claude-code activity · 2 files` is correct
+/// output. Do not "fix" it by widening the allowlist — that lives in `swab`.
 fn last_event_lines(p: &Project, width: usize) -> Vec<Line<'static>> {
-    Vec::new() // T2
+    let body = match p.agent.last_event.as_deref() {
+        Some(raw) => {
+            let mut s = crate::feed::humanize_event(raw);
+            if p.git.is_repo && p.git.uncommitted_files > 0 {
+                let n = p.git.uncommitted_files;
+                let unit = if n == 1 { "file" } else { "files" };
+                s.push_str(&format!(" \u{00B7} {n} {unit}"));
+            }
+            s
+        }
+        None => crate::feed::agent_detail(p),
+    };
+    let facts = match p.agent.last_event_at {
+        Some(at) => format!("{body} \u{00B7} {}", at.format("%H:%M")),
+        None => body,
+    };
+
+    vec![zone_line(
+        ZoneSpec {
+            label: "last",
+            label_style: Style::default().fg(theme::DIM).add_modifier(Modifier::BOLD),
+            facts,
+            facts_style: Style::default().fg(theme::DIM),
+            spark: None,
+        },
+        width,
+    )]
 }
 
 fn actions_lines(
@@ -724,10 +759,122 @@ fn recent_lines(p: &Project, ctx: &FocusCtx, width: usize, rows: u16) -> Vec<Lin
     Vec::new() // T4
 }
 
+/// R7: the repository facts nothing else in the UI shows — whether the newest commit here
+/// is yours, and where the remote is.
+///
+/// `mine_last_commit_at == last_commit_at` is the common case and renders **one** age, not
+/// two identical ones. The two-age form is the whole point of the row when they differ:
+/// "someone else pushed here" is otherwise unavailable anywhere in `petri`.
 fn repo_lines(p: &Project, ctx: &FocusCtx, width: usize) -> Vec<Line<'static>> {
-    Vec::new() // T2
+    if !p.git.is_repo {
+        return Vec::new();
+    }
+
+    let commits = match (p.git.mine_last_commit_at, p.git.last_commit_at) {
+        (Some(mine), Some(newest)) if mine != newest => format!(
+            "yours {} \u{00B7} newest {}",
+            ago(mine, ctx.now),
+            ago(newest, ctx.now)
+        ),
+        (_, Some(newest)) => format!("commit {}", ago(newest, ctx.now)),
+        (Some(mine), None) => format!("yours {}", ago(mine, ctx.now)),
+        (None, None) => "no commits".to_string(),
+    };
+    // The scheme is nine columns saying nothing — every url the sensor produces is https.
+    let facts = match p.git.github_url.as_deref() {
+        Some(url) => format!("{commits} \u{00B7} {}", strip_scheme(url)),
+        None => commits,
+    };
+
+    vec![zone_line(
+        ZoneSpec {
+            label: "repo",
+            label_style: Style::default()
+                .fg(theme::BRANCH)
+                .add_modifier(Modifier::BOLD),
+            facts,
+            facts_style: Style::default().fg(theme::DIM),
+            spark: None,
+        },
+        width,
+    )]
 }
 
+fn strip_scheme(url: &str) -> &str {
+    url.strip_prefix("https://")
+        .or_else(|| url.strip_prefix("http://"))
+        .unwrap_or(url)
+}
+
+/// R8: the worktree family, via `parent_path`.
+///
+/// Two rows: what this project is within its family, then who the family is. Today the
+/// Browser can only be made to show this by scanning the list by eye.
+///
+/// A project with no family still renders — `plan_rungs` admits `Tree` on geometry alone —
+/// and says so rather than leaving a labelled row blank.
 fn tree_lines(p: &Project, ctx: &FocusCtx, width: usize) -> Vec<Line<'static>> {
-    Vec::new() // T2
+    let children: Vec<&str> = ctx
+        .radar
+        .projects
+        .iter()
+        .filter(|o| o.parent_path.as_deref() == Some(p.path.as_str()))
+        .map(|o| o.name.as_str())
+        .collect();
+    let siblings: Vec<&str> = match p.parent_path.as_deref() {
+        Some(parent) => ctx
+            .radar
+            .projects
+            .iter()
+            .filter(|o| o.parent_path.as_deref() == Some(parent) && o.path != p.path)
+            .map(|o| o.name.as_str())
+            .collect(),
+        None => Vec::new(),
+    };
+
+    let (summary, family) = match p.parent_path.as_deref() {
+        Some(parent) => (
+            format!("worktree of {}", present::worktree_parent_name(parent)),
+            siblings,
+        ),
+        None if !children.is_empty() => {
+            let unit = if children.len() == 1 {
+                "worktree"
+            } else {
+                "worktrees"
+            };
+            (format!("{} {unit}", children.len()), children)
+        }
+        None => ("no worktrees".to_string(), Vec::new()),
+    };
+
+    let mut lines = vec![zone_line(
+        ZoneSpec {
+            label: "tree",
+            label_style: Style::default()
+                .fg(theme::BRANCH)
+                .add_modifier(Modifier::BOLD),
+            facts: summary,
+            facts_style: Style::default().fg(theme::DIM),
+            spark: None,
+        },
+        width,
+    )];
+
+    // Second row: the family itself, indented under the label column so it reads as a
+    // continuation rather than as another zone.
+    let indent = format!("{INDENT}{}", " ".repeat(crate::dashboard::ZONE_LABEL_WIDTH));
+    let names = if family.is_empty() {
+        String::new()
+    } else {
+        family.join(" \u{00B7} ")
+    };
+    lines.push(Line::from(Span::styled(
+        format!(
+            "{indent}{}",
+            elide(&names, width.saturating_sub(crate::width::width(&indent)))
+        ),
+        Style::default().fg(theme::DIMMER),
+    )));
+    lines
 }
