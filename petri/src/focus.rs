@@ -32,7 +32,7 @@
 #![allow(unused_variables)]
 
 use chrono::{DateTime, Utc};
-use petridish_core::schema::{Radar, StatusBucket};
+use petridish_core::schema::{Project, Radar, StatusBucket};
 use ratatui::layout::Rect;
 use ratatui::text::Line;
 
@@ -156,7 +156,78 @@ pub struct FocusCtx<'a> {
 /// The returned vector is in `Rung` declaration order (render order), regardless of the
 /// priority order rungs were admitted in.
 pub fn plan_rungs(area: Rect, ctx: &FocusCtx) -> Vec<Rung> {
-    unimplemented!("Phase B / T1a — petri/PLAN-focus-panel.md section 5")
+    if area.width < MIN_FOCUS_WIDTH || area.height < MIN_FOCUS_HEIGHT {
+        return Vec::new();
+    }
+
+    let mut admitted = vec![Rung::Identity, Rung::Git, Rung::Agent];
+
+    // Priority order, which is NOT render order — see this function's doc comment and
+    // `Rung`'s. Each rung is admitted on its own gates alone; there is no running budget,
+    // because the height gates already encode one.
+    for rung in [
+        Rung::LastEvent,
+        Rung::Actions,
+        Rung::Path,
+        Rung::Recent,
+        Rung::Repo,
+        Rung::Tree,
+    ] {
+        let (min_w, min_h) = rung_floor(rung);
+        if area.width < min_w || area.height < min_h {
+            continue;
+        }
+        if rung == Rung::Recent && !feed_has_events_for_target(ctx) {
+            continue;
+        }
+        admitted.push(rung);
+    }
+
+    // Back into render order, so the caller can walk the result top to bottom.
+    admitted.sort();
+    admitted
+}
+
+/// The `(min width, min height)` gate for one rung, per `plan_rungs`' table.
+fn rung_floor(rung: Rung) -> (u16, u16) {
+    match rung {
+        Rung::Identity | Rung::Git | Rung::Agent | Rung::Actions => {
+            (MIN_FOCUS_WIDTH, MIN_FOCUS_HEIGHT)
+        }
+        Rung::LastEvent => (30, MIN_FOCUS_HEIGHT),
+        Rung::Path => (30, 10),
+        Rung::Recent => (40, 15),
+        Rung::Repo => (56, 28),
+        Rung::Tree => (56, 32),
+    }
+}
+
+/// Does the feed hold at least one event for whatever the panel is pointed at?
+///
+/// The one non-geometric gate in `plan_rungs`. A non-`Project` target has no project to
+/// filter by and therefore never passes — see `plan_rungs`' doc comment for why that does
+/// not make an empty plan ambiguous.
+fn feed_has_events_for_target(ctx: &FocusCtx) -> bool {
+    let Some(project) = focused_project(ctx) else {
+        return false;
+    };
+    let Some(feed) = ctx.feed else {
+        return false;
+    };
+    feed.events().iter().any(|e| e.project == project.name)
+}
+
+/// The project the panel is pointed at, if it is pointed at one that still exists.
+///
+/// The index is bounds-checked rather than indexed into: `FocusTarget::Project` carries a
+/// position in `radar.projects`, the scanner re-sorts and re-populates that vector on every
+/// scan (`SPEC.md` §4.3), and a panel that panics because a reload shortened the list is a
+/// worse failure than one that renders the empty state for a frame.
+fn focused_project<'a>(ctx: &FocusCtx<'a>) -> Option<&'a Project> {
+    match ctx.target {
+        FocusTarget::Project(idx) => ctx.radar.projects.get(idx),
+        _ => None,
+    }
 }
 
 /// Render the planned rungs as `area.height`-or-fewer lines.
