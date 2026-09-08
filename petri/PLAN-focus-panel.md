@@ -323,8 +323,8 @@ implementations exist, same as Phase A.
 
 Scaffold landed: `dashboard.rs` grows `focus_open` plus `focus_target`/`press_space`/
 `close_focus`/`focus_placement`, and `lib.rs` grows `MiniTarget`/`CliArgs`/`parse_args`/
-`MiniError`/`resolve_mini` — all `unimplemented!()`. `afk-verify.sh` prints **51** — that
-is `BASE` for Phase D — from 23 failing tests in `s11_focus_mount.rs` and 28 in
+`MiniError`/`resolve_mini` — all `unimplemented!()`. `afk-verify.sh` prints **52** — that
+is `BASE` for Phase D — from 23 failing tests in `s11_focus_mount.rs` and 29 in
 `s12_mini_resolve.rs`, and nothing else in the workspace fails. `EXPECTED_BINARIES` is
 pinned to **34** in the same commit that added the two test files, per §2.
 
@@ -355,10 +355,17 @@ Six things Phase D inherits as decided rather than open:
   `swab` nor `gix`, and reading the scanner's stored answer back is strictly stronger
   against the "two answers to which project is this directory" invariant than a second
   implementation would be. It subsumes the git-toplevel walk for free.
-- **An ambiguous `--mini <NAME>` is an error, not a guess.** Names are not unique (the
-  fleet has three `smoke`s, per `SelectionAnchor`'s doc comment), and picking one looks
-  like it worked. A product decision made here — **worth a human veto** before T7 builds
-  on it.
+- **An ambiguous `--mini <NAME>` resolves to the most recently active match** — greatest
+  `last_activity_at`, `None` last, ties broken by `path` ascending. Names are not unique
+  (the fleet has three `smoke`s, per `SelectionAnchor`'s doc comment), so this had to be
+  decided; the first draft errored out instead, and the human's call was that erroring is
+  technically safer and practically useless when the project already knows which one you
+  mean. It is not a coin flip: it is `swab`'s own ordering (`scan.rs`'s sort), the same
+  judgement the Dashboard's top-of-list encodes, so "the `smoke` you mean" is the `smoke`
+  you were last working in. `resolve_mini` re-derives that order rather than reading
+  `radar.projects`' order, so the answer does not silently follow a future change to the
+  writer's sort. **Accepted cost:** a pane pinned by an ambiguous name can move to the
+  other project once that one becomes the more recently active; pin by path to avoid it.
 - **With the popup open, `Space` closes it and does nothing else** — even on a header,
   whose own binding would otherwise toggle the section. §7's table states both rows
   ("header → unchanged" and "popup open → close it") without saying which wins; this

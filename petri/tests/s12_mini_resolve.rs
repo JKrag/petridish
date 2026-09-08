@@ -25,6 +25,7 @@
 //!    make the swap visible. `resolves_the_same_project_after_the_scanner_re_sorts` is
 //!    the test for it.
 
+use chrono::{DateTime, TimeZone, Utc};
 use petri::{CliArgs, MiniError, MiniTarget, parse_args, resolve_mini};
 use petridish_core::schema::Radar;
 use std::path::{Path, PathBuf};
@@ -292,24 +293,37 @@ fn an_unknown_pinned_name_is_unknown_not_not_a_project() {
     );
 }
 
-#[test]
-fn an_ambiguous_pinned_name_is_an_error_carrying_sorted_candidates() {
-    // Names are not unique: `SelectionAnchor`'s doc comment records a live fleet with
-    // three projects called `smoke`. Picking one would look like it worked, which is the
-    // worse failure — so this errors, and the candidate list is sorted so the message is
-    // identical no matter how the scanner ordered the radar.
+/// Add a second project called `lantern` at `path`, last active at `activity`, and return
+/// the whole radar. Names are not unique in the real world — `SelectionAnchor`'s doc
+/// comment records a fleet with three `smoke`s — so this is the ordinary case, not a
+/// pathological one.
+fn radar_with_lantern_twin(path: &str, activity: Option<DateTime<Utc>>) -> Radar {
     let mut radar = load("normal.json");
     let mut twin = radar.projects[idx_of(&radar, "lantern")].clone();
-    twin.path = "/Users/jankrag/repos/elsewhere/lantern".to_string();
-    twin.id = "lantern-twin-id".to_string();
-    let original_path = path_of(&radar, "lantern");
+    twin.path = path.to_string();
+    twin.id = format!("{path}-id");
+    twin.last_activity_at = activity;
     radar.projects.push(twin);
+    radar
+}
 
-    let mut want = vec![
-        original_path,
-        "/Users/jankrag/repos/elsewhere/lantern".to_string(),
-    ];
-    want.sort();
+#[test]
+fn an_ambiguous_pinned_name_picks_the_most_recently_active_match() {
+    // The decision: `--mini <NAME>` resolves rather than refuses, and it resolves the way
+    // the scanner already orders the fleet — `last_activity_at` descending. "The `smoke`
+    // you mean" is the `smoke` you were last working in, which is right essentially every
+    // time someone opens a pane. Refusing would be technically safer and useless.
+    let older = Utc.with_ymd_and_hms(2026, 8, 20, 8, 0, 0).unwrap();
+    let newer = Utc.with_ymd_and_hms(2026, 8, 20, 9, 0, 0).unwrap();
+
+    let mut radar = radar_with_lantern_twin("/Users/jankrag/repos/elsewhere/lantern", Some(newer));
+    let original = idx_of(&radar, "lantern");
+    radar.projects[original].last_activity_at = Some(older);
+    let twin = radar
+        .projects
+        .iter()
+        .position(|p| p.path == "/Users/jankrag/repos/elsewhere/lantern")
+        .unwrap();
 
     assert_eq!(
         resolve_mini(
@@ -317,10 +331,64 @@ fn an_ambiguous_pinned_name_is_an_error_carrying_sorted_candidates() {
             &MiniTarget::Pinned("lantern".to_string()),
             Path::new("/Users/jankrag/scratch")
         ),
-        Err(MiniError::AmbiguousName {
-            name: "lantern".to_string(),
-            paths: want
-        })
+        Ok(twin),
+        "the more recently active `lantern` wins, whichever slot it sits in"
+    );
+}
+
+#[test]
+fn a_never_active_match_loses_to_an_active_one() {
+    // `None` sorts last, matching `scan.rs`'s own None-last rule. A project the scanner
+    // has never seen activity for is the *last* thing `--mini lantern` should land on.
+    let seen = Utc.with_ymd_and_hms(2026, 8, 20, 8, 0, 0).unwrap();
+
+    let mut radar = radar_with_lantern_twin("/Users/jankrag/repos/elsewhere/lantern", None);
+    let original = idx_of(&radar, "lantern");
+    radar.projects[original].last_activity_at = Some(seen);
+
+    assert_eq!(
+        resolve_mini(
+            &radar,
+            &MiniTarget::Pinned("lantern".to_string()),
+            Path::new("/Users/jankrag/scratch")
+        ),
+        Ok(original)
+    );
+}
+
+#[test]
+fn tied_matches_break_by_path_not_by_radar_order() {
+    // Two same-named projects with identical activity (both `None` is the realistic
+    // version: neither has ever been touched). Reading the answer off `radar.projects`'
+    // order would make it flip with the writer's sort; the tie-break is `path` ascending,
+    // which is unique where the name is not.
+    let radar = radar_with_lantern_twin("/Users/jankrag/repos/aaa-first/lantern", None);
+    let mut radar = radar;
+    let original = idx_of(&radar, "lantern");
+    radar.projects[original].last_activity_at = None;
+
+    let by_path = |r: &Radar| {
+        let i = resolve_mini(
+            r,
+            &MiniTarget::Pinned("lantern".to_string()),
+            Path::new("/Users/jankrag/scratch"),
+        )
+        .expect("lantern resolves");
+        r.projects[i].path.clone()
+    };
+
+    let mut resorted = radar.clone();
+    resorted.projects.reverse();
+
+    assert_eq!(
+        by_path(&radar),
+        "/Users/jankrag/repos/aaa-first/lantern",
+        "the lexicographically first path wins the tie"
+    );
+    assert_eq!(
+        by_path(&radar),
+        by_path(&resorted),
+        "and the answer must not depend on how the scanner ordered the file"
     );
 }
 
@@ -397,26 +465,4 @@ fn the_unknown_name_message_names_the_name() {
     let msg = MiniError::UnknownName("nope".to_string()).to_string();
     assert!(msg.contains("nope"), "{msg}");
     assert!(msg.contains("projects.json"), "{msg}");
-}
-
-#[test]
-fn the_ambiguous_message_lists_every_candidate() {
-    let msg = MiniError::AmbiguousName {
-        name: "smoke".to_string(),
-        paths: vec![
-            "/Users/jankrag/repos/a/smoke".to_string(),
-            "/Users/jankrag/repos/b/smoke".to_string(),
-        ],
-    }
-    .to_string();
-
-    assert!(msg.contains("smoke"), "{msg}");
-    assert!(
-        msg.contains("repos/a/smoke"),
-        "must list candidate 1: {msg}"
-    );
-    assert!(
-        msg.contains("repos/b/smoke"),
-        "must list candidate 2: {msg}"
-    );
 }

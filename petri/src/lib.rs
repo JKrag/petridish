@@ -108,12 +108,6 @@ pub enum MiniError {
     NotAProject(std::path::PathBuf),
     /// A pinned name matching no project.
     UnknownName(String),
-    /// A pinned name matching more than one project. Not a hypothetical: names are not
-    /// unique and the fleet this was built against has three projects called `smoke`
-    /// (`SelectionAnchor`'s doc comment records the same trap). Guessing one would be the
-    /// worst outcome — it looks like it worked — so this is an error carrying the
-    /// candidate paths, sorted, so the message is stable across a re-sorted `Radar`.
-    AmbiguousName { name: String, paths: Vec<String> },
 }
 
 impl std::fmt::Display for MiniError {
@@ -133,10 +127,35 @@ impl std::fmt::Display for MiniError {
 /// # Resolution order
 ///
 /// - `MiniTarget::Cwd` → the **path walk** below, against `cwd`.
-/// - `MiniTarget::Pinned(s)` → the path walk against `s` first; if that finds nothing and
-///   `s` matches exactly one project `name`, that project; if it matches several,
-///   `AmbiguousName`; otherwise `UnknownName` (`NotAProject` is reserved for the cwd/path
-///   reading, so the message can be specific about which of the two the user meant).
+/// - `MiniTarget::Pinned(s)` → the path walk against `s` first; if that finds nothing, the
+///   **name match** below; otherwise `UnknownName` (`NotAProject` is reserved for the
+///   cwd/path reading, so the message can be specific about which of the two the user
+///   meant).
+///
+/// # The name match, when a name is not unique
+///
+/// Names are not unique — `SelectionAnchor`'s doc comment records a live fleet with three
+/// projects called `smoke` — so `--mini <NAME>` has to say what it does with several
+/// candidates. It takes the **most recently active** one: greatest `last_activity_at`,
+/// `None` last, ties broken by `path` ascending.
+///
+/// That is not a coin flip dressed up as a rule. It is `swab`'s *own* ordering
+/// (`scan.rs`'s sort: `last_activity_at` desc, `None` last, then name) — the same
+/// judgement the Dashboard's own top-of-list already encodes — so "the `smoke` you mean"
+/// is the `smoke` you were last working in, which is the answer a pane you just opened
+/// wants essentially every time. Erroring out instead would be technically safer and
+/// practically useless.
+///
+/// It is re-derived here rather than read off `radar.projects`' order, even though the
+/// scanner writes the file in exactly this order today: relying on the order would make
+/// this silently follow any future change to the writer's sort, and the tie-break on
+/// `path` (unique) rather than `name` (identical by construction, here) is what keeps the
+/// answer stable when two same-named projects have no activity at all.
+///
+/// The cost, stated plainly: a pane pinned by an ambiguous name can move to the other
+/// project when that one becomes the more recently active. Accepted deliberately — the
+/// unambiguous fix is to pin by path, and anyone with two same-named projects live at once
+/// is in the corner case they built for themselves.
 ///
 /// # The path walk, and why it is not a port of the scanner's `resolve_root`
 ///
