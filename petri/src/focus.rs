@@ -38,6 +38,9 @@ use ratatui::layout::Rect;
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 
+use std::collections::HashMap;
+use std::sync::{LazyLock, Mutex};
+
 use crate::feed::FeedState;
 use crate::prefs::Prefs;
 use crate::theme;
@@ -746,13 +749,235 @@ fn last_event_lines(p: &Project, width: usize) -> Vec<Line<'static>> {
     )]
 }
 
+/// What an action can do for *this* project, right now.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum Affordance {
+    /// The tool resolved and the target exists: `e edit code`.
+    Live { tool: String },
+    /// Several tools are installed and the user has not chosen. The key works — it opens
+    /// the picker — so the entry is shown, just without a tool name to promise.
+    Choice,
+    /// The tooling is fine; this project has nothing to act on (`ACT-9`).
+    NoTarget { why: &'static str },
+}
+
+/// Compact display names, keyed by action id.
+///
+/// The registry's own `label` is written for the picker's title and a transient notice
+/// (`"open in editor"`, `"reveal in Finder"`); this row is a dense grid where those cost
+/// more than they say. Display-only — the id, the key and the behaviour are all unchanged.
+fn short_label(id: &str, fallback: &'static str) -> &'static str {
+    match id {
+        "browse" => "remote",
+        "edit" => "edit",
+        "gitlog" => "history",
+        "reveal" => "finder",
+        "rescan" => "rescan",
+        _ => fallback,
+    }
+}
+
+/// R5: the registry as visible affordances rather than a fixed key list (`ACT-7`).
+///
+/// Three states, and none of them is colour-only (`PROPOSAL` §4):
+///
+/// | state | render | why |
+/// |---|---|---|
+/// | live | `e edit code` — key accented, tool dim | it will work |
+/// | no target | `o remote ─ no url`, whole entry `DIMMER` | `Resolution::NoTarget` |
+/// | no tool | omitted entirely | `SPEC.md` §5: never advertise a key that does nothing |
+///
+/// Naming the resolved tool is the other half of `ACT-7` — it turns the registry from
+/// invisible machinery into something you can see, and it makes the shifted re-pick key
+/// (`ACT-11`) discoverable for the first time.
 fn actions_lines(
     p: &Project,
     ctx: &FocusCtx,
     width: usize,
     with_label: bool,
 ) -> Vec<Line<'static>> {
-    Vec::new() // T3
+    let mut entries: Vec<(char, &'static str, Affordance)> = Vec::new();
+    for action in crate::tools::registry() {
+        let configured = ctx.prefs.tools.get(action.id).map(String::as_str);
+        // Tool availability is asked FIRST, which inverts `tools::resolve`'s own order
+        // (it checks the target first). Deliberate, and the two are answering different
+        // questions: `resolve` is picking which message to show after a keypress, while
+        // this row decides whether to advertise the key at all — and `SPEC.md` §5 says a
+        // key nothing can service must not appear. A key whose *project* has no target
+        // still appears, dimmed, because pressing it is a reasonable thing to try.
+        let Some(tool) = tool_status(&action, configured) else {
+            continue; // Resolution::NoTool — omitted entirely.
+        };
+        let affordance = if action.target == crate::tools::Target::Url && p.git.github_url.is_none()
+        {
+            Affordance::NoTarget { why: "no url" }
+        } else {
+            match tool {
+                ToolStatus::Ready(program) => Affordance::Live { tool: program },
+                ToolStatus::Ambiguous => Affordance::Choice,
+            }
+        };
+        entries.push((action.key, short_label(action.id, action.label), affordance));
+    }
+
+    if entries.is_empty() {
+        return Vec::new();
+    }
+
+    if !with_label {
+        // §3.3's degradation: at this height the row's job is to say the keys still work,
+        // not to teach them. Labels and tool names go; the keys do not.
+        let keys: Vec<String> = entries.iter().map(|(k, _, _)| k.to_string()).collect();
+        return vec![Line::from(Span::styled(
+            format!(
+                "{INDENT}{}",
+                elide(
+                    &keys.join(" "),
+                    width.saturating_sub(crate::width::width(INDENT))
+                )
+            ),
+            Style::default().fg(theme::ACCENT),
+        ))];
+    }
+
+    let key_style = Style::default()
+        .fg(theme::ACCENT)
+        .add_modifier(Modifier::BOLD);
+    let dim = Style::default().fg(theme::DIM);
+    let dimmer = Style::default().fg(theme::DIMMER);
+
+    let mut spans: Vec<Span<'static>> = vec![Span::raw(INDENT)];
+    let mut used = crate::width::width(INDENT);
+    let mut dropped = 0usize;
+    const GAP: &str = "   ";
+
+    for (i, (key, label, affordance)) in entries.iter().enumerate() {
+        let gap = if i == 0 { "" } else { GAP };
+        let tail = match affordance {
+            Affordance::Live { tool } => format!(" {tool}"),
+            Affordance::Choice => String::new(),
+            // The glyph and the words carry the disabled state. Dimming alone fails
+            // `NO_COLOR` and fails colour-vision-deficient readers.
+            Affordance::NoTarget { why } => format!(" \u{2500} {why}"),
+        };
+        let entry_w =
+            crate::width::width(gap) + 2 + crate::width::width(label) + crate::width::width(&tail);
+        // Reserve room for the `+N…` that announces anything that did not fit.
+        if used + entry_w + 4 > width && i > 0 {
+            dropped = entries.len() - i;
+            break;
+        }
+        if !gap.is_empty() {
+            spans.push(Span::raw(gap));
+        }
+        let body_style = if matches!(affordance, Affordance::NoTarget { .. }) {
+            dimmer
+        } else {
+            dim
+        };
+        spans.push(Span::styled(
+            format!("{key} "),
+            if matches!(affordance, Affordance::NoTarget { .. }) {
+                dimmer
+            } else {
+                key_style
+            },
+        ));
+        spans.push(Span::styled(
+            format!("{label}{tail}"),
+            if matches!(affordance, Affordance::Live { .. }) {
+                Style::default().fg(theme::FG)
+            } else {
+                body_style
+            },
+        ));
+        used += entry_w;
+    }
+    if dropped > 0 {
+        spans.push(Span::styled(format!(" +{dropped}\u{2026}"), dimmer));
+    }
+
+    vec![
+        Line::default(),
+        Line::from(Span::styled(
+            format!("{INDENT}ACTIONS"),
+            Style::default()
+                .fg(theme::DIMMER)
+                .add_modifier(Modifier::BOLD),
+        )),
+        Line::from(spans),
+    ]
+}
+
+/// Whether an action has a tool behind it on *this machine* — the half of resolution that
+/// touches the filesystem.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum ToolStatus {
+    Ready(String),
+    Ambiguous,
+}
+
+/// `tool_status`'s memo. `None` in the map means `Resolution::NoTool`.
+///
+/// **Why a cache at all:** resolving one action probes `PATH` (and `/Applications`) once per
+/// candidate, and `browse` alone has nine. The panel re-renders on every poll tick — 2-5
+/// seconds — and, in the Dashboard popup, on every cursor move. Doing that much filesystem
+/// work per frame to draw six words is the kind of cost that never shows up in a test and
+/// always shows up on a laptop.
+///
+/// **Why it is safe to cache for the process's lifetime:** the answer depends on the
+/// machine and on the user's stored choice, both of which are keyed here — not on the
+/// project, which is why the target half of resolution is computed fresh on every frame in
+/// `actions_lines`. A tool *installed while petri is running* is the one thing this will
+/// miss, which is what `invalidate_tool_cache` is for.
+/// Cache key: the action's id plus the user's stored choice for it. Both are what the
+/// answer depends on; the project is not, which is why the target half of resolution is
+/// recomputed every frame.
+type ToolCacheKey = (&'static str, Option<String>);
+
+static TOOL_CACHE: LazyLock<Mutex<HashMap<ToolCacheKey, Option<ToolStatus>>>> =
+    LazyLock::new(|| Mutex::new(HashMap::new()));
+
+/// Forget every cached tool lookup. Call after anything that could change the answer: a
+/// re-pick that writes `prefs.tools`, or an explicit user-driven rescan.
+pub fn invalidate_tool_cache() {
+    if let Ok(mut cache) = TOOL_CACHE.lock() {
+        cache.clear();
+    }
+}
+
+/// Is there a tool for this action, and what is it called? `None` is `NoTool`.
+fn tool_status(action: &crate::tools::Action, configured: Option<&str>) -> Option<ToolStatus> {
+    let key = (action.id, configured.map(str::to_string));
+    if let Ok(cache) = TOOL_CACHE.lock()
+        && let Some(hit) = cache.get(&key)
+    {
+        return hit.clone();
+    }
+
+    // Deliberately fed a placeholder target, so `resolve` answers the machine question
+    // only: rule 1 would otherwise short-circuit every `Target::Url` action to `NoTarget`
+    // for reasons that vary per project and must not be cached. Only `Launch::program` is
+    // read, and that never depends on the substituted path or url.
+    let facts = crate::tools::Facts {
+        path: "/",
+        url: Some("https://example.invalid"),
+    };
+    let status = match crate::tools::resolve(action, &facts, configured, &|probe| {
+        crate::exec::is_installed_probe(probe)
+    }) {
+        crate::tools::Resolution::Ready(launch) => Some(ToolStatus::Ready(launch.program)),
+        crate::tools::Resolution::Ambiguous(_) => Some(ToolStatus::Ambiguous),
+        crate::tools::Resolution::NoTool => None,
+        // Unreachable with a placeholder url, and not worth a panic if resolve's rules
+        // change: an action with no target is one this row can still advertise.
+        crate::tools::Resolution::NoTarget => Some(ToolStatus::Ambiguous),
+    };
+
+    if let Ok(mut cache) = TOOL_CACHE.lock() {
+        cache.insert(key, status.clone());
+    }
+    status
 }
 
 fn recent_lines(p: &Project, ctx: &FocusCtx, width: usize, rows: u16) -> Vec<Line<'static>> {
