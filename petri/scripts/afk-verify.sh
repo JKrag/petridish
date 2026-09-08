@@ -32,7 +32,7 @@ set -uo pipefail
 # counting the files under tests/: `cargo test -p petri` also reports for the
 # lib target's inline `#[cfg(test)]` modules and for the doc-test pass, so a
 # file count is off by several and would fire guard 2 on every round.
-EXPECTED_BINARIES=${EXPECTED_BINARIES:-32}
+EXPECTED_BINARIES=${EXPECTED_BINARIES:-34}
 
 if ! cargo test -p petri --no-run >/dev/null 2>&1; then
   echo 9999            # guard 1: something does not compile

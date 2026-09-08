@@ -164,6 +164,16 @@ pub struct DashboardState {
     pub collapsed: CollapsedState,
     pub visible: Vec<DashRow>,
     pub selected: Option<usize>,
+    /// Is the focus popup open (issue #30, `PLAN-focus-panel.md` T5)?
+    ///
+    /// Popup lifetime lives in the Dashboard's own state rather than in `lib.rs`'s run
+    /// loop, mirroring `BrowserState::detail_popup_open`, so the whole `Space`/`Esc`
+    /// contract is testable without a terminal. It is deliberately *not* a
+    /// `FocusTarget`: the popup follows the cursor (`PROPOSAL-focus-panel.md` §7), so the
+    /// target is derived from `selected` at render time by `focus_target` and never
+    /// cached — a cached index would survive a reload the scanner re-sorted
+    /// (`SPEC.md` §4.3).
+    pub focus_open: bool,
 }
 
 /// Position of a `StatusBucket` in `SECTION_ORDER`. Panics if not found (all
@@ -287,6 +297,7 @@ impl DashboardState {
             collapsed,
             visible: Vec::new(),
             selected: None,
+            focus_open: false,
         };
         state.rebuild(radar);
         state
@@ -452,6 +463,48 @@ impl DashboardState {
         {
             self.selected = Some(header_pos);
         }
+    }
+
+    /// What the focus panel is pointed at, derived from the cursor **now**
+    /// (`PLAN-focus-panel.md` T5). Scaffold: `unimplemented!()` until T5.
+    ///
+    /// The Dashboard's cursor visits section headers as well as rows, and a header is a
+    /// stop even when its section is collapsed, so all three `FocusTarget` variants are
+    /// reachable by ordinary `j`/`k`:
+    ///
+    /// - `DashRow::Project(i)` → `FocusTarget::Project(i)`.
+    /// - `DashRow::Header(b)` → `FocusTarget::Section(b, n)` where `n` is that section's
+    ///   **membership** count — the number of rows it would show expanded, which for
+    ///   `RUNNING` is `running_membership` (worktree parents included) and for the other
+    ///   three is the non-foreign `status_bucket` filter. Collapsed or not makes no
+    ///   difference: a collapsed section's header must still be able to say how many
+    ///   projects it is hiding.
+    /// - no selection (empty `visible`) → `FocusTarget::Nothing`.
+    pub fn focus_target(&self, radar: &Radar) -> crate::focus::FocusTarget {
+        let _ = radar;
+        unimplemented!("T5: derive the focus target from the cursor")
+    }
+
+    /// Contextual `Space` (`PROPOSAL-focus-panel.md` §7). Scaffold: `unimplemented!()`
+    /// until T5.
+    ///
+    /// - On a `Header`: unchanged — toggle that section (`toggle_selected`).
+    /// - On a `Project` row: **open or close the focus popup**, and do nothing else. In
+    ///   particular it must not toggle the containing section and must not move the
+    ///   cursor, which is what `Space` on a row does today. That removal of a special
+    ///   case *is* the behaviour change; it is not a side effect of one.
+    ///
+    /// `Enter` is unaffected and keeps its own branch in `lib.rs`.
+    pub fn press_space(&mut self, radar: &Radar) {
+        let _ = radar;
+        unimplemented!("T5: contextual Space")
+    }
+
+    /// `Esc`: close the focus popup if it is open. Returns whether the key was consumed,
+    /// so the caller can fall through to its other `Esc` handling when it was not.
+    /// Scaffold: `unimplemented!()` until T5.
+    pub fn close_focus(&mut self) -> bool {
+        unimplemented!("T5: Esc closes the focus popup")
     }
 
     /// The `Project` at the current selection, if the current stop is a row

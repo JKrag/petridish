@@ -319,6 +319,38 @@ implementations exist, same as Phase A.
   a simulated re-sorted `Radar`.
 - **Decide and write down the arg-parsing contract** — see T7's gotcha, it is a real trap.
 
+### Actual result (2026-09-08)
+
+Scaffold landed: `dashboard.rs` grows `focus_open` plus `focus_target`/`press_space`/
+`close_focus` (all `unimplemented!()`), and `lib.rs` grows `MiniTarget`/`CliArgs`/
+`parse_args`/`MiniError`/`resolve_mini` (all `unimplemented!()`). `afk-verify.sh` prints
+**45** — that is `BASE` for Phase D — from 17 failing tests in `s11_focus_mount.rs` and 28
+in `s12_mini_resolve.rs`, and nothing else in the workspace fails. `EXPECTED_BINARIES` is
+pinned to **34** in the same commit that added the two test files, per §2.
+
+Four things Phase D inherits as decided rather than open:
+
+- **The scaffold is deliberately unwired.** `lib.rs:310` still calls `toggle_selected`
+  unconditionally and `main.rs` still reads argv itself. Wiring a panicking scaffold into
+  the live key path would have made every `Space` in the PTY suite panic — protected
+  tests, and a *drop* in the score, which §2's ratchet reads as progress. T5 and T7 do the
+  wiring as part of their own task; **T7 must also rewire `main.rs` to call `parse_args`**,
+  and `s12_mini_resolve.rs` pins the two behaviours that must survive that (`--version`
+  and the first-positional state-path hook).
+- **The argv contract** is written down as `parse_args`'s doc comment (not in `SPEC.md`,
+  which §3 protects and §11 reserves for a human) and asserted case by case. The load-
+  bearing rule: `--mini`'s operand is the next argument iff it does not start with `-`, so
+  `petri --mini state.json` is a *pin*, not a state path.
+- **`resolve_mini` walks ancestors against `projects.json`'s own `path` fields**, deepest
+  first, rather than porting the scanner's `resolve_root` — `petri` depends on neither
+  `swab` nor `gix`, and reading the scanner's stored answer back is strictly stronger
+  against the "two answers to which project is this directory" invariant than a second
+  implementation would be. It subsumes the git-toplevel walk for free.
+- **An ambiguous `--mini <NAME>` is an error, not a guess.** Names are not unique (the
+  fleet has three `smoke`s, per `SelectionAnchor`'s doc comment), and picking one looks
+  like it worked. This is a product decision made here; it is the one thing in Phase C
+  worth a human veto before T7 builds on it.
+
 ---
 
 ## 7. Phase D — the mounts (delegable)

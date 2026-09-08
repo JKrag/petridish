@@ -33,6 +33,138 @@ pub fn default_state_path() -> std::path::PathBuf {
         .join("projects.json")
 }
 
+// ---------------------------------------------------------------------------
+// `--mini` (issue #31, `PLAN-focus-panel.md` T7) — argv contract and project
+// resolution. Scaffolded in Phase C, implemented in T7. Deliberately in `lib.rs`
+// rather than `main.rs`: integration tests can only reach the lib crate, and the
+// argv contract below is the trap this scaffold exists to pin down.
+// ---------------------------------------------------------------------------
+
+/// Which project a `--mini` pane is pointed at, as the *user* named it — never an index.
+///
+/// An index into `radar.projects` is not a target, it is an answer, and it expires: the
+/// scanner re-sorts on every scan (`SPEC.md` §4.3), so a pane left in a corner for days
+/// would silently start showing a different project. `resolve_mini` turns one of these
+/// into an index, and T7 calls it **every tick**.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum MiniTarget {
+    /// No argument: the project the terminal is standing in
+    /// (`PROPOSAL-focus-panel.md` §8.1).
+    Cwd,
+    /// `petri --mini <PATH|NAME>`: a pinned pane. Path first, then name — see
+    /// `resolve_mini`.
+    Pinned(String),
+}
+
+/// The parsed command line.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct CliArgs {
+    /// `--version` / `-V` was given: print the version and exit, ignoring everything else.
+    pub version: bool,
+    /// The state-file path override (the long-standing first-positional test hook the PTY
+    /// suite depends on). `None` means `default_state_path()`.
+    pub state_path: Option<std::path::PathBuf>,
+    /// `--mini` and its optional target. `None` means the normal full dashboard.
+    pub mini: Option<MiniTarget>,
+}
+
+/// Parse `argv` (**without** argv\[0\]) into `CliArgs`. Scaffold: `unimplemented!()`
+/// until T7.
+///
+/// # The contract, decided here because `petri --mini foo` is genuinely ambiguous
+///
+/// `petri` has no `clap` (`SPEC.md` §10 does not list it) and its first positional
+/// argument is already spoken for as a state-file path — a documented test hook the PTY
+/// suite depends on. So `petri --mini foo` could mean "mini, pinned to foo" or "mini,
+/// state file foo", and something has to choose. The rules, in order:
+///
+/// 1. **`--version` or `-V` in any position wins**, and nothing else is parsed. (Today's
+///    `main.rs` only looks at argv\[1\]; this widens it, which is a superset of the shipped
+///    behaviour rather than a change to it.)
+/// 2. **`--mini`'s operand is the argument immediately following it**, and only if that
+///    argument exists and does not start with `-`. So `petri --mini --version` is a
+///    version request with no target, and `petri --mini` at the end of the line is
+///    `MiniTarget::Cwd`.
+/// 3. **The state path is the first remaining positional** — the first argument that is
+///    neither a flag nor consumed as `--mini`'s operand. This is what keeps
+///    `petri state.json` and `petri state.json --mini` working. Note rule 2 outranks it:
+///    in `petri --mini state.json` the operand is `state.json`, a *pin*, not a path.
+/// 4. A second positional, a second `--mini`, or any unrecognised `-`-leading argument is
+///    an error, returned as the message to print. Failing loudly beats silently ignoring
+///    an argument the user clearly meant something by.
+pub fn parse_args(argv: &[String]) -> Result<CliArgs, String> {
+    let _ = argv;
+    unimplemented!("T7: --mini argv contract")
+}
+
+/// Why a `--mini` target could not be turned into a project.
+///
+/// `Display` renders the two-line, name-the-problem-and-the-fix message
+/// `PROPOSAL-focus-panel.md` §8.3 specifies, following `SPEC.md` §4.4's precedent. T7
+/// prints it **before** entering the alternate screen.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum MiniError {
+    /// A path (the cwd, or a pinned path) that no project in `projects.json` contains.
+    NotAProject(std::path::PathBuf),
+    /// A pinned name matching no project.
+    UnknownName(String),
+    /// A pinned name matching more than one project. Not a hypothetical: names are not
+    /// unique and the fleet this was built against has three projects called `smoke`
+    /// (`SelectionAnchor`'s doc comment records the same trap). Guessing one would be the
+    /// worst outcome — it looks like it worked — so this is an error carrying the
+    /// candidate paths, sorted, so the message is stable across a re-sorted `Radar`.
+    AmbiguousName { name: String, paths: Vec<String> },
+}
+
+impl std::fmt::Display for MiniError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let _ = f;
+        unimplemented!("T7: --mini error messages")
+    }
+}
+
+/// Resolve a `--mini` target against the current `radar`, returning an index into
+/// `radar.projects` that is valid **for this tick only**. Scaffold: `unimplemented!()`
+/// until T7.
+///
+/// `cwd` is a parameter rather than a `current_dir()` read inside, per `CLAUDE.md`'s
+/// parameter-over-environment rule — the same reason `petridish-cli` takes `home`.
+///
+/// # Resolution order
+///
+/// - `MiniTarget::Cwd` → the **path walk** below, against `cwd`.
+/// - `MiniTarget::Pinned(s)` → the path walk against `s` first; if that finds nothing and
+///   `s` matches exactly one project `name`, that project; if it matches several,
+///   `AmbiguousName`; otherwise `UnknownName` (`NotAProject` is reserved for the cwd/path
+///   reading, so the message can be specific about which of the two the user meant).
+///
+/// # The path walk, and why it is not a port of the scanner's `resolve_root`
+///
+/// Compare the path and each of its ancestors, deepest first, against the `path` field of
+/// every project, and take the first hit. Deepest-first matters: a project nested inside
+/// another project's tree must resolve to itself, not to its parent.
+///
+/// `PROPOSAL-focus-panel.md` §8.1 says to run the cwd "through the same `resolve_root()`
+/// the scanner uses". `petri` cannot do that literally — it does not depend on `swab`
+/// (which is protected) and has no `gix` — and it does not need to: `projects.json`
+/// already contains `resolve_root`'s answers, one per project. Walking up and matching
+/// reads that answer back rather than recomputing it, which is *stronger* than a port
+/// against the invariant §8.1 is protecting (two different answers to "which project is
+/// this directory"), because there is only ever one implementation. It also subsumes the
+/// "walk up to the git toplevel first" nicety for free: `src/sensors/` finds the project
+/// because the project root is one of its ancestors, with no `.git` probe at all.
+///
+/// No `~` expansion and no symlink canonicalisation: the shell does the former, and the
+/// latter would make the answer depend on the filesystem, which no test could pin.
+pub fn resolve_mini(
+    radar: &petridish_core::schema::Radar,
+    target: &MiniTarget,
+    cwd: &std::path::Path,
+) -> Result<usize, MiniError> {
+    let _ = (radar, target, cwd);
+    unimplemented!("T7: --mini project resolution")
+}
+
 /// Read and deserialize the state file. The error message is promoted to
 /// `io::Error` so the caller can unify JSON parse failures with IO errors.
 fn read_state_file(path: &std::path::Path) -> std::io::Result<petridish_core::schema::Radar> {
