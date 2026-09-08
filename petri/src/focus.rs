@@ -927,7 +927,18 @@ enum ToolStatus {
 /// machine and on the user's stored choice, both of which are keyed here — not on the
 /// project, which is why the target half of resolution is computed fresh on every frame in
 /// `actions_lines`. A tool *installed while petri is running* is the one thing this will
-/// miss, which is what `invalidate_tool_cache` is for.
+/// miss, which is what `invalidate_tool_cache` is for; `lib.rs` calls it when a re-pick
+/// writes `prefs.tools`, the one moment the stored half of the key changes under us.
+///
+/// **A note for whoever writes the next test that renders this rung.** This is a process
+/// global, and `is_installed_probe` behind it reads process-global `PATH` and
+/// `/Applications`. Cargo runs a binary's tests in parallel threads, so the first test to
+/// render an ACTIONS rung fixes the answer for every later one in that binary. That is the
+/// same cross-test coupling issue #20 was filed about (three tests mutating `$HOME`), one
+/// layer down: nothing writes `PATH` mid-run today, so nothing races today. A test that
+/// needs a *specific* resolution must inject it rather than arrange the environment and
+/// hope — which is what `tools::resolve`'s injected `installed` closure already exists
+/// for, and why the impure probe lives in `exec.rs` on the other side of that seam.
 /// Cache key: the action's id plus the user's stored choice for it. Both are what the
 /// answer depends on; the project is not, which is why the target half of resolution is
 /// recomputed every frame.
@@ -967,9 +978,17 @@ fn tool_status(action: &crate::tools::Action, configured: Option<&str>) -> Optio
         crate::tools::Resolution::Ready(launch) => Some(ToolStatus::Ready(launch.program)),
         crate::tools::Resolution::Ambiguous(_) => Some(ToolStatus::Ambiguous),
         crate::tools::Resolution::NoTool => None,
-        // Unreachable with a placeholder url, and not worth a panic if resolve's rules
-        // change: an action with no target is one this row can still advertise.
-        crate::tools::Resolution::NoTarget => Some(ToolStatus::Ambiguous),
+        crate::tools::Resolution::NoTarget => {
+            // Unreachable: the placeholder facts above give every action a target. Assert
+            // in debug so a change to `resolve`'s rules surfaces in the test suite rather
+            // than as a mystery entry on screen with no tool name; degrade in release,
+            // because a wrong label is not worth a panic in a render path.
+            debug_assert!(
+                false,
+                "tools::resolve returned NoTarget for placeholder facts — rule 1 changed"
+            );
+            Some(ToolStatus::Ambiguous)
+        }
     };
 
     if let Ok(mut cache) = TOOL_CACHE.lock() {

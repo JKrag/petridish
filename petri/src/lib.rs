@@ -266,6 +266,15 @@ fn poll_loop(
                                 if let Err(e) = prefs::save(&prefs::default_prefs_path(), &prefs) {
                                     eprintln!("petri: persisting the tool choice failed: {e}");
                                 }
+                                // The focus panel names the resolved tool on its
+                                // ACTIONS rung and memoises that lookup, because
+                                // resolving probes the filesystem once per
+                                // candidate and the panel redraws every poll
+                                // tick. This is the one moment the memo can go
+                                // stale: the answer just changed, and without
+                                // this the panel would keep advertising the tool
+                                // the user just replaced until petri restarts.
+                                crate::focus::invalidate_tool_cache();
                             }
                             notice =
                                 run_action(terminal, &action, &program, &last_good, &browser_state);
