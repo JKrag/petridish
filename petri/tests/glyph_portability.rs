@@ -77,6 +77,12 @@ const RENDER_MODULES: &[&str] = &[
     // glyphs nobody reviewed.
     "feed.rs",
     "picker.rs",
+    // Added in the same commit that created the module, not after it shipped — which is the
+    // whole point of the note above. `focus.rs` is a scaffold today (every body
+    // `unimplemented!()`), so it contributes no glyphs yet; listing it now means the first
+    // Phase B round that renders one is gated, rather than the module joining the list after
+    // somebody notices.
+    "focus.rs",
 ];
 
 /// Every non-ASCII character permitted in the modules above, with a reason.

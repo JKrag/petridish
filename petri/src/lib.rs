@@ -8,6 +8,7 @@ pub mod browser;
 pub mod dashboard;
 pub mod exec;
 pub mod feed;
+pub mod focus;
 pub mod help;
 pub mod picker;
 pub mod prefs;
