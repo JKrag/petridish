@@ -144,7 +144,9 @@ fn main() {
                 .unwrap_or_else(|| PathBuf::from(std::env::var("HOME").unwrap()))
                 .join(".claude")
                 .join("last-status.json");
-            match sensors::quota::read_quota(&path) {
+            // Probe tooling reads the live file, so the live clock is the right one here —
+            // unlike the tests, which pin it (see `read_quota`'s doc comment).
+            match sensors::quota::read_quota(&path, chrono::Utc::now()) {
                 Some(qs) => json!({ "quota": serde_json::to_value(qs).unwrap() }),
                 None => json!({ "quota": null }),
             }

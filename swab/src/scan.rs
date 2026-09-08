@@ -459,7 +459,7 @@ pub fn run_scan(config: &Config, paths: &ScanPaths, previous: Option<&Radar>) ->
     // `quota` is account-global (not per-project), so read once. `read_quota` never panics —
     // missing path / malformed JSON -> None — but we still wrap in catch_unwind per invariant.
     let quota: Option<schema::QuotaState> = std::panic::catch_unwind(AssertUnwindSafe(|| {
-        crate::sensors::quota::read_quota(&paths.quota_path)
+        crate::sensors::quota::read_quota(&paths.quota_path, chrono::Utc::now())
     }))
     .ok()
     .flatten();
