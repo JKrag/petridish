@@ -804,6 +804,45 @@ pub fn plan_layout(
     }
 }
 
+/// Where the focus panel goes when it is open (issue #30, `PLAN-focus-panel.md` T5).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FocusPlacement {
+    /// A centred `MECH-1` overlay. The `Rect` is the popup's **outer** rect, border
+    /// included; the panel's content rect is that minus the border.
+    Popup(Rect),
+    /// The terminal is too small for an overlay to mean anything: the panel takes the
+    /// whole frame instead of refusing. `PROPOSAL-focus-panel.md` §10 — this is the payoff
+    /// of one renderer serving both mounts, since it is the `--mini` render with a
+    /// different lifetime, not a new code path.
+    FullScreen,
+}
+
+/// Decide the focus panel's geometry for a terminal of `area`. Pure — no `Frame`, no
+/// `Buffer`, no state — so the responsive half of T5 is gradeable without a
+/// pseudo-terminal. Scaffold: `unimplemented!()` until T5.
+///
+/// # The rule
+///
+/// **The popup never exceeds 80% of the terminal in either axis**
+/// (`PROPOSAL-focus-panel.md` §10's closing note): past that, "an overlay on the
+/// Dashboard" has stopped meaning anything and the user is better served by the
+/// full-screen render. That ratio, not an absolute size, is what drives the switch — so
+/// when the 80% box no longer leaves a usable panel inside its border, the answer is
+/// `FullScreen`, not a smaller popup.
+///
+/// The switch points are **not** free parameters: §10's pressure table already decides
+/// them terminal size by terminal size, and `s11_focus_mount.rs` asserts exactly those
+/// rows. 120×40, 100×30, 80×24 and 60×20 are popups; 48×14 and everything below is
+/// full-screen. Choosing the constants that produce that table is T5's job; changing which
+/// side of the line a listed size falls on is a spec change, not an implementation detail.
+///
+/// The popup is centred, and its inner content rect is what gets handed to
+/// `focus::plan_rungs` — the mount subtracts its own chrome, per that function's contract.
+pub fn focus_placement(area: Rect) -> FocusPlacement {
+    let _ = area;
+    unimplemented!("T5: focus popup geometry")
+}
+
 /// Render the Dashboard into `frame`. Per petri/SPEC.md §3.2, and following petripy's actual
 /// chrome (`src/petridish/screens.py`'s `_header`/`_section`):
 /// - Header: a badged `petri · dashboard` title, project count/clock/scan duration on the

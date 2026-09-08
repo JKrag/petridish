@@ -322,13 +322,22 @@ implementations exist, same as Phase A.
 ### Actual result (2026-09-08)
 
 Scaffold landed: `dashboard.rs` grows `focus_open` plus `focus_target`/`press_space`/
-`close_focus` (all `unimplemented!()`), and `lib.rs` grows `MiniTarget`/`CliArgs`/
-`parse_args`/`MiniError`/`resolve_mini` (all `unimplemented!()`). `afk-verify.sh` prints
-**45** — that is `BASE` for Phase D — from 17 failing tests in `s11_focus_mount.rs` and 28
-in `s12_mini_resolve.rs`, and nothing else in the workspace fails. `EXPECTED_BINARIES` is
+`close_focus`/`focus_placement`, and `lib.rs` grows `MiniTarget`/`CliArgs`/`parse_args`/
+`MiniError`/`resolve_mini` — all `unimplemented!()`. `afk-verify.sh` prints **51** — that
+is `BASE` for Phase D — from 23 failing tests in `s11_focus_mount.rs` and 28 in
+`s12_mini_resolve.rs`, and nothing else in the workspace fails. `EXPECTED_BINARIES` is
 pinned to **34** in the same commit that added the two test files, per §2.
 
-Four things Phase D inherits as decided rather than open:
+**T5's geometry is score-graded after all**, which this section originally left to the
+attended PTY pass. Six tests in `s11_focus_mount.rs` drive `focus_placement`, a pure
+`Rect → Popup | FullScreen` function: §10's pressure-table rows that must be a popup and
+those that must fall back full-screen, the ≤80%-in-both-axes rule, centring, the content
+rect clearing the panel floor, and degenerate frames. Without them a delegate could pass
+all 17 state tests with the overlay drawn wrong and legitimately report done — the state
+tests cannot see geometry at all. The exact popup dimensions are deliberately **not**
+pinned; only the properties §10 already states.
+
+Six things Phase D inherits as decided rather than open:
 
 - **The scaffold is deliberately unwired.** `lib.rs:310` still calls `toggle_selected`
   unconditionally and `main.rs` still reads argv itself. Wiring a panicking scaffold into
@@ -348,8 +357,19 @@ Four things Phase D inherits as decided rather than open:
   implementation would be. It subsumes the git-toplevel walk for free.
 - **An ambiguous `--mini <NAME>` is an error, not a guess.** Names are not unique (the
   fleet has three `smoke`s, per `SelectionAnchor`'s doc comment), and picking one looks
-  like it worked. This is a product decision made here; it is the one thing in Phase C
-  worth a human veto before T7 builds on it.
+  like it worked. A product decision made here — **worth a human veto** before T7 builds
+  on it.
+- **With the popup open, `Space` closes it and does nothing else** — even on a header,
+  whose own binding would otherwise toggle the section. §7's table states both rows
+  ("header → unchanged" and "popup open → close it") without saying which wins; this
+  resolves it as popup-wins, one keypress one effect. The cost is a second `Space` to
+  collapse a section while the popup happens to be open. The **second** decision in this
+  phase worth a human veto; it is pinned by
+  `space_on_a_header_while_the_popup_is_open_closes_it_without_toggling`.
+- **The RUNNING header's count is `running_membership`, not a `status_bucket` filter**, so
+  a cold parent pulled in by an active worktree child is counted. `normal.json` has no
+  `parent_path` at all, which would have made that test vacuous, so it builds the pull-in
+  case and guards it with an `assert_ne!` against the plain filter.
 
 ---
 

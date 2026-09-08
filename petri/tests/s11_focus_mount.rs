@@ -22,9 +22,10 @@
 //! screen that acts on something other than what the cursor is on. Several tests below
 //! exist purely to prove that special case is gone rather than merely joined by a new one.
 
-use petri::dashboard::{DashRow, DashboardState};
+use petri::dashboard::{DashRow, DashboardState, FocusPlacement, focus_placement};
 use petri::focus::FocusTarget;
 use petridish_core::schema::{Radar, StatusBucket};
+use ratatui::layout::Rect;
 use std::path::PathBuf;
 
 fn fixture_path(name: &str) -> PathBuf {
@@ -296,7 +297,30 @@ fn focus_target_on_a_project_row_is_that_project() {
 
 #[test]
 fn focus_target_on_the_running_header_carries_its_membership_count() {
-    let radar = load("normal.json");
+    // `normal.json` has no `parent_path` anywhere, so on that fixture alone
+    // `running_membership` and a plain `status_bucket == active` filter give the same
+    // number — and a test that cannot tell the two rules apart does not pin either. So
+    // the pull-in case is built here: a cold project with an active worktree child is in
+    // RUNNING (display-only, its own bucket is untouched), which makes RUNNING's count
+    // one higher than the filter's. The `assert_ne!` below is a guard on the fixture, not
+    // on the code: if it ever fires, this test has gone vacuous.
+    let mut radar = load("normal.json");
+    let cold_parent_path = radar.projects[idx_of(&radar, "mocha-py")].path.clone();
+    let child = idx_of(&radar, "alpha-project");
+    radar.projects[child].parent_path = Some(cold_parent_path);
+
+    let plain_filter = radar
+        .projects
+        .iter()
+        .filter(|p| !p.is_foreign && p.status_bucket == StatusBucket::Active)
+        .count();
+    assert_ne!(
+        expected_section_count(&radar, StatusBucket::Active),
+        plain_filter,
+        "the radar must actually exercise running_membership's pull-in, or this test \
+         cannot distinguish the two rules"
+    );
+
     let mut state = all_expanded(&radar);
     select_header(&mut state, StatusBucket::Active);
 
@@ -390,6 +414,125 @@ fn moving_onto_a_header_with_the_popup_open_shows_the_section_state() {
             expected_section_count(&radar, StatusBucket::InFlight)
         )
     );
+}
+
+// ---------------------------------------------------------------------------
+// Geometry — popup vs full-screen
+//
+// The other half of T5, and the half the state tests above are blind to: a mount can
+// satisfy every `Space`/`Esc` assertion here and still draw the popup wrong. These are
+// pure `Rect` arithmetic (`focus_placement`), so they grade it without a pseudo-terminal;
+// what the popup *contains* at each size is `s11_focus_plan.rs`'s job, and the painted
+// pixels are the attended PTY suite's (`PLAN-focus-panel.md` §9).
+//
+// The switch points come from `PROPOSAL-focus-panel.md` §10's pressure table, which
+// already decided them. Nothing new is invented here, and the exact popup dimensions are
+// deliberately NOT pinned — only the properties §10 states: ≤80% of the terminal in both
+// axes, centred, and full-screen once an overlay stops being worth it.
+// ---------------------------------------------------------------------------
+
+/// §10's terminal sizes that must still be an overlay.
+const POPUP_SIZES: [(u16, u16); 4] = [(120, 40), (100, 30), (80, 24), (60, 20)];
+
+/// §10's terminal sizes at which the popup "no longer fits" and `Space` renders the panel
+/// full-screen instead of refusing. 24×6 is the panel floor itself; below it the mount
+/// shows the too-small message, which is not this function's decision.
+const FULLSCREEN_SIZES: [(u16, u16); 3] = [(48, 14), (36, 10), (24, 6)];
+
+#[test]
+fn the_pressure_table_sizes_that_must_be_a_popup() {
+    for (w, h) in POPUP_SIZES {
+        let placement = focus_placement(Rect::new(0, 0, w, h));
+        assert!(
+            matches!(placement, FocusPlacement::Popup(_)),
+            "{w}x{h} is a popup row in PROPOSAL §10, got {placement:?}"
+        );
+    }
+}
+
+#[test]
+fn the_pressure_table_sizes_that_must_fall_back_to_full_screen() {
+    for (w, h) in FULLSCREEN_SIZES {
+        assert_eq!(
+            focus_placement(Rect::new(0, 0, w, h)),
+            FocusPlacement::FullScreen,
+            "{w}x{h} is a full-screen row in PROPOSAL §10"
+        );
+    }
+}
+
+#[test]
+fn the_popup_never_exceeds_eighty_percent_of_the_terminal() {
+    // The ratio *is* the rule (§10's closing note): past it, "an overlay on the
+    // Dashboard" has stopped meaning anything.
+    for (w, h) in POPUP_SIZES {
+        let FocusPlacement::Popup(popup) = focus_placement(Rect::new(0, 0, w, h)) else {
+            continue; // reported by the popup-rows test above
+        };
+        assert!(
+            popup.width * 5 <= w * 4,
+            "{w}x{h}: popup width {} exceeds 80% of {w}",
+            popup.width
+        );
+        assert!(
+            popup.height * 5 <= h * 4,
+            "{w}x{h}: popup height {} exceeds 80% of {h}",
+            popup.height
+        );
+    }
+}
+
+#[test]
+fn the_popup_is_centred_and_inside_the_frame() {
+    for (w, h) in POPUP_SIZES {
+        let area = Rect::new(0, 0, w, h);
+        let FocusPlacement::Popup(popup) = focus_placement(area) else {
+            continue;
+        };
+        assert!(
+            popup.right() <= area.right() && popup.bottom() <= area.bottom(),
+            "{w}x{h}: popup {popup:?} escapes the frame"
+        );
+        // Centred to within a cell in each axis — an odd remainder has to land somewhere.
+        let left_gap = popup.x - area.x;
+        let right_gap = area.right() - popup.right();
+        let top_gap = popup.y - area.y;
+        let bottom_gap = area.bottom() - popup.bottom();
+        assert!(
+            left_gap.abs_diff(right_gap) <= 1,
+            "{w}x{h}: popup not horizontally centred ({left_gap} vs {right_gap})"
+        );
+        assert!(
+            top_gap.abs_diff(bottom_gap) <= 1,
+            "{w}x{h}: popup not vertically centred ({top_gap} vs {bottom_gap})"
+        );
+    }
+}
+
+#[test]
+fn the_popups_content_rect_clears_the_panel_floor() {
+    // The popup's border is chrome the mount subtracts before calling `plan_rungs`
+    // (that function's contract). A popup whose *inner* rect is below the panel floor is
+    // exactly the case §10 says must become `FullScreen` instead.
+    for (w, h) in POPUP_SIZES {
+        let FocusPlacement::Popup(popup) = focus_placement(Rect::new(0, 0, w, h)) else {
+            continue;
+        };
+        assert!(
+            popup.width >= petri::focus::MIN_FOCUS_WIDTH + 2
+                && popup.height >= petri::focus::MIN_FOCUS_HEIGHT + 2,
+            "{w}x{h}: popup {popup:?} has no room for a panel inside its border"
+        );
+    }
+}
+
+#[test]
+fn a_degenerate_frame_does_not_panic() {
+    // `dashboard::render`'s own contract (0x0, 1x1) extended to the mount, since a resize
+    // can hand us either mid-frame.
+    for (w, h) in [(0, 0), (1, 1), (0, 40), (120, 0)] {
+        let _ = focus_placement(Rect::new(0, 0, w, h));
+    }
 }
 
 // ---------------------------------------------------------------------------
