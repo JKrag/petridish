@@ -368,6 +368,7 @@ fn poll_loop(
         help_open,
         &notice,
         &feed,
+        &prefs,
     );
 
     loop {
@@ -468,10 +469,16 @@ fn poll_loop(
                             }
                             true
                         }
+                        // `Space` is contextual now (issue #30,
+                        // `PROPOSAL-focus-panel.md` §7): a header still toggles
+                        // its section, a project row opens the focus popup, and
+                        // an open popup closes. `press_space` owns the whole
+                        // table — `toggle_selected` is untouched, since `Enter`
+                        // on a header and `s6_dashboard.rs` both still want it.
                         crossterm::event::KeyCode::Char(' ') => {
                             if let (Some(dstate), Some(radar)) = (&mut dashboard_state, &last_good)
                             {
-                                dstate.toggle_selected(radar);
+                                dstate.press_space(radar);
                             }
                             true
                         }
@@ -512,7 +519,17 @@ fn poll_loop(
                             }
                             true
                         }
-                        crossterm::event::KeyCode::Esc => true,
+                        // `Esc` closes the focus popup if one is open, and is
+                        // otherwise the same no-op-that-redraws it has always
+                        // been. `close_focus` reports whether it consumed the
+                        // key so this stays a fall-through rather than a
+                        // special case.
+                        crossterm::event::KeyCode::Esc => {
+                            if let Some(ref mut dstate) = dashboard_state {
+                                dstate.close_focus();
+                            }
+                            true
+                        }
                         _ => false,
                     }
                 }
@@ -832,6 +849,7 @@ fn poll_loop(
                     help_open,
                     &notice,
                     &feed,
+                    &prefs,
                 );
             }
         }
@@ -921,6 +939,7 @@ fn poll_loop(
                 help_open,
                 &notice,
                 &feed,
+                &prefs,
             );
         }
 
@@ -973,12 +992,31 @@ fn render_current(
     help_open: bool,
     notice: &Option<String>,
     feed: &crate::feed::FeedState,
+    prefs: &Prefs,
 ) {
     let Some(r) = radar else { return };
     match screen {
         Screen::Dashboard => {
             if let Some(s) = dashboard_state {
-                let _ = terminal.draw(|frame| crate::dashboard::render(frame, r, s, feed));
+                let _ = terminal.draw(|frame| {
+                    crate::dashboard::render(frame, r, s, feed);
+                    // The focus popup, drawn last for MECH-1's reason (`Clear`
+                    // only blanks what is already in the buffer). The target is
+                    // re-derived from the cursor here, every frame, and never
+                    // cached — that is what makes the popup follow `j`/`k` and
+                    // what keeps it correct across a reload the scanner
+                    // re-sorted (`SPEC.md` §4.3).
+                    if s.focus_open {
+                        let ctx = crate::focus::FocusCtx {
+                            radar: r,
+                            target: s.focus_target(r),
+                            now: chrono::Utc::now(),
+                            feed: Some(feed),
+                            prefs,
+                        };
+                        crate::dashboard::render_focus_overlay(frame, frame.area(), &ctx);
+                    }
+                });
             }
         }
         Screen::Browser => {

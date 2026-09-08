@@ -481,8 +481,20 @@ impl DashboardState {
     ///   projects it is hiding.
     /// - no selection (empty `visible`) → `FocusTarget::Nothing`.
     pub fn focus_target(&self, radar: &Radar) -> crate::focus::FocusTarget {
-        let _ = radar;
-        unimplemented!("T5: derive the focus target from the cursor")
+        // `visible.get`, not `visible[..]`: a reload can shorten the stop sequence under a
+        // held `selected` (`SPEC.md` §4.3), and a panel that panics because the fleet got
+        // smaller is a worse failure than one that renders the empty state for a frame.
+        match self.selected.and_then(|i| self.visible.get(i)) {
+            Some(DashRow::Project(idx)) => crate::focus::FocusTarget::Project(*idx),
+            // `section_members` and not a `status_bucket` filter: RUNNING's membership pulls
+            // in a cold worktree parent whose child is active, and a header must report the
+            // number of rows it would show, collapsed or not.
+            Some(DashRow::Header(bucket)) => crate::focus::FocusTarget::Section(
+                *bucket,
+                Self::section_members(radar, *bucket).len(),
+            ),
+            None => crate::focus::FocusTarget::Nothing,
+        }
     }
 
     /// Contextual `Space` (`PROPOSAL-focus-panel.md` §7). Scaffold: `unimplemented!()`
@@ -496,15 +508,31 @@ impl DashboardState {
     ///
     /// `Enter` is unaffected and keeps its own branch in `lib.rs`.
     pub fn press_space(&mut self, radar: &Radar) {
-        let _ = radar;
-        unimplemented!("T5: contextual Space")
+        // Popup-wins, decided in `PLAN-focus-panel.md` §6: §7's table states both "header →
+        // toggle" and "popup open → close it" without saying which outranks the other. One
+        // keypress, one effect — so a `Space` that dismisses the popup must not also
+        // collapse whatever section the cursor happens to be parked on.
+        if self.focus_open {
+            self.focus_open = false;
+            return;
+        }
+        match self.selected.and_then(|i| self.visible.get(i)) {
+            Some(DashRow::Header(_)) => self.toggle_selected(radar),
+            // The behaviour change, and it is a *removal*: today's `Space` on a row reaches
+            // past the row to toggle its containing section and then relocates the cursor.
+            // Opening the popup is all this does now.
+            Some(DashRow::Project(_)) => self.focus_open = true,
+            None => {}
+        }
     }
 
     /// `Esc`: close the focus popup if it is open. Returns whether the key was consumed,
     /// so the caller can fall through to its other `Esc` handling when it was not.
     /// Scaffold: `unimplemented!()` until T5.
     pub fn close_focus(&mut self) -> bool {
-        unimplemented!("T5: Esc closes the focus popup")
+        let was_open = self.focus_open;
+        self.focus_open = false;
+        was_open
     }
 
     /// The `Project` at the current selection, if the current stop is a row
@@ -817,6 +845,28 @@ pub enum FocusPlacement {
     FullScreen,
 }
 
+/// Widest the focus popup grows, however large the terminal is. Past this an "overlay"
+/// stops reading as one — it is a bordered full screen — and the panel's own lines are
+/// short enough that the extra columns buy nothing. 64 leaves the `Repo` rung's 56-column
+/// gate satisfied inside the border, which is the widest thing the panel renders.
+const FOCUS_POPUP_MAX_WIDTH: u16 = 64;
+
+/// Tallest the focus popup grows. See `FOCUS_POPUP_MAX_WIDTH`.
+const FOCUS_POPUP_MAX_HEIGHT: u16 = 24;
+
+/// Below this the overlay is not worth having and `focus_placement` returns `FullScreen`.
+///
+/// These are **`focus::plan_rungs`' `Path` gate (30 × 10) plus the border**, not free
+/// parameters: an overlay earns its place only once its content rect can carry more than
+/// the three unconditional rungs the panel floor guarantees. Tying the switch to a rung
+/// gate rather than to a magic constant is also what reproduces
+/// `PROPOSAL-focus-panel.md` §10's pressure table exactly — 60×20 is a popup (48×16 box,
+/// 46×14 inner) and 48×14 is not (38×11 box, one row short).
+const FOCUS_POPUP_MIN_WIDTH: u16 = 32;
+
+/// See `FOCUS_POPUP_MIN_WIDTH`.
+const FOCUS_POPUP_MIN_HEIGHT: u16 = 12;
+
 /// Decide the focus panel's geometry for a terminal of `area`. Pure — no `Frame`, no
 /// `Buffer`, no state — so the responsive half of T5 is gradeable without a
 /// pseudo-terminal. Scaffold: `unimplemented!()` until T5.
@@ -839,8 +889,93 @@ pub enum FocusPlacement {
 /// The popup is centred, and its inner content rect is what gets handed to
 /// `focus::plan_rungs` — the mount subtracts its own chrome, per that function's contract.
 pub fn focus_placement(area: Rect) -> FocusPlacement {
-    let _ = area;
-    unimplemented!("T5: focus popup geometry")
+    // The 80% box, floor-divided. Floor and not a rounded ratio: the rule is an upper
+    // bound (`popup.width * 5 <= area.width * 4`), and anything that rounds up violates it
+    // at specific widths. `u32` because `u16 * 4` overflows past 16383 columns — a size no
+    // terminal has, but `Rect` permits it and a wrapping multiply would silently invert the
+    // comparison.
+    let box_w = ((area.width as u32) * 4 / 5) as u16;
+    let box_h = ((area.height as u32) * 4 / 5) as u16;
+
+    // Capped, so a very large terminal gets an overlay rather than a near-full-screen
+    // panel that happens to have a border. The 80% bound still applies above the cap.
+    let width = box_w.min(FOCUS_POPUP_MAX_WIDTH);
+    let height = box_h.min(FOCUS_POPUP_MAX_HEIGHT);
+
+    if width < FOCUS_POPUP_MIN_WIDTH || height < FOCUS_POPUP_MIN_HEIGHT {
+        return FocusPlacement::FullScreen;
+    }
+
+    // Centred; an odd remainder lands on the right/bottom, which is what the mount's
+    // centring test allows ("to within a cell").
+    let x = area.x + area.width.saturating_sub(width) / 2;
+    let y = area.y + area.height.saturating_sub(height) / 2;
+    FocusPlacement::Popup(Rect::new(x, y, width, height))
+}
+
+/// Draw the focus panel over an already-rendered Dashboard (issue #30,
+/// `PLAN-focus-panel.md` T5).
+///
+/// Deliberately **not** folded into `render`: that signature is pinned by
+/// `s6_snapshot.rs`/`s9_feed_render.rs` and carries no `Prefs`, which the `ACTIONS` rung
+/// needs. Keeping the overlay a separate call also keeps `MECH-1`'s ordering explicit at
+/// the call site — `Clear` only blanks what is already in the buffer, so this must be the
+/// last thing drawn in the frame, exactly as the Browser's picker/help overlays are.
+///
+/// The panel's own renderer owns everything inside the content rect; this function owns
+/// only the chrome (border, title) and the too-small message, which `focus_lines`
+/// deliberately leaves to the mount (`PROPOSAL-focus-panel.md` §3.5) because only the
+/// mount knows whether the wording should be the popup's or `--mini`'s.
+pub fn render_focus_overlay(frame: &mut ratatui::Frame, area: Rect, ctx: &crate::focus::FocusCtx) {
+    use ratatui::widgets::{Borders, Clear};
+
+    match focus_placement(area) {
+        FocusPlacement::Popup(popup) => {
+            frame.render_widget(Clear, popup);
+            let block = Block::default()
+                .borders(Borders::ALL)
+                .border_type(BorderType::Rounded)
+                .border_style(Style::default().fg(crate::theme::ACCENT))
+                .title(Span::styled(
+                    " Focus ",
+                    Style::default()
+                        .fg(crate::theme::ACCENT)
+                        .add_modifier(Modifier::BOLD),
+                ));
+            let inner = block.inner(popup);
+            frame.render_widget(block, popup);
+            // `FOCUS_POPUP_MIN_*` guarantee `inner` clears the panel floor, so this is
+            // never the empty "too small" return.
+            frame.render_widget(Paragraph::new(crate::focus::focus_lines(inner, ctx)), inner);
+        }
+        FocusPlacement::FullScreen => {
+            frame.render_widget(Clear, area);
+            let lines = crate::focus::focus_lines(area, ctx);
+            if lines.is_empty() {
+                frame.render_widget(Paragraph::new(focus_too_small_lines(area)), area);
+            } else {
+                frame.render_widget(Paragraph::new(lines), area);
+            }
+        }
+    }
+}
+
+/// The below-the-floor message, naming the dimensions the panel needs
+/// (`PROPOSAL-focus-panel.md` §3.5). Two short lines rather than one sentence, because the
+/// terminal that triggers this is by definition too narrow to wrap a sentence in.
+fn focus_too_small_lines(area: Rect) -> Vec<Line<'static>> {
+    let dim = Style::default().fg(crate::theme::DIM);
+    let mut lines = vec![Line::from(Span::styled("focus needs", dim))];
+    lines.push(Line::from(Span::styled(
+        format!(
+            "{}x{}",
+            crate::focus::MIN_FOCUS_WIDTH,
+            crate::focus::MIN_FOCUS_HEIGHT
+        ),
+        dim,
+    )));
+    lines.truncate(area.height as usize);
+    lines
 }
 
 /// Render the Dashboard into `frame`. Per petri/SPEC.md §3.2, and following petripy's actual
