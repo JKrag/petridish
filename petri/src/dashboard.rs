@@ -93,6 +93,13 @@ const COLUMN_GUTTER: usize = 2;
 /// → *Typography in monospace* / *Borders*), so text inside the card no longer needs its own
 /// background fill to show selection.
 const ROOMY_CARD_BOX_ROWS: usize = 6;
+/// Extra content rows a **lush** card carries over a roomy one: `last` (R4) and `repo` (R7),
+/// the two rungs of the focus panel's ladder that carry facts the Dashboard shows nowhere
+/// else. `SPACE-3`/#33, and `PROPOSAL-focus-panel.md` §5's "+2 rows per card" bound stated as
+/// a number rather than left implicit. The sparklines widen for free on a wide card
+/// (`agent_sparkline_width_for`), so they are not part of this count.
+const LUSH_EXTRA_ROWS: usize = 2;
+
 /// Indent for a roomy card's `git`/`agent`/path rows relative to its header — shorter than the
 /// pre-border design's 5 spaces since the border itself now provides the card's left edge.
 pub(crate) const ZONE_INDENT: &str = "  ";
@@ -585,8 +592,15 @@ pub struct SectionPlan {
     pub chrome_rows: usize,
     pub columns: usize,
     pub card_width: usize,
-    /// Physical rows one item occupies: 5 for a roomy RUNNING card, 1 for a compact row.
+    /// Physical rows one item occupies: `card_box_rows + 1` for a RUNNING card (the `+ 1` is
+    /// the gap before the next card in the same column), 1 for a compact row.
     pub item_span: usize,
+    /// `Some(rows)` for a bordered card section and the height of one card's box; `None` for
+    /// a compact-row section. Read by `render_section`, which used to infer roominess by
+    /// comparing `item_span` against a constant — a test that widened the span for the lush
+    /// tier silently flipped the whole section into the compact renderer, which is exactly
+    /// the "renders something plausible but wrong" failure `PLAN-focus-panel.md` §1 is about.
+    pub card_box_rows: Option<usize>,
     pub items_shown: usize,
     /// Grid rows actually rendered (`items_shown` divided across `columns`, rounded up).
     pub grid_rows: usize,
@@ -616,6 +630,10 @@ pub struct SectionPlan {
 /// already the global-context row and quota costs zero body rows there.
 pub struct DashPlan {
     pub compact_tier: bool,
+    /// The third density tier (`SPACE-3`/#33): RUNNING cards carry `LUSH_EXTRA_ROWS` more
+    /// content rows each. See `plan_layout` for the surplus-priority rule and why this is a
+    /// whole-plan decision rather than a per-section one.
+    pub lush: bool,
     pub fleet_rows: usize,
     pub sections: Vec<SectionPlan>,
     /// Sections that didn't fit even their own header+count — named in the "not shown" summary
@@ -690,7 +708,89 @@ pub fn plan_layout(
     collapsed: CollapsedState,
     feed_events: usize,
 ) -> DashPlan {
-    let width = area.width as usize;
+    plan_layout_at_density(area, radar, collapsed, feed_events, true)
+}
+
+/// `plan_layout` with the lush tier (`SPACE-3`/#33) forced off — the same layout this
+/// function produced before the tier existed.
+///
+/// A seam, not a feature: the tier's contract is *comparative* ("it never costs a project
+/// row"), and the plan a run would have produced without it is otherwise unobservable, so
+/// the one assertion that matters could not be written. Same reason `feed_rows_for` is
+/// public. Nothing in the app calls this with `allow_lush: false`.
+pub fn plan_layout_at_density(
+    area: Rect,
+    radar: &Radar,
+    collapsed: CollapsedState,
+    feed_events: usize,
+    allow_lush: bool,
+) -> DashPlan {
+    let (compact_tier, fleet_rows) = tier_and_rows(area, radar);
+
+    let base = plan_sections(area, radar, collapsed, false);
+    // **The surplus-priority rule** (`PROPOSAL-focus-panel.md` §5, `SPACE-3`/#33). `SPACE-1`'s
+    // feed has deliberately no ceiling and claims every spare row; the lush tier wants the
+    // same rows. Left to whichever code runs first, that is not a design — so the ordering is
+    // stated here: **RUNNING cards get a bounded first claim** (`LUSH_EXTRA_ROWS` per card),
+    // and the feed takes the remainder under its existing `events + 2` rule.
+    //
+    // The bound is what makes that safe. The claim is only accepted if the whole plan comes
+    // out no worse: the same sections present, none newly truncated, and no project row lost
+    // anywhere. On a busy fleet the section is already truncating, the lush attempt truncates
+    // further, and the tier simply does not switch on — so the rows the feed gives up are by
+    // construction rows no project row could have used. The reverse ordering (feed first)
+    // starves #33 exactly when there is most to show.
+    //
+    // Two passes rather than one, because RUNNING growing can push a *later* section off the
+    // screen entirely — a per-section check cannot see that, and it is the failure that would
+    // read as "STALE randomly vanished on a tall terminal".
+    let (sections, skipped, used, lush) = if compact_tier || !allow_lush {
+        (base.0, base.1, base.2, false)
+    } else {
+        let attempt = plan_sections(area, radar, collapsed, true);
+        if no_worse_than(&attempt, &base) {
+            (attempt.0, attempt.1, attempt.2, true)
+        } else {
+            (base.0, base.1, base.2, false)
+        }
+    };
+
+    let feed_rows = feed_rows_for(
+        compact_tier,
+        fleet_rows,
+        used,
+        &sections,
+        &skipped,
+        feed_events,
+    );
+    DashPlan {
+        compact_tier,
+        lush,
+        fleet_rows,
+        sections,
+        skipped,
+        feed_rows,
+    }
+}
+
+/// Did the lush attempt cost anything? Same sections planned, same sections skipped, no
+/// section showing fewer items, and nothing newly truncated.
+fn no_worse_than(
+    attempt: &(Vec<SectionPlan>, Vec<(StatusBucket, usize)>, usize),
+    base: &(Vec<SectionPlan>, Vec<(StatusBucket, usize)>, usize),
+) -> bool {
+    attempt.0.len() == base.0.len()
+        && attempt.1.len() == base.1.len()
+        && attempt
+            .0
+            .iter()
+            .zip(base.0.iter())
+            .all(|(a, b)| a.items_shown >= b.items_shown && a.truncated_remaining.is_none())
+}
+
+/// The compact-tier decision and the fleet's own row budget — shared by both planning passes
+/// so they cannot disagree about how much room there is.
+fn tier_and_rows(area: Rect, radar: &Radar) -> (bool, usize) {
     let elapsed_secs = chrono::Utc::now()
         .signed_duration_since(radar.updated_at)
         .num_seconds()
@@ -707,7 +807,20 @@ pub fn plan_layout(
     let fleet_rows = (area.height as usize)
         .saturating_sub(fixed_rows)
         .saturating_sub(1);
-    let compact_tier = fleet_rows <= COMPACT_TIER_MAX_CONTENT_ROWS;
+    (fleet_rows <= COMPACT_TIER_MAX_CONTENT_ROWS, fleet_rows)
+}
+
+/// One planning pass: every section's geometry at the given density, plus the rows it spent.
+/// Pure and cheap, which is what lets `plan_layout` run it twice and compare.
+#[allow(clippy::type_complexity)]
+fn plan_sections(
+    area: Rect,
+    radar: &Radar,
+    collapsed: CollapsedState,
+    lush: bool,
+) -> (Vec<SectionPlan>, Vec<(StatusBucket, usize)>, usize) {
+    let width = area.width as usize;
+    let (compact_tier, fleet_rows) = tier_and_rows(area, radar);
 
     let mut sections: Vec<SectionPlan> = Vec::new();
     let mut skipped: Vec<(StatusBucket, usize)> = Vec::new();
@@ -751,8 +864,11 @@ pub fn plan_layout(
         // Roomy card physical footprint: 4 content lines + a 2-row border (`ROOMY_CARD_BOX_ROWS`)
         // + a 1-row gap before the next card in the same column. The border itself is now what
         // separates one card from the next (and, via its color, signals selection) — see
-        // `render_section`'s roomy branch.
-        let item_span = if roomy { ROOMY_CARD_BOX_ROWS + 1 } else { 1 };
+        // `render_section`'s roomy branch. A lush card is the same box with `LUSH_EXTRA_ROWS`
+        // more content lines in it.
+        let card_box_rows =
+            roomy.then(|| ROOMY_CARD_BOX_ROWS + if lush { LUSH_EXTRA_ROWS } else { 0 });
+        let item_span = card_box_rows.map_or(1, |rows| rows + 1);
         // IN FLIGHT rows carry their own git-activity sparkline (`compact_row_line`'s
         // `show_git_sparkline`) — a deliberate alignment: IN FLIGHT's default upper bound is 14
         // days (`swab`'s `in_flight` threshold), the same span `GIT_ACTIVITY_WINDOW_DAYS`
@@ -812,27 +928,14 @@ pub fn plan_layout(
             columns,
             card_width,
             item_span,
+            card_box_rows,
             items_shown,
             grid_rows,
             truncated_remaining,
         });
     }
 
-    let feed_rows = feed_rows_for(
-        compact_tier,
-        fleet_rows,
-        used,
-        &sections,
-        &skipped,
-        feed_events,
-    );
-    DashPlan {
-        compact_tier,
-        fleet_rows,
-        sections,
-        skipped,
-        feed_rows,
-    }
+    (sections, skipped, used)
 }
 
 /// Where the focus panel goes when it is open (issue #30, `PLAN-focus-panel.md` T5).
@@ -1221,7 +1324,11 @@ fn render_section(
 
     if section.items_shown > 0 {
         let columns = section.columns.max(1);
-        let roomy = section.item_span == ROOMY_CARD_BOX_ROWS + 1;
+        // The plan says which renderer this section wants; do not re-derive it from
+        // `item_span`, which is how the lush tier's wider span silently flipped an entire
+        // RUNNING section into the compact renderer during development.
+        let card_box_rows = section.card_box_rows;
+        let roomy = card_box_rows.is_some();
 
         // Row-major assignment (column c gets items c, c+columns, c+2*columns, …) — this is
         // what keeps `j`/`k` walking `DashboardState`'s flat `Vec<DashRow>` in plain reading
@@ -1246,12 +1353,12 @@ fn render_section(
 
         for (c, proj_indices) in column_members.into_iter().enumerate() {
             let col_rect = column_rects[c * 2];
-            if roomy {
+            if let Some(box_rows) = card_box_rows {
                 let inner_width = section.card_width.saturating_sub(2);
                 let mut card_constraints: Vec<Constraint> =
                     Vec::with_capacity(proj_indices.len() * 2);
                 for i in 0..proj_indices.len() {
-                    card_constraints.push(Constraint::Length(ROOMY_CARD_BOX_ROWS as u16));
+                    card_constraints.push(Constraint::Length(box_rows as u16));
                     if i + 1 < proj_indices.len() {
                         card_constraints.push(Constraint::Length(1)); // gap before the next card
                     }
@@ -1272,7 +1379,12 @@ fn render_section(
                     let block = Block::bordered()
                         .border_type(BorderType::Rounded)
                         .border_style(border_style);
-                    let lines = roomy_card_lines(radar, proj_idx, inner_width);
+                    let lines = roomy_card_lines(
+                        radar,
+                        proj_idx,
+                        inner_width,
+                        box_rows > ROOMY_CARD_BOX_ROWS,
+                    );
                     frame.render_widget(Paragraph::new(lines).block(block), card_rects[i * 2]);
                 }
             } else {
@@ -1785,7 +1897,18 @@ fn compact_running_row_line(
 /// wraps these 4 lines in a `Block` whose border color carries the selection signal, so nothing
 /// in here needs to change when a card is selected; that's what fixed the ragged
 /// background-only-under-some-spans highlight the border replaced.
-fn roomy_card_lines(radar: &Radar, proj_idx: usize, card_width: usize) -> Vec<Line<'static>> {
+/// A RUNNING card's content lines. `lush` (`SPACE-3`/#33) appends the focus panel's R4 and
+/// R7 rungs — the agent's last event, and the repository facts nothing else on the Dashboard
+/// shows. The *content* comes from `focus`'s own per-field renderers (`last_event_facts`,
+/// `repo_facts`) and the *layout* does not: `IDEAS.md`'s `SURF-8` entry is explicit that a
+/// roomy card must stay uniform across a grid column while a focus panel owns a full-width
+/// rect, so the facts land in this module's `zone_row` rather than `focus`'s `zone_line`.
+fn roomy_card_lines(
+    radar: &Radar,
+    proj_idx: usize,
+    card_width: usize,
+    lush: bool,
+) -> Vec<Line<'static>> {
     let p = &radar.projects[proj_idx];
     let waiting = is_waiting(p); // `MECH-5` — see `compact_running_row_line`.
     let glyph = if waiting {
@@ -1909,7 +2032,35 @@ fn roomy_card_lines(radar: &Radar, proj_idx: usize, card_width: usize) -> Vec<Li
     let display_path = abbreviate_home(&p.path);
     let path_row = Line::from(Span::styled(format!("{ZONE_INDENT}{display_path}"), dim));
 
-    vec![header, git_row, agent_row, path_row]
+    let mut lines = vec![header, git_row, agent_row, path_row];
+    if lush {
+        let plain = |label: &'static str, facts: String| {
+            zone_row(
+                ZoneRowSpec {
+                    indent: ZONE_INDENT,
+                    label,
+                    label_style: zone_label_style(theme::DIM),
+                    facts,
+                    facts_style: dim,
+                    // No sparkline on either row: both are single facts, and a third bar in
+                    // a card that already carries two would read as decoration.
+                    sparkline: String::new(),
+                    spark_style: dim,
+                    tag: String::new(),
+                },
+                card_width,
+            )
+        };
+        lines.push(plain("last", crate::focus::last_event_facts(p)));
+        // A non-repo has no R7 facts, and the card's height is fixed by the section's
+        // `item_span` — so the row goes blank rather than being dropped (which would
+        // misalign every card below it) or filled with an invented value.
+        lines.push(match crate::focus::repo_facts(p, chrono::Utc::now()) {
+            Some(facts) => plain("repo", facts),
+            None => Line::from(""),
+        });
+    }
+    lines
 }
 
 /// Unicode block elements U+2581-2588 ("Block Elements") -- each a single narrow cell per

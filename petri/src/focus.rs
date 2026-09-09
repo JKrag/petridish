@@ -729,6 +729,27 @@ fn agent_line(p: &Project, ctx: &FocusCtx, width: usize) -> Line<'static> {
 /// falls back to `feed::agent_detail`, so `claude-code activity · 2 files` is correct
 /// output. Do not "fix" it by widening the allowlist — that lives in `swab`.
 fn last_event_lines(p: &Project, width: usize) -> Vec<Line<'static>> {
+    let facts = last_event_facts(p);
+
+    vec![zone_line(
+        ZoneSpec {
+            label: "last",
+            label_style: Style::default().fg(theme::DIM).add_modifier(Modifier::BOLD),
+            facts,
+            facts_style: Style::default().fg(theme::DIM),
+            spark: None,
+        },
+        width,
+    )]
+}
+
+/// R4's facts string, without any layout — shared with the Dashboard's lush card
+/// (`SPACE-3`/#33), which renders the same content through `dashboard::zone_row` rather than
+/// this module's `zone_line`. `IDEAS.md`'s `SURF-8` entry is explicit that the two tiers
+/// share the ladder's content ordering and its per-field renderers and **not** its layout
+/// function: a roomy card must stay uniform across a grid column, a focus panel owns a
+/// full-width rect.
+pub(crate) fn last_event_facts(p: &Project) -> String {
     let body = match p.agent.last_event.as_deref() {
         Some(raw) => {
             let mut s = crate::feed::humanize_event(raw);
@@ -741,21 +762,34 @@ fn last_event_lines(p: &Project, width: usize) -> Vec<Line<'static>> {
         }
         None => crate::feed::agent_detail(p),
     };
-    let facts = match p.agent.last_event_at {
+    match p.agent.last_event_at {
         Some(at) => format!("{body} \u{00B7} {}", at.format("%H:%M")),
         None => body,
-    };
+    }
+}
 
-    vec![zone_line(
-        ZoneSpec {
-            label: "last",
-            label_style: Style::default().fg(theme::DIM).add_modifier(Modifier::BOLD),
-            facts,
-            facts_style: Style::default().fg(theme::DIM),
-            spark: None,
-        },
-        width,
-    )]
+/// R7's facts string, without any layout — shared with the lush card, same rule as
+/// `last_event_facts`. `None` for a non-repo, which is what makes the rung absent in the
+/// panel and the row blank on a card that must keep a uniform height.
+pub(crate) fn repo_facts(p: &Project, now: DateTime<Utc>) -> Option<String> {
+    if !p.git.is_repo {
+        return None;
+    }
+    let commits = match (p.git.mine_last_commit_at, p.git.last_commit_at) {
+        (Some(mine), Some(newest)) if mine != newest => format!(
+            "yours {} \u{00B7} newest {}",
+            ago(mine, now),
+            ago(newest, now)
+        ),
+        (_, Some(newest)) => format!("commit {}", ago(newest, now)),
+        (Some(mine), None) => format!("yours {}", ago(mine, now)),
+        (None, None) => "no commits".to_string(),
+    };
+    // The scheme is nine columns saying nothing — every url the sensor produces is https.
+    Some(match p.git.github_url.as_deref() {
+        Some(url) => format!("{commits} \u{00B7} {}", strip_scheme(url)),
+        None => commits,
+    })
 }
 
 /// What an action can do for *this* project, right now.
@@ -1079,24 +1113,8 @@ fn recent_lines(p: &Project, ctx: &FocusCtx, width: usize, rows: u16) -> Vec<Lin
 /// two identical ones. The two-age form is the whole point of the row when they differ:
 /// "someone else pushed here" is otherwise unavailable anywhere in `petri`.
 fn repo_lines(p: &Project, ctx: &FocusCtx, width: usize) -> Vec<Line<'static>> {
-    if !p.git.is_repo {
+    let Some(facts) = repo_facts(p, ctx.now) else {
         return Vec::new();
-    }
-
-    let commits = match (p.git.mine_last_commit_at, p.git.last_commit_at) {
-        (Some(mine), Some(newest)) if mine != newest => format!(
-            "yours {} \u{00B7} newest {}",
-            ago(mine, ctx.now),
-            ago(newest, ctx.now)
-        ),
-        (_, Some(newest)) => format!("commit {}", ago(newest, ctx.now)),
-        (Some(mine), None) => format!("yours {}", ago(mine, ctx.now)),
-        (None, None) => "no commits".to_string(),
-    };
-    // The scheme is nine columns saying nothing — every url the sensor produces is https.
-    let facts = match p.git.github_url.as_deref() {
-        Some(url) => format!("{commits} \u{00B7} {}", strip_scheme(url)),
-        None => commits,
     };
 
     vec![zone_line(
