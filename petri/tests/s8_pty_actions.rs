@@ -36,6 +36,34 @@ fn settle(session: &mut Session) -> Vec<String> {
     )
 }
 
+/// Settle until the grid shows `needle`. Every assertion after a keystroke must go through
+/// this, never bare `settle`: `screen_retry` retries only an all-blank grid, so the frame it
+/// returns can be a well-formed one from before the key was processed. This file measured 15
+/// failures in 24 runs at eight-way concurrency before the conversion — see
+/// `petri/scripts/flake-hunt.sh`.
+fn settle_until(session: &mut Session, needle: &'static str) -> Vec<String> {
+    session.screen_until(
+        90,
+        40,
+        Duration::from_secs(5),
+        Duration::from_millis(300),
+        6,
+        |grid| grid.iter().any(|r| r.contains(needle)),
+    )
+}
+
+/// Settle until `needle` is gone — the counterpart for asserting something disappeared.
+fn settle_until_gone(session: &mut Session, needle: &'static str) -> Vec<String> {
+    session.screen_until(
+        90,
+        40,
+        Duration::from_secs(5),
+        Duration::from_millis(300),
+        6,
+        |grid| !grid.iter().any(|r| r.contains(needle)),
+    )
+}
+
 fn send(session: &mut Session, bytes: &[u8]) {
     session.writer.write_all(bytes).expect("write must succeed");
     session.writer.flush().expect("flush must succeed");
@@ -45,7 +73,7 @@ fn to_browser(home: &std::path::Path) -> Session {
     let mut session = Session::spawn_with_home(&fixture_path("loaded.json"), 90, 40, home);
     settle(&mut session);
     send(&mut session, b"\t");
-    let screen = settle(&mut session);
+    let screen = settle_until(&mut session, "browser");
     assert!(
         screen.iter().any(|r| r.contains("browser")),
         "expected to be on the Browser after Tab, got:\n{}",
@@ -66,9 +94,13 @@ fn action_keys_do_not_fire_while_the_filter_has_focus() {
     let mut session = to_browser(&home);
 
     send(&mut session, b"/");
-    settle(&mut session);
+    settle_until(&mut session, "/");
+    // The assertion below is an ABSENCE ("alpha-01" gone, because `g` filtered it out), and
+    // an absence is satisfied by a frame that has not repainted yet just as well as by the
+    // real thing. So the wait is for the list to have actually emptied — the same fact,
+    // stated positively.
     send(&mut session, b"g");
-    let screen = settle(&mut session);
+    let screen = settle_until_gone(&mut session, "alpha-01");
 
     let body = screen.join("\n");
     assert!(
@@ -96,13 +128,15 @@ fn an_action_on_a_project_with_no_remote_reports_it() {
     let mut session = to_browser(&home);
 
     // alpha-02 is the fixture's first project with `github_url: null`.
+    // Wait for the filter to apply before Enter: selecting from a list that has not
+    // refiltered picks a different project, and the whole test is about which one.
     send(&mut session, b"/alpha-02");
-    settle(&mut session);
+    settle_until(&mut session, "/alpha-02");
     send(&mut session, b"\r");
-    settle(&mut session);
+    settle_until(&mut session, "alpha-02");
 
     send(&mut session, b"o");
-    let screen = settle(&mut session);
+    let screen = settle_until(&mut session, "no remote");
     let body = screen.join("\n");
     assert!(
         body.contains("no remote"),

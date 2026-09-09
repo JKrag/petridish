@@ -37,24 +37,33 @@ fn initial_frame_shows_section_labels() {
     // unattended context, so rather than accept a nonzero flake rate, retry
     // the whole spawn+settle cycle up to 3 times and only fail if it's
     // consistently empty — which would mean a real regression, not this race.
-    let mut first_frame = String::new();
-    for attempt in 1..=3 {
-        let mut session = Session::spawn(&fixture_path("normal.json"), 80, 40);
-        first_frame = session.settle(Duration::from_secs(5), Duration::from_millis(300));
-        session.writer.write_all(b"q").ok();
-        let _ = session.wait_with_timeout(Duration::from_secs(5));
-        if !first_frame.is_empty() {
-            break;
-        }
-        eprintln!("attempt {attempt}/3: empty output (suspected PTY race), retrying");
-    }
-    // normal.json populates every bucket (5 active / 4 in_flight / 4 stale /
-    // 3 cold) — see s5_snapshot.rs's identical assertion for why this is the
-    // one check that actually discriminates S5 from S4's stub.
+    // Waits for the FRAME, on the grid, rather than spawning up to three times and hoping
+    // one of them has painted by the time the quiet window elapses. The old shape retried
+    // only when the output was completely empty — but petri's first bytes need not be a
+    // frame at all (a prefs warning on stderr is enough to make it non-empty), and a
+    // partially painted frame is not empty either. Measured at 1 failure in 24 runs at
+    // eight-way concurrency; see `petri/scripts/flake-hunt.sh`.
+    //
+    // Asserting on the reconstructed grid rather than the raw stream is the other half:
+    // `SPEC.md` §8 names raw substring matching as the root cause of the Python TUI's worst
+    // CI flakiness, and a diffed redraw need not emit a label contiguously.
+    //
+    // normal.json populates every bucket (5 active / 4 in_flight / 4 stale / 3 cold) — see
+    // s5_snapshot.rs's identical assertion for why this is the one check that actually
+    // discriminates S5 from S4's stub. COLD is last on screen, so waiting for it means all
+    // four have been painted.
+    let mut session = Session::spawn(&fixture_path("normal.json"), 80, 40);
+    let first_frame = settle_grid_until(&mut session, 80, 40, |grid| {
+        grid.iter().any(|r| r.contains("COLD"))
+    });
+    session.writer.write_all(b"q").ok();
+    let _ = session.wait_with_timeout(Duration::from_secs(5));
+
+    let body = first_frame.join("\n");
     for label in ["RUNNING", "IN FLIGHT", "STALE", "COLD"] {
         assert!(
-            first_frame.contains(label),
-            "initial frame must show section label {label:?} after 3 attempts, got: {first_frame:?}"
+            first_frame.iter().any(|r| r.contains(label)),
+            "initial frame must show section label {label:?}, got:\n{body}"
         );
     }
 }
