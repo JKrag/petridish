@@ -28,7 +28,7 @@
 //!   selected).
 
 use petridish_core::present;
-use petridish_core::schema::{AgentActivity, Project, Radar, StatusBucket};
+use petridish_core::schema::{AgentActivity, Project, QuotaState, Radar, StatusBucket};
 use ratatui::{
     layout::{Constraint, Layout, Rect},
     style::{Color, Modifier, Style},
@@ -93,9 +93,16 @@ const COLUMN_GUTTER: usize = 2;
 /// → *Typography in monospace* / *Borders*), so text inside the card no longer needs its own
 /// background fill to show selection.
 const ROOMY_CARD_BOX_ROWS: usize = 6;
+/// Extra content rows a **lush** card carries over a roomy one: `last` (R4) and `repo` (R7),
+/// the two rungs of the focus panel's ladder that carry facts the Dashboard shows nowhere
+/// else. `SPACE-3`/#33, and `PROPOSAL-focus-panel.md` §5's "+2 rows per card" bound stated as
+/// a number rather than left implicit. The sparklines widen for free on a wide card
+/// (`agent_sparkline_width_for`), so they are not part of this count.
+const LUSH_EXTRA_ROWS: usize = 2;
+
 /// Indent for a roomy card's `git`/`agent`/path rows relative to its header — shorter than the
 /// pre-border design's 5 spaces since the border itself now provides the card's left edge.
-const ZONE_INDENT: &str = "  ";
+pub(crate) const ZONE_INDENT: &str = "  ";
 
 // The dashboard's truecolor palette lives in `crate::theme` — shared with
 // `browser.rs` so the two screens read as one app. See that module's doc
@@ -164,6 +171,16 @@ pub struct DashboardState {
     pub collapsed: CollapsedState,
     pub visible: Vec<DashRow>,
     pub selected: Option<usize>,
+    /// Is the focus popup open (issue #30, `PLAN-focus-panel.md` T5)?
+    ///
+    /// Popup lifetime lives in the Dashboard's own state rather than in `lib.rs`'s run
+    /// loop, mirroring `BrowserState::detail_popup_open`, so the whole `Space`/`Esc`
+    /// contract is testable without a terminal. It is deliberately *not* a
+    /// `FocusTarget`: the popup follows the cursor (`PROPOSAL-focus-panel.md` §7), so the
+    /// target is derived from `selected` at render time by `focus_target` and never
+    /// cached — a cached index would survive a reload the scanner re-sorted
+    /// (`SPEC.md` §4.3).
+    pub focus_open: bool,
 }
 
 /// Position of a `StatusBucket` in `SECTION_ORDER`. Panics if not found (all
@@ -287,6 +304,7 @@ impl DashboardState {
             collapsed,
             visible: Vec::new(),
             selected: None,
+            focus_open: false,
         };
         state.rebuild(radar);
         state
@@ -454,6 +472,76 @@ impl DashboardState {
         }
     }
 
+    /// What the focus panel is pointed at, derived from the cursor **now**
+    /// (`PLAN-focus-panel.md` T5). Scaffold: `unimplemented!()` until T5.
+    ///
+    /// The Dashboard's cursor visits section headers as well as rows, and a header is a
+    /// stop even when its section is collapsed, so all three `FocusTarget` variants are
+    /// reachable by ordinary `j`/`k`:
+    ///
+    /// - `DashRow::Project(i)` → `FocusTarget::Project(i)`.
+    /// - `DashRow::Header(b)` → `FocusTarget::Section(b, n)` where `n` is that section's
+    ///   **membership** count — the number of rows it would show expanded, which for
+    ///   `RUNNING` is `running_membership` (worktree parents included) and for the other
+    ///   three is the non-foreign `status_bucket` filter. Collapsed or not makes no
+    ///   difference: a collapsed section's header must still be able to say how many
+    ///   projects it is hiding.
+    /// - no selection (empty `visible`) → `FocusTarget::Nothing`.
+    pub fn focus_target(&self, radar: &Radar) -> crate::focus::FocusTarget {
+        // `visible.get`, not `visible[..]`: a reload can shorten the stop sequence under a
+        // held `selected` (`SPEC.md` §4.3), and a panel that panics because the fleet got
+        // smaller is a worse failure than one that renders the empty state for a frame.
+        match self.selected.and_then(|i| self.visible.get(i)) {
+            Some(DashRow::Project(idx)) => crate::focus::FocusTarget::Project(*idx),
+            // `section_members` and not a `status_bucket` filter: RUNNING's membership pulls
+            // in a cold worktree parent whose child is active, and a header must report the
+            // number of rows it would show, collapsed or not.
+            Some(DashRow::Header(bucket)) => crate::focus::FocusTarget::Section(
+                *bucket,
+                Self::section_members(radar, *bucket).len(),
+            ),
+            None => crate::focus::FocusTarget::Nothing,
+        }
+    }
+
+    /// Contextual `Space` (`PROPOSAL-focus-panel.md` §7). Scaffold: `unimplemented!()`
+    /// until T5.
+    ///
+    /// - On a `Header`: unchanged — toggle that section (`toggle_selected`).
+    /// - On a `Project` row: **open or close the focus popup**, and do nothing else. In
+    ///   particular it must not toggle the containing section and must not move the
+    ///   cursor, which is what `Space` on a row does today. That removal of a special
+    ///   case *is* the behaviour change; it is not a side effect of one.
+    ///
+    /// `Enter` is unaffected and keeps its own branch in `lib.rs`.
+    pub fn press_space(&mut self, radar: &Radar) {
+        // Popup-wins, decided in `PLAN-focus-panel.md` §6: §7's table states both "header →
+        // toggle" and "popup open → close it" without saying which outranks the other. One
+        // keypress, one effect — so a `Space` that dismisses the popup must not also
+        // collapse whatever section the cursor happens to be parked on.
+        if self.focus_open {
+            self.focus_open = false;
+            return;
+        }
+        match self.selected.and_then(|i| self.visible.get(i)) {
+            Some(DashRow::Header(_)) => self.toggle_selected(radar),
+            // The behaviour change, and it is a *removal*: today's `Space` on a row reaches
+            // past the row to toggle its containing section and then relocates the cursor.
+            // Opening the popup is all this does now.
+            Some(DashRow::Project(_)) => self.focus_open = true,
+            None => {}
+        }
+    }
+
+    /// `Esc`: close the focus popup if it is open. Returns whether the key was consumed,
+    /// so the caller can fall through to its other `Esc` handling when it was not.
+    /// Scaffold: `unimplemented!()` until T5.
+    pub fn close_focus(&mut self) -> bool {
+        let was_open = self.focus_open;
+        self.focus_open = false;
+        was_open
+    }
+
     /// The `Project` at the current selection, if the current stop is a row
     /// (not a header, and not out of bounds).
     pub fn selected_project<'a>(&self, radar: &'a Radar) -> Option<&'a Project> {
@@ -504,8 +592,15 @@ pub struct SectionPlan {
     pub chrome_rows: usize,
     pub columns: usize,
     pub card_width: usize,
-    /// Physical rows one item occupies: 5 for a roomy RUNNING card, 1 for a compact row.
+    /// Physical rows one item occupies: `card_box_rows + 1` for a RUNNING card (the `+ 1` is
+    /// the gap before the next card in the same column), 1 for a compact row.
     pub item_span: usize,
+    /// `Some(rows)` for a bordered card section and the height of one card's box; `None` for
+    /// a compact-row section. Read by `render_section`, which used to infer roominess by
+    /// comparing `item_span` against a constant — a test that widened the span for the lush
+    /// tier silently flipped the whole section into the compact renderer, which is exactly
+    /// the "renders something plausible but wrong" failure `PLAN-focus-panel.md` §1 is about.
+    pub card_box_rows: Option<usize>,
     pub items_shown: usize,
     /// Grid rows actually rendered (`items_shown` divided across `columns`, rounded up).
     pub grid_rows: usize,
@@ -521,17 +616,24 @@ pub struct SectionPlan {
 /// `references/ecosystem-rust.md`'s testing section: "extracting layout math into a pure
 /// `fn compute_layout(area) -> ...` makes per-size assertions cheap."
 ///
-/// Two things this struct deliberately does NOT carry, both raised in the dashboard redesign
-/// discussion as "keep the door open, don't build it now": a quota-gauge rail (`Radar.quota:
-/// Option<QuotaState>` already exists in the schema; SPEC.md §7 already names it "the most
-/// likely first post-v1 addition") and a >200-col merged Dashboard+Browser pane. Both slot in
-/// the same way when someone actually builds them: carve their `Rect` from `fleet` before the
-/// per-section column math runs (rail from one edge, secondary pane as its own region), which
-/// only touches this function — `render`'s section-drawing loop and `DashboardState`'s cursor
-/// are unaffected either way. Not modeled as `Option<Rect>` fields here because nothing reads
-/// them yet; add them when the first real consumer exists.
+/// This struct deliberately does not carry a >200-col merged Dashboard+Browser pane, raised
+/// in the dashboard redesign discussion as "keep the door open, don't build it now". It slots
+/// in by carving its `Rect` from `fleet` before the per-section column math runs, which only
+/// touches this function — `render`'s section-drawing loop and `DashboardState`'s cursor are
+/// unaffected. Not modeled as an `Option<Rect>` field here because nothing reads it yet.
+///
+/// **The quota-gauge rail this comment used to predict alongside it was built as something
+/// else, and the prediction is retracted rather than left contradicting the built thing**
+/// (`PROPOSAL-focus-panel.md` §6). Quota went into the header (`header_right_group`), not a
+/// rail: a rail permanently spends a column of width on ~13 characters of data, on the one
+/// screen whose whole problem (`SPACE-*`) is that it runs out of room, whereas the header is
+/// already the global-context row and quota costs zero body rows there.
 pub struct DashPlan {
     pub compact_tier: bool,
+    /// The third density tier (`SPACE-3`/#33): RUNNING cards carry `LUSH_EXTRA_ROWS` more
+    /// content rows each. See `plan_layout` for the surplus-priority rule and why this is a
+    /// whole-plan decision rather than a per-section one.
+    pub lush: bool,
     pub fleet_rows: usize,
     pub sections: Vec<SectionPlan>,
     /// Sections that didn't fit even their own header+count — named in the "not shown" summary
@@ -606,7 +708,89 @@ pub fn plan_layout(
     collapsed: CollapsedState,
     feed_events: usize,
 ) -> DashPlan {
-    let width = area.width as usize;
+    plan_layout_at_density(area, radar, collapsed, feed_events, true)
+}
+
+/// `plan_layout` with the lush tier (`SPACE-3`/#33) forced off — the same layout this
+/// function produced before the tier existed.
+///
+/// A seam, not a feature: the tier's contract is *comparative* ("it never costs a project
+/// row"), and the plan a run would have produced without it is otherwise unobservable, so
+/// the one assertion that matters could not be written. Same reason `feed_rows_for` is
+/// public. Nothing in the app calls this with `allow_lush: false`.
+pub fn plan_layout_at_density(
+    area: Rect,
+    radar: &Radar,
+    collapsed: CollapsedState,
+    feed_events: usize,
+    allow_lush: bool,
+) -> DashPlan {
+    let (compact_tier, fleet_rows) = tier_and_rows(area, radar);
+
+    let base = plan_sections(area, radar, collapsed, false);
+    // **The surplus-priority rule** (`PROPOSAL-focus-panel.md` §5, `SPACE-3`/#33). `SPACE-1`'s
+    // feed has deliberately no ceiling and claims every spare row; the lush tier wants the
+    // same rows. Left to whichever code runs first, that is not a design — so the ordering is
+    // stated here: **RUNNING cards get a bounded first claim** (`LUSH_EXTRA_ROWS` per card),
+    // and the feed takes the remainder under its existing `events + 2` rule.
+    //
+    // The bound is what makes that safe. The claim is only accepted if the whole plan comes
+    // out no worse: the same sections present, none newly truncated, and no project row lost
+    // anywhere. On a busy fleet the section is already truncating, the lush attempt truncates
+    // further, and the tier simply does not switch on — so the rows the feed gives up are by
+    // construction rows no project row could have used. The reverse ordering (feed first)
+    // starves #33 exactly when there is most to show.
+    //
+    // Two passes rather than one, because RUNNING growing can push a *later* section off the
+    // screen entirely — a per-section check cannot see that, and it is the failure that would
+    // read as "STALE randomly vanished on a tall terminal".
+    let (sections, skipped, used, lush) = if compact_tier || !allow_lush {
+        (base.0, base.1, base.2, false)
+    } else {
+        let attempt = plan_sections(area, radar, collapsed, true);
+        if no_worse_than(&attempt, &base) {
+            (attempt.0, attempt.1, attempt.2, true)
+        } else {
+            (base.0, base.1, base.2, false)
+        }
+    };
+
+    let feed_rows = feed_rows_for(
+        compact_tier,
+        fleet_rows,
+        used,
+        &sections,
+        &skipped,
+        feed_events,
+    );
+    DashPlan {
+        compact_tier,
+        lush,
+        fleet_rows,
+        sections,
+        skipped,
+        feed_rows,
+    }
+}
+
+/// Did the lush attempt cost anything? Same sections planned, same sections skipped, no
+/// section showing fewer items, and nothing newly truncated.
+fn no_worse_than(
+    attempt: &(Vec<SectionPlan>, Vec<(StatusBucket, usize)>, usize),
+    base: &(Vec<SectionPlan>, Vec<(StatusBucket, usize)>, usize),
+) -> bool {
+    attempt.0.len() == base.0.len()
+        && attempt.1.len() == base.1.len()
+        && attempt
+            .0
+            .iter()
+            .zip(base.0.iter())
+            .all(|(a, b)| a.items_shown >= b.items_shown && a.truncated_remaining.is_none())
+}
+
+/// The compact-tier decision and the fleet's own row budget — shared by both planning passes
+/// so they cannot disagree about how much room there is.
+fn tier_and_rows(area: Rect, radar: &Radar) -> (bool, usize) {
     let elapsed_secs = chrono::Utc::now()
         .signed_duration_since(radar.updated_at)
         .num_seconds()
@@ -623,7 +807,20 @@ pub fn plan_layout(
     let fleet_rows = (area.height as usize)
         .saturating_sub(fixed_rows)
         .saturating_sub(1);
-    let compact_tier = fleet_rows <= COMPACT_TIER_MAX_CONTENT_ROWS;
+    (fleet_rows <= COMPACT_TIER_MAX_CONTENT_ROWS, fleet_rows)
+}
+
+/// One planning pass: every section's geometry at the given density, plus the rows it spent.
+/// Pure and cheap, which is what lets `plan_layout` run it twice and compare.
+#[allow(clippy::type_complexity)]
+fn plan_sections(
+    area: Rect,
+    radar: &Radar,
+    collapsed: CollapsedState,
+    lush: bool,
+) -> (Vec<SectionPlan>, Vec<(StatusBucket, usize)>, usize) {
+    let width = area.width as usize;
+    let (compact_tier, fleet_rows) = tier_and_rows(area, radar);
 
     let mut sections: Vec<SectionPlan> = Vec::new();
     let mut skipped: Vec<(StatusBucket, usize)> = Vec::new();
@@ -667,8 +864,11 @@ pub fn plan_layout(
         // Roomy card physical footprint: 4 content lines + a 2-row border (`ROOMY_CARD_BOX_ROWS`)
         // + a 1-row gap before the next card in the same column. The border itself is now what
         // separates one card from the next (and, via its color, signals selection) — see
-        // `render_section`'s roomy branch.
-        let item_span = if roomy { ROOMY_CARD_BOX_ROWS + 1 } else { 1 };
+        // `render_section`'s roomy branch. A lush card is the same box with `LUSH_EXTRA_ROWS`
+        // more content lines in it.
+        let card_box_rows =
+            roomy.then(|| ROOMY_CARD_BOX_ROWS + if lush { LUSH_EXTRA_ROWS } else { 0 });
+        let item_span = card_box_rows.map_or(1, |rows| rows + 1);
         // IN FLIGHT rows carry their own git-activity sparkline (`compact_row_line`'s
         // `show_git_sparkline`) — a deliberate alignment: IN FLIGHT's default upper bound is 14
         // days (`swab`'s `in_flight` threshold), the same span `GIT_ACTIVITY_WINDOW_DAYS`
@@ -728,27 +928,163 @@ pub fn plan_layout(
             columns,
             card_width,
             item_span,
+            card_box_rows,
             items_shown,
             grid_rows,
             truncated_remaining,
         });
     }
 
-    let feed_rows = feed_rows_for(
-        compact_tier,
-        fleet_rows,
-        used,
-        &sections,
-        &skipped,
-        feed_events,
-    );
-    DashPlan {
-        compact_tier,
-        fleet_rows,
-        sections,
-        skipped,
-        feed_rows,
+    (sections, skipped, used)
+}
+
+/// Where the focus panel goes when it is open (issue #30, `PLAN-focus-panel.md` T5).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FocusPlacement {
+    /// A centred `MECH-1` overlay. The `Rect` is the popup's **outer** rect, border
+    /// included; the panel's content rect is that minus the border.
+    Popup(Rect),
+    /// The terminal is too small for an overlay to mean anything: the panel takes the
+    /// whole frame instead of refusing. `PROPOSAL-focus-panel.md` §10 — this is the payoff
+    /// of one renderer serving both mounts, since it is the `--mini` render with a
+    /// different lifetime, not a new code path.
+    FullScreen,
+}
+
+/// Widest the focus popup grows, however large the terminal is. Past this an "overlay"
+/// stops reading as one — it is a bordered full screen — and the panel's own lines are
+/// short enough that the extra columns buy nothing. 64 leaves the `Repo` rung's 56-column
+/// gate satisfied inside the border, which is the widest thing the panel renders.
+const FOCUS_POPUP_MAX_WIDTH: u16 = 64;
+
+/// Tallest the focus popup grows. See `FOCUS_POPUP_MAX_WIDTH`.
+const FOCUS_POPUP_MAX_HEIGHT: u16 = 24;
+
+/// Below this the overlay is not worth having and `focus_placement` returns `FullScreen`.
+///
+/// These are **`focus::plan_rungs`' `Path` gate (30 × 10) plus the border**, not free
+/// parameters: an overlay earns its place only once its content rect can carry more than
+/// the three unconditional rungs the panel floor guarantees. Tying the switch to a rung
+/// gate rather than to a magic constant is also what reproduces
+/// `PROPOSAL-focus-panel.md` §10's pressure table exactly — 60×20 is a popup (48×16 box,
+/// 46×14 inner) and 48×14 is not (38×11 box, one row short).
+const FOCUS_POPUP_MIN_WIDTH: u16 = 32;
+
+/// See `FOCUS_POPUP_MIN_WIDTH`.
+const FOCUS_POPUP_MIN_HEIGHT: u16 = 12;
+
+/// Decide the focus panel's geometry for a terminal of `area`. Pure — no `Frame`, no
+/// `Buffer`, no state — so the responsive half of T5 is gradeable without a
+/// pseudo-terminal. Scaffold: `unimplemented!()` until T5.
+///
+/// # The rule
+///
+/// **The popup never exceeds 80% of the terminal in either axis**
+/// (`PROPOSAL-focus-panel.md` §10's closing note): past that, "an overlay on the
+/// Dashboard" has stopped meaning anything and the user is better served by the
+/// full-screen render. That ratio, not an absolute size, is what drives the switch — so
+/// when the 80% box no longer leaves a usable panel inside its border, the answer is
+/// `FullScreen`, not a smaller popup.
+///
+/// The switch points are **not** free parameters: §10's pressure table already decides
+/// them terminal size by terminal size, and `s11_focus_mount.rs` asserts exactly those
+/// rows. 120×40, 100×30, 80×24 and 60×20 are popups; 48×14 and everything below is
+/// full-screen. Choosing the constants that produce that table is T5's job; changing which
+/// side of the line a listed size falls on is a spec change, not an implementation detail.
+///
+/// The popup is centred, and its inner content rect is what gets handed to
+/// `focus::plan_rungs` — the mount subtracts its own chrome, per that function's contract.
+pub fn focus_placement(area: Rect) -> FocusPlacement {
+    // The 80% box, floor-divided. Floor and not a rounded ratio: the rule is an upper
+    // bound (`popup.width * 5 <= area.width * 4`), and anything that rounds up violates it
+    // at specific widths. `u32` because `u16 * 4` overflows past 16383 columns — a size no
+    // terminal has, but `Rect` permits it and a wrapping multiply would silently invert the
+    // comparison.
+    let box_w = ((area.width as u32) * 4 / 5) as u16;
+    let box_h = ((area.height as u32) * 4 / 5) as u16;
+
+    // Capped, so a very large terminal gets an overlay rather than a near-full-screen
+    // panel that happens to have a border. The 80% bound still applies above the cap.
+    let width = box_w.min(FOCUS_POPUP_MAX_WIDTH);
+    let height = box_h.min(FOCUS_POPUP_MAX_HEIGHT);
+
+    if width < FOCUS_POPUP_MIN_WIDTH || height < FOCUS_POPUP_MIN_HEIGHT {
+        return FocusPlacement::FullScreen;
     }
+
+    // Centred; an odd remainder lands on the right/bottom, which is what the mount's
+    // centring test allows ("to within a cell").
+    let x = area.x + area.width.saturating_sub(width) / 2;
+    let y = area.y + area.height.saturating_sub(height) / 2;
+    FocusPlacement::Popup(Rect::new(x, y, width, height))
+}
+
+/// Draw the focus panel over an already-rendered Dashboard (issue #30,
+/// `PLAN-focus-panel.md` T5).
+///
+/// Deliberately **not** folded into `render`: that signature is pinned by
+/// `s6_snapshot.rs`/`s9_feed_render.rs` and carries no `Prefs`, which the `ACTIONS` rung
+/// needs. Keeping the overlay a separate call also keeps `MECH-1`'s ordering explicit at
+/// the call site — `Clear` only blanks what is already in the buffer, so this must be the
+/// last thing drawn in the frame, exactly as the Browser's picker/help overlays are.
+///
+/// The panel's own renderer owns everything inside the content rect; this function owns
+/// only the chrome (border, title) and the too-small message, which `focus_lines`
+/// deliberately leaves to the mount (`PROPOSAL-focus-panel.md` §3.5) because only the
+/// mount knows whether the wording should be the popup's or `--mini`'s.
+pub fn render_focus_overlay(frame: &mut ratatui::Frame, area: Rect, ctx: &crate::focus::FocusCtx) {
+    use ratatui::widgets::{Borders, Clear};
+
+    match focus_placement(area) {
+        FocusPlacement::Popup(popup) => {
+            frame.render_widget(Clear, popup);
+            // Default border set (`┌┐└┘─│`), NOT `BorderType::Rounded`: `╭╮╰╯` are not on
+            // `glyph_portability.rs`'s allowlist, and `PLAN-focus-panel.md` §9 makes a new
+            // glyph a stop-and-escalate signal rather than a line to add. `focus.rs`'s
+            // module doc already settled this for the mount.
+            let block = Block::default()
+                .borders(Borders::ALL)
+                .border_style(Style::default().fg(crate::theme::ACCENT))
+                .title(Span::styled(
+                    " Focus ",
+                    Style::default()
+                        .fg(crate::theme::ACCENT)
+                        .add_modifier(Modifier::BOLD),
+                ));
+            let inner = block.inner(popup);
+            frame.render_widget(block, popup);
+            // `FOCUS_POPUP_MIN_*` guarantee `inner` clears the panel floor, so this is
+            // never the empty "too small" return.
+            frame.render_widget(Paragraph::new(crate::focus::focus_lines(inner, ctx)), inner);
+        }
+        FocusPlacement::FullScreen => {
+            frame.render_widget(Clear, area);
+            let lines = crate::focus::focus_lines(area, ctx);
+            if lines.is_empty() {
+                frame.render_widget(Paragraph::new(focus_too_small_lines(area)), area);
+            } else {
+                frame.render_widget(Paragraph::new(lines), area);
+            }
+        }
+    }
+}
+
+/// The below-the-floor message, naming the dimensions the panel needs
+/// (`PROPOSAL-focus-panel.md` §3.5). Two short lines rather than one sentence, because the
+/// terminal that triggers this is by definition too narrow to wrap a sentence in.
+fn focus_too_small_lines(area: Rect) -> Vec<Line<'static>> {
+    let dim = Style::default().fg(crate::theme::DIM);
+    let mut lines = vec![Line::from(Span::styled("focus needs", dim))];
+    lines.push(Line::from(Span::styled(
+        format!(
+            "{}x{}",
+            crate::focus::MIN_FOCUS_WIDTH,
+            crate::focus::MIN_FOCUS_HEIGHT
+        ),
+        dim,
+    )));
+    lines.truncate(area.height as usize);
+    lines
 }
 
 /// Render the Dashboard into `frame`. Per petri/SPEC.md §3.2, and following petripy's actual
@@ -988,7 +1324,11 @@ fn render_section(
 
     if section.items_shown > 0 {
         let columns = section.columns.max(1);
-        let roomy = section.item_span == ROOMY_CARD_BOX_ROWS + 1;
+        // The plan says which renderer this section wants; do not re-derive it from
+        // `item_span`, which is how the lush tier's wider span silently flipped an entire
+        // RUNNING section into the compact renderer during development.
+        let card_box_rows = section.card_box_rows;
+        let roomy = card_box_rows.is_some();
 
         // Row-major assignment (column c gets items c, c+columns, c+2*columns, …) — this is
         // what keeps `j`/`k` walking `DashboardState`'s flat `Vec<DashRow>` in plain reading
@@ -1013,12 +1353,12 @@ fn render_section(
 
         for (c, proj_indices) in column_members.into_iter().enumerate() {
             let col_rect = column_rects[c * 2];
-            if roomy {
+            if let Some(box_rows) = card_box_rows {
                 let inner_width = section.card_width.saturating_sub(2);
                 let mut card_constraints: Vec<Constraint> =
                     Vec::with_capacity(proj_indices.len() * 2);
                 for i in 0..proj_indices.len() {
-                    card_constraints.push(Constraint::Length(ROOMY_CARD_BOX_ROWS as u16));
+                    card_constraints.push(Constraint::Length(box_rows as u16));
                     if i + 1 < proj_indices.len() {
                         card_constraints.push(Constraint::Length(1)); // gap before the next card
                     }
@@ -1039,7 +1379,12 @@ fn render_section(
                     let block = Block::bordered()
                         .border_type(BorderType::Rounded)
                         .border_style(border_style);
-                    let lines = roomy_card_lines(radar, proj_idx, inner_width);
+                    let lines = roomy_card_lines(
+                        radar,
+                        proj_idx,
+                        inner_width,
+                        box_rows > ROOMY_CARD_BOX_ROWS,
+                    );
                     frame.render_widget(Paragraph::new(lines).block(block), card_rects[i * 2]);
                 }
             } else {
@@ -1152,23 +1497,30 @@ fn split_line(
 /// "two similar bars thrown at the wall," per the design review that prompted this file's
 /// rewrite. Label color carries the zone identity; the scale tag is the non-color fallback
 /// so the two rows stay distinguishable under `NO_COLOR` too.
-const ZONE_LABEL_WIDTH: usize = 7;
+pub(crate) const ZONE_LABEL_WIDTH: usize = 7;
 
 /// Parameters for `zone_row` — bundled into a struct (rather than nine positional
 /// arguments) purely to keep the call sites in `roomy_card_lines` readable and to stay
 /// under clippy's too-many-arguments threshold.
-struct ZoneRowSpec {
-    indent: &'static str,
-    label: &'static str,
-    label_style: Style,
-    facts: String,
-    facts_style: Style,
-    sparkline: String,
-    spark_style: Style,
-    tag: String,
+///
+/// `pub(crate)` (as are `zone_row`, `sparkline_glyphs`, `agent_sparkline_width_for`,
+/// `silence_tier_color`, `commit_ago`, `humanize_secs`, `abbreviate_home` and the two zone
+/// constants) so `focus.rs` can render the same `git`/`agent` rows the roomy card does
+/// instead of growing a second, quietly-diverging copy of them — the focus panel's R2/R3
+/// rungs are the card's zone rows, shown at a different size (`PROPOSAL-focus-panel.md` §2
+/// marks them "shipped"). Visibility only: no behaviour, signature or call site changed.
+pub(crate) struct ZoneRowSpec {
+    pub(crate) indent: &'static str,
+    pub(crate) label: &'static str,
+    pub(crate) label_style: Style,
+    pub(crate) facts: String,
+    pub(crate) facts_style: Style,
+    pub(crate) sparkline: String,
+    pub(crate) spark_style: Style,
+    pub(crate) tag: String,
 }
 
-fn zone_row(spec: ZoneRowSpec, width: usize) -> Line<'static> {
+pub(crate) fn zone_row(spec: ZoneRowSpec, width: usize) -> Line<'static> {
     let label_padded = format!("{:<ZONE_LABEL_WIDTH$}", spec.label);
     let left_len =
         spec.indent.chars().count() + label_padded.chars().count() + spec.facts.chars().count();
@@ -1191,20 +1543,117 @@ fn zone_row(spec: ZoneRowSpec, width: usize) -> Line<'static> {
 /// colors on just the app name) plus the heavy rule is what makes this read
 /// as a header at a glance, matching petripy's `_header` — a single plain
 /// line of text was the thing that "nearly disappears into the rest."
+/// The header's leading label, whose width the right group has to work around. A constant
+/// rather than a literal in two places, since the elision ladder's whole job is knowing
+/// exactly how many columns it is not allowed to use.
+const HEADER_TITLE: &str = " petri · dashboard ";
+
+/// `5h 16% · 7d 1%` — the #29 MVP, display-only (`PROPOSAL-focus-panel.md` §6). `swab`'s
+/// quota sensor already populates `Radar.quota` on every scan; nothing here reads a file.
+///
+/// `compressed` is the ladder's second-to-last rung: `16%/1%`, the same two numbers without
+/// their labels. A **lone** half keeps its label even when compressed — `16%/1%` is only
+/// unambiguous because both halves are present in a fixed order, and at six columns the
+/// labelled single form costs nothing extra anyway.
+///
+/// `None` (no `QuotaState` at all, or one whose every percentage degraded to `None`) means
+/// **omit the segment**, never render `0%`. A zero reads as "you have used nothing", which
+/// is the opposite of "we do not know" — and field-by-field degradation is the sensor's
+/// documented behaviour, so the half-populated case is real rather than defensive.
+///
+/// `context_used_pct` is deliberately not rendered anywhere: it is parsed from a single
+/// `~/.claude/last-status.json` owned by whichever session wrote it last, so it is
+/// attributable neither to the fleet nor to any project (`DATA-5`).
+pub fn quota_segment(quota: Option<&QuotaState>, compressed: bool) -> Option<String> {
+    let q = quota?;
+    match (q.five_hour_used_pct, q.seven_day_used_pct) {
+        (Some(five), Some(seven)) if compressed => Some(format!("{five}%/{seven}%")),
+        (Some(five), Some(seven)) => Some(format!("5h {five}% · 7d {seven}%")),
+        (Some(five), None) => Some(format!("5h {five}%")),
+        (None, Some(seven)) => Some(format!("7d {seven}%")),
+        (None, None) => None,
+    }
+}
+
+/// The header's right-hand group, already elided to fit beside `HEADER_TITLE` in `width`
+/// columns.
+///
+/// **The ladder is new machinery.** Before quota, this group was built unconditionally and
+/// handed to `split_line`, which pads to at least one space and never truncates — so a
+/// too-long group ran off the frame and `Paragraph` clipped it, taking the title's own
+/// right edge with it. Adding a fifth segment to a line that already overflowed at ~55
+/// columns made that unacceptable rather than merely untidy.
+///
+/// Order, most-droppable first (`PROPOSAL-focus-panel.md` §6):
+///
+/// ```text
+/// N projects · 5h 16% · 7d 1% · 14:22 · scan 0.3s
+/// N projects · 5h 16% · 7d 1% · 14:22               -- scan goes first: pure diagnostics
+/// 5h 16% · 7d 1% · 14:22                            -- the count is on screen already
+/// 5h 16% · 7d 1%                                    -- quota outranks the clock
+/// 16%/1%                                            -- labels, not numbers
+/// (nothing)
+/// ```
+///
+/// **Quota outranking the clock is the deliberate call**: a clock is available everywhere
+/// else on the machine, and the burn number is the thing you opened this screen to keep half
+/// an eye on. With `Radar.quota: None` the ladder collapses to exactly the group this
+/// header rendered before the feature, which is what keeps every pre-existing header
+/// assertion an assertion about the old behaviour rather than silently about the new one.
+///
+/// Returns `""` when not even the compressed quota fits; the caller then draws the title
+/// alone rather than a stray trailing space.
+pub fn header_right_group(
+    radar: &Radar,
+    now: &chrono::DateTime<chrono::Utc>,
+    scan_secs: f64,
+    width: usize,
+) -> String {
+    let projects = format!("{} projects", radar.projects.len());
+    let clock = now.format("%H:%M").to_string();
+    let scan = format!("scan {scan_secs:.1}s");
+    let quota_full = quota_segment(radar.quota.as_ref(), false);
+    let quota_short = quota_segment(radar.quota.as_ref(), true);
+
+    let join = |parts: &[Option<&str>]| -> String {
+        parts
+            .iter()
+            .filter_map(|p| *p)
+            .collect::<Vec<_>>()
+            .join(" · ")
+    };
+    let q = quota_full.as_deref();
+    let rungs = [
+        join(&[Some(&projects), q, Some(&clock), Some(&scan)]),
+        join(&[Some(&projects), q, Some(&clock)]),
+        join(&[q, Some(&clock)]),
+        join(&[q]),
+        quota_short.clone().unwrap_or_default(),
+    ];
+
+    // A rendered rung costs its own columns plus the trailing space `header_lines` appends
+    // and the one pad column `split_line` guarantees between the halves.
+    let budget = width.saturating_sub(HEADER_TITLE.chars().count() + 2);
+    rungs
+        .into_iter()
+        .find(|rung| !rung.is_empty() && rung.chars().count() <= budget)
+        .unwrap_or_default()
+}
+
 fn header_lines(
     radar: &Radar,
     now: &chrono::DateTime<chrono::Utc>,
     scan_secs: f64,
     width: usize,
 ) -> Vec<Line<'static>> {
-    let right = format!(
-        "{} projects · {} · scan {scan_secs:.1}s",
-        radar.projects.len(),
-        now.format("%H:%M")
-    );
+    let right = header_right_group(radar, now, scan_secs, width);
     let title = split_line(
-        " petri · dashboard ".to_string(),
-        format!("{right} "),
+        HEADER_TITLE.to_string(),
+        if right.is_empty() {
+            String::new()
+        } else {
+            format!("{right} ")
+        },
         width,
         Style::default()
             .fg(Color::Black)
@@ -1354,7 +1803,7 @@ fn section_header_line(
 /// glyph *allowlist* (petri/SPEC.md §4.2) is a separate concern — provenance
 /// is a real macOS `wcwidth` bug, not the planning-doc caution this color
 /// rule used to be — and this palette choice doesn't relax or affect it.
-fn silence_tier_color(secs: i64) -> Color {
+pub(crate) fn silence_tier_color(secs: i64) -> Color {
     // Reuses the canonical Working/Recent/Idle thresholds
     // (`AGENT_WORKING_MAX_S` = 90s, `AGENT_RECENT_MAX_S` = 30m) rather than a
     // separate set of cutoffs invented for color alone — one silence
@@ -1448,7 +1897,18 @@ fn compact_running_row_line(
 /// wraps these 4 lines in a `Block` whose border color carries the selection signal, so nothing
 /// in here needs to change when a card is selected; that's what fixed the ragged
 /// background-only-under-some-spans highlight the border replaced.
-fn roomy_card_lines(radar: &Radar, proj_idx: usize, card_width: usize) -> Vec<Line<'static>> {
+/// A RUNNING card's content lines. `lush` (`SPACE-3`/#33) appends the focus panel's R4 and
+/// R7 rungs — the agent's last event, and the repository facts nothing else on the Dashboard
+/// shows. The *content* comes from `focus`'s own per-field renderers (`last_event_facts`,
+/// `repo_facts`) and the *layout* does not: `IDEAS.md`'s `SURF-8` entry is explicit that a
+/// roomy card must stay uniform across a grid column while a focus panel owns a full-width
+/// rect, so the facts land in this module's `zone_row` rather than `focus`'s `zone_line`.
+fn roomy_card_lines(
+    radar: &Radar,
+    proj_idx: usize,
+    card_width: usize,
+    lush: bool,
+) -> Vec<Line<'static>> {
     let p = &radar.projects[proj_idx];
     let waiting = is_waiting(p); // `MECH-5` — see `compact_running_row_line`.
     let glyph = if waiting {
@@ -1572,7 +2032,35 @@ fn roomy_card_lines(radar: &Radar, proj_idx: usize, card_width: usize) -> Vec<Li
     let display_path = abbreviate_home(&p.path);
     let path_row = Line::from(Span::styled(format!("{ZONE_INDENT}{display_path}"), dim));
 
-    vec![header, git_row, agent_row, path_row]
+    let mut lines = vec![header, git_row, agent_row, path_row];
+    if lush {
+        let plain = |label: &'static str, facts: String| {
+            zone_row(
+                ZoneRowSpec {
+                    indent: ZONE_INDENT,
+                    label,
+                    label_style: zone_label_style(theme::DIM),
+                    facts,
+                    facts_style: dim,
+                    // No sparkline on either row: both are single facts, and a third bar in
+                    // a card that already carries two would read as decoration.
+                    sparkline: String::new(),
+                    spark_style: dim,
+                    tag: String::new(),
+                },
+                card_width,
+            )
+        };
+        lines.push(plain("last", crate::focus::last_event_facts(p)));
+        // A non-repo has no R7 facts, and the card's height is fixed by the section's
+        // `item_span` — so the row goes blank rather than being dropped (which would
+        // misalign every card below it) or filled with an invented value.
+        lines.push(match crate::focus::repo_facts(p, chrono::Utc::now()) {
+            Some(facts) => plain("repo", facts),
+            None => Line::from(""),
+        });
+    }
+    lines
 }
 
 /// Unicode block elements U+2581-2588 ("Block Elements") -- each a single narrow cell per
@@ -1592,7 +2080,7 @@ const SPARKLINE_WIDTH: usize = 20;
 /// the trailing scale tag) is subtracted first, then clamped to `[SPARKLINE_WIDTH,
 /// AGENT_ACTIVITY_WINDOW]` so a narrow card still gets a legible sparkline and a very wide one
 /// doesn't ask for more samples than the ring actually keeps.
-fn agent_sparkline_width_for(card_width: usize) -> usize {
+pub(crate) fn agent_sparkline_width_for(card_width: usize) -> usize {
     let overhead = ZONE_INDENT.len() + ZONE_LABEL_WIDTH + 20 /* minimal facts */ + 2 /* gap */ + 4 /* tag */;
     card_width.saturating_sub(overhead).clamp(
         SPARKLINE_WIDTH,
@@ -1611,7 +2099,7 @@ fn agent_sparkline_width_for(card_width: usize) -> usize {
 /// `width = SPARKLINE_WIDTH`) and the git daily-commits sparkline (`p.git.daily_commits`,
 /// `width = GIT_ACTIVITY_WINDOW_DAYS`) -- same visual language, deliberately different colors
 /// at the call site so the two timelines stay visually distinguishable.
-fn sparkline_glyphs(samples: &[u32], width: usize) -> String {
+pub(crate) fn sparkline_glyphs(samples: &[u32], width: usize) -> String {
     let start = samples.len().saturating_sub(width);
     let window = &samples[start..];
     let max = window.iter().copied().max().unwrap_or(0);
@@ -1745,7 +2233,7 @@ fn footer_line() -> Line<'static> {
 /// Format a past timestamp as `"Xs ago"` / `"Xm ago"` / `"Xh ago"` / `"Xd ago"`.
 /// Future timestamps (a clock-skew edge case, not expected in practice) clamp
 /// to zero rather than printing a negative duration.
-fn commit_ago(dt: chrono::DateTime<chrono::Utc>) -> String {
+pub(crate) fn commit_ago(dt: chrono::DateTime<chrono::Utc>) -> String {
     let secs = chrono::Utc::now()
         .signed_duration_since(dt)
         .num_seconds()
@@ -1754,7 +2242,7 @@ fn commit_ago(dt: chrono::DateTime<chrono::Utc>) -> String {
 }
 
 /// Format a duration in seconds to "3m", "1h", "6d", or "Xs".
-fn humanize_secs(secs: u64) -> String {
+pub(crate) fn humanize_secs(secs: u64) -> String {
     if secs < 60 {
         format!("{secs}s")
     } else if secs < 3600 {
@@ -1768,7 +2256,7 @@ fn humanize_secs(secs: u64) -> String {
 
 /// Abbreviate `$HOME/...` to `~/...` for display. Returns the input unchanged
 /// when `$HOME` is unset or the path doesn't start with it.
-fn abbreviate_home(path: &str) -> String {
+pub(crate) fn abbreviate_home(path: &str) -> String {
     if let Ok(home) = std::env::var("HOME")
         && let Ok(p) = std::path::Path::new(path).strip_prefix(&home)
     {

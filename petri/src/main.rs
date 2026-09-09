@@ -1,20 +1,39 @@
-//! Optional first positional arg overrides the state-file path (test hook,
-//! mirrors `swab`'s `--state` global flag in spirit though not in exact form —
-//! kept a plain positional rather than pulling in `clap` as a dependency for one
-//! flag; petri/SPEC.md §10 does not list `clap` among petri's dependencies).
+//! Argument handling lives in `petri::parse_args`, not here (issue #31,
+//! `PLAN-focus-panel.md` T7): integration tests can only reach the lib crate,
+//! and the argv contract is genuinely ambiguous — `petri`'s first positional is
+//! the state-file path, a documented test hook the PTY suite depends on, while
+//! `--mini` also wants an operand, and there is no `clap` to arbitrate
+//! (petri/SPEC.md §10 does not list it). `parse_args`' doc comment is the
+//! contract; `petri/tests/s12_mini_resolve.rs` asserts it case by case.
 fn main() -> std::io::Result<()> {
-    if std::env::args()
-        .nth(1)
-        .is_some_and(|a| a == "--version" || a == "-V")
-    {
+    let argv: Vec<String> = std::env::args().skip(1).collect();
+    let args = match petri::parse_args(&argv) {
+        Ok(a) => a,
+        Err(msg) => {
+            eprintln!("petri: {msg}");
+            std::process::exit(2);
+        }
+    };
+
+    if args.version {
         println!("petri {}", env!("CARGO_PKG_VERSION"));
         std::process::exit(0);
     }
 
-    let state_path = std::env::args()
-        .nth(1)
-        .map(std::path::PathBuf::from)
-        .unwrap_or_else(petri::default_state_path);
-    let code = petri::run(&state_path)?;
+    let state_path = args.state_path.unwrap_or_else(petri::default_state_path);
+
+    let code = match args.mini {
+        // `current_dir` is read here and passed down, rather than inside
+        // `resolve_mini`, per CLAUDE.md's parameter-over-environment rule — it
+        // is what makes the resolution testable without touching process-global
+        // state. A shell that has deleted the cwd out from under us degrades to
+        // the empty path, which resolves to no project and prints the ordinary
+        // not-a-project message.
+        Some(target) => {
+            let cwd = std::env::current_dir().unwrap_or_default();
+            petri::run_mini(&state_path, &target, &cwd)?
+        }
+        None => petri::run(&state_path)?,
+    };
     std::process::exit(code as i32);
 }

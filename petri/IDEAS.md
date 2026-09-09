@@ -33,18 +33,22 @@ anything.
 | `ACT-2` | `f`/`y`/`s`/`?` (+ stretch `c`) → issue [#27](https://github.com/JKrag/petridish/issues/27); `t` → issue [#28](https://github.com/JKrag/petridish/issues/28) |
 | `ACT-5` | Fleet-scoped actions on the Dashboard, not just project-scoped ones — needs more discussion before it's issue-ready |
 | `ACT-6` | Multi-select and bulk action |
-| `ACT-7` | Detail pane shows affordances, not just facts → issue [#32](https://github.com/JKrag/petridish/issues/32) |
+| `ACT-7` | Detail pane shows affordances, not just facts — shipped for the Dashboard popup and `--mini` (#32); the Browser's own pane still shows the fact sheet |
 | `ACT-9` | Target-availability should read as a dimmed affordance, not a transient notice |
 | `SPACE-2` | Auto-expand STALE/COLD into leftover room |
-| `SPACE-3` | A density tier above roomy, for very tall terminals → issue [#33](https://github.com/JKrag/petridish/issues/33) |
 | `SPACE-4` | Make "truncate, don't scroll" height-conditional |
 | `SURF-1` | A timeline/history screen across the fleet |
 | `SURF-2` | Native notifications on state transitions — unblocked now that `MECH-5` exists, needs more discussion before it's issue-ready |
 | `SURF-3` | Session manager for tmux/zellij → issue [#28](https://github.com/JKrag/petridish/issues/28) (merged with `ACT-2`'s `t`) |
-| `SURF-4` | Quota/token pane, plus a key to a dedicated tool → issue [#29](https://github.com/JKrag/petridish/issues/29) |
+| `SURF-4` | Quota/token pane, plus a key to a dedicated tool → issue [#29](https://github.com/JKrag/petridish/issues/29); the 5h/7d header segment shipped, the reset countdown and the tool hand-off did not |
 | `SURF-5` | `petri dash --once` |
-| `SURF-6` | A "project detail" popup on the Dashboard → issue [#30](https://github.com/JKrag/petridish/issues/30) |
-| `SURF-7` | A minimal `petri --mini` single-project screen → issue [#31](https://github.com/JKrag/petridish/issues/31) |
+| `SURF-8` | **DONE** — the focus panel shipped; what stays open is its list of deferred rungs, below |
+| `SPACE-6` | An `icons` tier (unicode / Nerd Font) behind a `glyph::` indirection — buys horizontal room |
+| `DATA-1` | git ahead/behind vs upstream |
+| `DATA-2` | PR / CI state for the branch — network seam, argue on its own |
+| `DATA-3` | stash count / unpushed-commit count |
+| `DATA-4` | per-session token usage |
+| `DATA-5` | per-project context-window percentage — the honest version of `ctx%` |
 
 ---
 
@@ -164,10 +168,18 @@ Mark several projects, then apply one action to all of them (rescan, run a comma
 each). Depends on `ACT-1`; only interesting once single-target actions exist.
 
 ### ACT-7 — Detail pane shows affordances, not just facts
-Tracked as issue [#32](https://github.com/JKrag/petridish/issues/32). Follows from
-`FRAME-2`: if petri is a router, the Browser's detail pane should be mostly *"here is
-what you can do with this project"* rather than a static fact sheet. This changes the
-pane's whole design and should be decided before investing more in its current layout.
+**Partly done** (slice 8) — the idea shipped, on the two surfaces `SURF-8` built: the focus
+panel's actions rung resolves each registry action against *this* project and renders
+`e edit nvim` live, `o remote ─ no url` dimmed-with-a-reason, and a missing tool not at all
+(`SPEC.md` §3.3). That is `FRAME-2`'s "here is what you can do with this project", and it is
+what the Dashboard popup and `--mini` now show.
+
+**Still open where the idea started: the Browser's own detail pane.** Re-pointing its
+`Space` popup at the panel breaks `s5_snapshot.rs`'s detail-fields-at-60×10 assertion by
+construction — the panel's `repo` rung gates at `(56, 28)`, and that assertion is issue
+#35's reason for existing — so both the popup and the inline pane keep the fact sheet.
+Issue [#32](https://github.com/JKrag/petridish/issues/32) closed for what shipped; the
+re-point is tracked as its own follow-up.
 
 ### ACT-8 — First-run tool picker popup
 **DONE** (slice 1) — `petri/src/picker.rs` + `[tools]` in `prefs.rs`: pops a picker only
@@ -215,9 +227,10 @@ With 20 spare rows, spend them; re-collapse when the room goes away. Must not fi
 user's explicit toggle.
 
 ### SPACE-3 — A third density tier *above* roomy
-Tracked as issue [#33](https://github.com/JKrag/petridish/issues/33). Symmetric to the
-existing compact/roomy switch: on tall terminals, more sparkline history, more fields per
-card, bigger cards.
+**DONE** (slice 8) — `dashboard::plan_layout`'s two-pass lush tier: RUNNING cards gain the
+focus panel's `last` and `repo` rows on a tall terminal, bounded by a whole-plan check that
+the extra rows cost no project row. The rule ordering it against `SPACE-1`'s feed is now
+`SPEC.md` §3.2's "surplus priority". Full reasoning: `IDEAS_LOG.md` slice 8.
 
 ### SPACE-4 — Make "truncate, do not scroll" height-conditional
 The rule exists so a glance surface can't be scrolled into a state where it hides the
@@ -253,10 +266,16 @@ daily-useful — but which multiplexers to support (tmux, zellij, herdr, …) an
 abstraction needs discussion before implementation.
 
 ### SURF-4 — Quota / token pane, plus a key to a dedicated tool
-Tracked as issue [#29](https://github.com/JKrag/petridish/issues/29). `SPEC.md` §7
-already lists quota bars as the most likely post-v1 addition. `FRAME-2` says: ship a
-minimal in-house bar *and* bind a key to whichever token TUI the user prefers, via the
-same registry.
+**Half done** (slice 8) — the in-house half shipped, as a header segment rather than a pane
+or a bar: `5h 16% · 7d 1%` in both the Dashboard's and `--mini`'s header, with an elision
+ladder (`SPEC.md` §3.2/§3.4). A *pane* would have spent body rows on a fleet-wide fact, and a
+*rail* a column of width, on the one screen whose whole problem is running out of room.
+
+Still open on issue [#29](https://github.com/JKrag/petridish/issues/29): the **reset
+countdown** (`five_hour_resets_at`/`seven_day_resets_at` are in the schema and unrendered),
+and `FRAME-2`'s other half — a key bound to whichever token TUI the user prefers, via the
+same registry. `DATA-5` remains the honest per-project `ctx%`; `context_used_pct` is
+deliberately rendered nowhere.
 
 ### SURF-5 — `petri dash --once`
 Also already deferred in `SPEC.md` §7: render one frame to an off-screen buffer, print,
@@ -264,18 +283,92 @@ exit — pipeable into a tmux status line. Cheap once the off-screen render exis
 good "look how it composes" line in a public announcement.
 
 ### SURF-6 — A "project detail" popup on the Dashboard
-Tracked as issue [#30](https://github.com/JKrag/petridish/issues/30). Expand a card in
-place to show bigger and better details, plus the action keys that are live for that
-project. Show bigger sparklines or other metrics, and make the Dashboard feel like a
-*dashboard* rather than a static list. Should allow the user to "focus" on a project
-without leaving the Dashboard, and to act on it without going to the Browser.
+**DONE** (slice 8) — `Space` on a project row opens the focus panel as a `MECH-1` overlay
+(`SPEC.md` §3.2/§3.3), falling back to a full-screen render when the terminal is too small
+for an overlay to earn its place. Design folded into `SURF-8`. Full reasoning:
+`IDEAS_LOG.md` slice 8.
 
 ### SURF-7 — A minimal "run" screen for a single project
-Tracked as issue [#31](https://github.com/JKrag/petridish/issues/31). Basically a
-`petri --mini` mode: one project, one screen, no list. Split your terminal, so you have a
-small pane in the corner, run petri --mini, and have a live view of the run currently on
-your screen, i.e. in this terminal window/tab. This is a natural extension of `SURF-5`
-and `SURF-6`, and it is a good candidate for a demo GIF.
+**DONE** (slice 8) — `petri --mini` (`SPEC.md` §3.4): one project, one screen, resolved from
+the cwd or pinned by path or name, down to a 24×6 floor. Design folded into `SURF-8`. Full
+reasoning: `IDEAS_LOG.md` slice 8.
+
+### SURF-8 — The focus panel: one renderer behind SURF-6, SURF-7 and ACT-7
+**DONE** (slice 8) — `petri/src/focus.rs`: one pure `focus_lines()` rendering an ordered
+content ladder sized to whatever `Rect` it gets, mounted twice — a `MECH-1` popup over the
+Dashboard (`SURF-6`/#30) and the whole screen (`SURF-7`/#31). `SPEC.md` §3.3 is now
+authoritative; `petri/PROPOSAL-focus-panel.md` and `PLAN-focus-panel.md` are the design and
+the build record. Full reasoning: `IDEAS_LOG.md` slice 8.
+
+**The third mount was dropped, and that is the one scope change worth knowing.** Re-pointing
+the Browser's `Space` popup at the panel (`ACT-7`/#32) would break `s5_snapshot.rs`'s
+assertion that the popup reaches detail-only fields at 60×10 — issue #35's whole reason for
+existing — because the panel's `repo` rung gates at `(56, 28)`. Both the Browser's popup and
+its inline detail pane keep the fact sheet; the re-point is a follow-up issue.
+
+`SPACE-3`/#33's lush tier shares the ladder's *content ordering* and the per-field renderers
+(`last_event_facts`, `repo_facts`), deliberately **not** its layout function — a roomy card
+must stay uniform across a grid column, a focus panel owns a full-width rect.
+
+**Rungs deliberately deferred out of the first pass**, kept here so they are not lost:
+
+- **The full `agent_activity` ring** (60 samples ≈ 1h; cards show ~20). The width-scaling
+  sparkline already recovers most of this, and the oldest samples are the least legible part.
+- **The full 14-day `daily_commits`** un-elided — the card already shows all 14 days.
+- **The worktree family via `parent_path`** (ladder rung R8): siblings and their buckets,
+  reconstructible today only by eye across the Browser list. Real value, but it needs a
+  rollup design of its own, and issue #1's categorisation work will touch the same code.
+- **`category`** — untouched by any surface today; belongs with #1, not here.
+
+### SPACE-6 — An `icons` tier, behind a `glyph::` indirection
+Filed under `SPACE-*` although it buys *horizontal* room rather than vertical — that is the
+scarce axis in `SURF-7`'s corner pane: `` is one cell where `master` is six. The blocker is
+not `SPEC.md` §4.2's allowlist (an entry is one line plus a reason, and the gate proves the
+width automatically) — it is that **no terminal exposes "a Nerd Font is active" as a
+queryable signal**, so there is nothing to detect. The whole ecosystem is opt-in: eza's
+`--icons=always|automatic|never`, lazygit's version-pinned `gui.nerdFontsVersion` (v3 *moved*
+the Material Design Icons codepoints), starship's three named presets.
+
+Shape: an `icons` key in `petri.toml` (`"none"` default / `"unicode"` / `"nerdfont-v3"`) plus
+a `glyphs` module so render sites ask for `glyph::branch()` / `glyph::agent(kind)` rather than
+embedding codepoints — the same indirection `theme.rs` already gives the palette, and what
+makes a per-agent glyph (claude-code vs copilot) possible at all.
+
+The trap to design around: a Nerd Font codepoint sits in the Private Use Area, where
+`unicode-width` reports `Some(1)`. It would **pass** the portability gate while rendering as
+a blank on a machine without the font — exactly the silent-blank failure §4.2 exists to
+prevent. Hence explicit opt-in: the user asserting they have the font is the only signal that
+exists.
+
+---
+
+## 4b. Facts nobody collects yet (`DATA-*`)
+
+A different axis from `MECH`/`ACT`/`SPACE`/`SURF`: those are things `petri` could *do* with
+what it already has. These are facts simply not in `projects.json`, so each one is a `swab`
+sensor change — a crate boundary and a scan-tick cost, not a frontend tweak.
+
+### DATA-1 — git ahead/behind vs upstream
+A `gix` revwalk against the tracking branch. No network, no new dependency, and it lands
+straight in `SURF-8`'s otherwise-thin `repo` rung. The most valuable of this group.
+
+### DATA-2 — PR / CI state for the branch
+Nice to have, and it stretches the seam hardest: it would be the first thing making `swab
+scan`'s latency depend on a network round-trip, on a 60s timer, per project. If built, it
+probably wants its own cadence and its own cache rather than a slot in the scan tick.
+
+### DATA-3 — Stash count, unpushed-commit count
+Cheap once `DATA-1`'s revwalk exists.
+
+### DATA-4 — Per-session token usage
+
+### DATA-5 — Per-project context-window percentage
+`QuotaState::context_used_pct` exists, but it is parsed from `~/.claude/last-status.json`'s
+`context_window` — a single file owned by whichever session wrote it last. So today's value
+is neither fleet-wide nor attributable to any particular project, and rendering it as
+`ctx 13%` next to one project is a lie whenever two agents are running (the situation
+petridish exists for). The honest version reads each transcript's own usage records and lands
+on `AgentState`, next to `session_id` — not in a global header.
 
 ---
 
@@ -288,6 +381,14 @@ Collected here because they are easy to trip over while building the above.
   machine-dependent if that is honestly better. What it may not do is advertise a key
   that does nothing: a key whose tool isn't installed should be resolved at the
   registry level (`ACT-1`/`ACT-3`) rather than by letting the footer lie.
+- **The glyph gate does not see ratatui-generated border characters.**
+  `tests/glyph_portability.rs` scans *string literals* in the listed render modules, but
+  `picker.rs` and `help.rs` draw their popups with `Borders::ALL`, whose default glyph set is
+  `┌ ┐ └ ┘ ─ │` — and `┌ ┐ └ ┘` are not in `ALLOWED` today. They are on screen, unreviewed,
+  in exactly the way `feed.rs`'s `→` and `picker.rs`'s `▌` were. Same class of hole, found in
+  review rather than by the gate. Worth its own issue: either add the four entries and note
+  that widget-generated glyphs need manual registration, or teach the gate about the border
+  sets the code actually asks for.
 - **The PTY test layer is the flakiest layer in the repo** by `SPEC.md` §8's own account.
   A `MECH-2` test must shell out to something trivial (`true`, or a three-line script) —
   never to `serie` or any third-party TUI.

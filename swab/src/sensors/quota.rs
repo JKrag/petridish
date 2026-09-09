@@ -20,10 +20,18 @@ const MAX_RESET_HORIZON_S: i64 = 30 * 24 * 3600;
 ///
 /// A naive (no-tz) timestamp is assumed UTC. An implausible reset timestamp (more than a
 /// 30-day horizon out) is dropped (`None`) rather than trusted.
-pub fn read_quota(path: &Path) -> Option<QuotaState> {
+///
+/// **`now` is a parameter, not a `Utc::now()` read.** Every timestamp this module keeps or
+/// drops is decided by distance from `now` (`MAX_RESET_HORIZON_S`), so a self-read clock
+/// makes the result a function of the wall clock and every test of it a latent flake — the
+/// same reasoning `petri/SPEC.md` §8 gives for injecting a fixed clock into the PTY layer,
+/// and the same "prefer a parameter over an environment read" rule `cmd_scan`/`cmd_doctor`/
+/// `load_config` already follow for `home`. This is not hypothetical: two tests here pinned
+/// a literal `"2026-08-09T06:32:11Z"` against `Utc::now()` and passed for thirty days before
+/// failing on 2026-09-08, when that date crossed the horizon.
+pub fn read_quota(path: &Path, now: DateTime<Utc>) -> Option<QuotaState> {
     let text = std::fs::read_to_string(path).ok()?;
     let payload: serde_json::Value = serde_json::from_str(&text).ok()?;
-    let now = Utc::now();
     parse_value(&payload, now)
 }
 
@@ -168,12 +176,32 @@ mod tests {
         fh.write_all(text.as_bytes()).expect("write bytes");
     }
 
+    /// The single pinned "now" every test in this module runs against.
+    ///
+    /// Nothing here may call `Utc::now()`. Every field this module keeps or drops is decided
+    /// by distance from `now`, so a wall-clock read turns each test into a bomb with a fuse
+    /// as long as `MAX_RESET_HORIZON_S` — which is exactly what happened: two tests pinned a
+    /// literal `"2026-08-09T06:32:11Z"` against `Utc::now()`, passed for thirty days, and
+    /// began failing on 2026-09-08 with no code change. A third (`read_quota_full_round_trip`)
+    /// degraded more quietly, its `resets_at` fixtures silently falling out of horizon so the
+    /// test kept passing while checking less than it claimed.
+    ///
+    /// This instant is chosen to sit inside the horizon of every literal fixture already in
+    /// this file (the `2026-08-09`/`2026-08-11` epochs and the `06:32:11Z` string), so the
+    /// fixtures did not have to be rewritten to become deterministic.
+    fn fixed_now() -> DateTime<Utc> {
+        DateTime::parse_from_rfc3339("2026-08-09T12:00:00Z")
+            .expect("pinned test clock must parse")
+            .with_timezone(&Utc)
+    }
+
     // Test 1: missing file -> None.
     #[test]
     fn missing_file_returns_none() {
-        let result = read_quota(std::path::Path::new(
-            "/definitely/does/not/exist/last-status.json",
-        ));
+        let result = read_quota(
+            std::path::Path::new("/definitely/does/not/exist/last-status.json"),
+            fixed_now(),
+        );
         assert!(result.is_none(), "missing file must return None");
     }
 
@@ -181,9 +209,7 @@ mod tests {
     #[test]
     fn full_valid_payload_populates_all_fields() {
         // Use timestamps we can predict relative to "now".
-        let now = DateTime::parse_from_rfc3339("2026-08-09T06:32:11Z")
-            .unwrap()
-            .with_timezone(&Utc);
+        let now = fixed_now();
         let five_hour_ts_str = "2026-08-09T06:32:11Z";
         // Pick a resets_at within the horizon window, relative to now.
         let five_hour_resets = (now + chrono::Duration::hours(2)).timestamp();
@@ -222,7 +248,7 @@ mod tests {
         let tmp = Tmp::new("malformed");
         std::fs::write(&tmp.path, "NOT JSON").expect("write");
 
-        let result = read_quota(&tmp.path);
+        let result = read_quota(&tmp.path, fixed_now());
         assert!(result.is_none(), "malformed JSON must return None");
     }
 
@@ -233,7 +259,7 @@ mod tests {
         let payload = serde_json::json!({
             "context_window": { "used_percentage": 42 }
         });
-        let now = Utc::now();
+        let now = fixed_now();
         let result = parse_value(&payload, now);
 
         let state = result.expect("must succeed since context_window is valid");
@@ -260,11 +286,7 @@ mod tests {
         });
 
         // Use a now that's close to the fixed resets_at timestamps (so they pass plausibility).
-        let fixed_dt =
-            chrono::NaiveDateTime::parse_from_str("2026-06-08T12:50:00", "%Y-%m-%dT%H:%M:%S")
-                .unwrap()
-                .and_utc();
-        let now = fixed_dt;
+        let now = fixed_now();
 
         let result =
             parse_value(&payload, now).expect("still must succeed since other fields valid");
@@ -285,7 +307,7 @@ mod tests {
             "rate_limits": { "five_hour": { "used_percentage": 9 } },
             "context_window": { "used_percentage": 150 }
         });
-        let now = Utc::now();
+        let now = fixed_now();
         let result = parse_value(&payload, now).expect("must succeed since five_hour is valid");
         assert_eq!(result.context_used_pct, None, "150 must be dropped");
         assert_eq!(result.five_hour_used_pct, Some(9));
@@ -300,7 +322,7 @@ mod tests {
             },
             "context_window": { "used_percentage": 28 }
         });
-        let now = Utc::now();
+        let now = fixed_now();
         let result =
             parse_value(&payload, now).expect("still succeeds because context_window valid");
 
@@ -316,7 +338,7 @@ mod tests {
     #[test]
     fn non_object_top_level_returns_none() {
         let payload = serde_json::json!([1, 2, 3]);
-        let result = parse_value(&payload, Utc::now());
+        let result = parse_value(&payload, fixed_now());
         assert!(result.is_none(), "array top-level must return None");
     }
 
@@ -324,7 +346,7 @@ mod tests {
     #[test]
     fn empty_object_returns_none() {
         let payload = serde_json::json!({});
-        let result = parse_value(&payload, Utc::now());
+        let result = parse_value(&payload, fixed_now());
         assert!(result.is_none(), "empty object must return None");
     }
 
@@ -336,7 +358,7 @@ mod tests {
             "rate_limits": { "five_hour": { "used_percentage": 9 } },
             "context_window": { "used_percentage": "28" }
         });
-        let now = Utc::now();
+        let now = fixed_now();
         let result = parse_value(&payload, now).expect("still succeeds because five_hour is valid");
         assert_eq!(result.context_used_pct, None);
     }
@@ -356,7 +378,7 @@ mod tests {
             },
             "context_window": { "used_percentage": 28 }
         });
-        let now = Utc::now();
+        let now = fixed_now();
         let result = parse_value(&payload, now).expect("still succeeds");
         assert_eq!(result.five_hour_resets_at, None);
         assert_eq!(result.five_hour_used_pct, Some(9));
@@ -365,9 +387,7 @@ mod tests {
     // Test: measured_at with a string that parses cleanly.
     #[test]
     fn measured_at_parses_rfc3339() {
-        let now = DateTime::parse_from_rfc3339("2026-08-09T06:32:11Z")
-            .unwrap()
-            .with_timezone(&Utc);
+        let now = fixed_now();
         let result = parse_ts(Some(&serde_json::json!("2026-08-09T06:32:11Z")), now);
         assert!(result.is_some(), "valid ISO-8601 string must parse");
     }
@@ -375,7 +395,7 @@ mod tests {
     // Test: measured_at with a non-string is None.
     #[test]
     fn measured_at_non_string_is_none() {
-        let now = Utc::now();
+        let now = fixed_now();
         let result = parse_ts(Some(&serde_json::json!(42)), now);
         assert!(result.is_none());
     }
@@ -383,7 +403,7 @@ mod tests {
     // Test: measured_at far in the future -> None (plausibility).
     #[test]
     fn measured_at_far_future_is_none() {
-        let now = Utc::now();
+        let now = fixed_now();
         // 2030 is more than 30 days away.
         let result = parse_ts(Some(&serde_json::json!("2030-01-01T00:00:00Z")), now);
         assert!(
@@ -401,7 +421,7 @@ mod tests {
             },
             "context_window": { "used_percentage": 28 }
         });
-        let now = Utc::now();
+        let now = fixed_now();
         let result = parse_value(&payload, now).expect("still succeeds");
         assert_eq!(
             result.five_hour_resets_at, None,
@@ -420,10 +440,7 @@ mod tests {
             "context_window": { "used_percentage": 28 }
         });
         // Use a now that's close to the fixed resets_at timestamps.
-        let fixed_dt =
-            chrono::NaiveDateTime::parse_from_str("2026-06-08T12:50:00", "%Y-%m-%dT%H:%M:%S")
-                .unwrap()
-                .and_utc();
+        let fixed_dt = fixed_now();
         let result = parse_value(&payload, fixed_dt).expect("other fields must still parse");
         assert_eq!(result.five_hour_used_pct, None);
         assert_eq!(result.seven_day_used_pct, Some(86));
@@ -433,7 +450,7 @@ mod tests {
     // and one just past is rejected.
     #[test]
     fn resets_at_exactly_30_days_in_past_is_accepted() {
-        let now = Utc::now();
+        let now = fixed_now();
         let thirty_days_ago = (now - chrono::Duration::days(30)).timestamp();
         // The horizon check: |dt - now| > MAX_RESET_HORIZON_S -> drop. We need (now - thirty_days_ago)
         // == 30 days, which is NOT greater than MAX_RESET_HORIZON_S. So this should parse.
@@ -467,10 +484,7 @@ mod tests {
                 "seven_day": { "used_percentage": 86, "resets_at": 1786431600 }
             }
         });
-        let fixed_dt =
-            chrono::NaiveDateTime::parse_from_str("2026-06-08T12:50:00", "%Y-%m-%dT%H:%M:%S")
-                .unwrap()
-                .and_utc();
+        let fixed_dt = fixed_now();
         let result =
             parse_value(&payload, fixed_dt).expect("must still succeed without context_window");
         assert_eq!(result.context_used_pct, None);
@@ -482,8 +496,12 @@ mod tests {
     fn read_quota_full_round_trip() {
         let tmp = Tmp::new("roundtrip");
 
+        // `ts` sits alongside the two `resets_at` epochs (2026-08-09T11:30Z and
+        // 2026-08-11T07:00Z) rather than two months before them. The old fixture paired a
+        // June `ts` with August resets — a shape Claude Code never writes, and one no
+        // assertion covered, so its incoherence stayed invisible.
         let payload = serde_json::json!({
-            "ts": "2026-06-08T12:50:00Z",
+            "ts": "2026-08-09T11:45:00Z",
             "rate_limits": {
                 "five_hour": { "used_percentage": 9, "resets_at": 1786275000 },
                 "seven_day": { "used_percentage": 86, "resets_at": 1786431600 }
@@ -492,19 +510,45 @@ mod tests {
         });
         write_json(&tmp.path, &payload);
 
-        let result = read_quota(&tmp.path);
+        let result = read_quota(&tmp.path, fixed_now());
         assert!(result.is_some(), "must succeed on a real file");
         let s = result.unwrap();
         assert_eq!(s.five_hour_used_pct, Some(9));
         assert_eq!(s.seven_day_used_pct, Some(86));
         assert_eq!(s.context_used_pct, Some(28));
+
+        // The three timestamp fields, asserted rather than assumed. Before the clock was
+        // injected these were silently `None` — the fixtures had drifted out of the 30-day
+        // horizon relative to a live `Utc::now()`, so this test kept passing while checking
+        // strictly less than its name claims. That is the failure mode `petri/SPEC.md` §4.2
+        // records for the `wcwidth` incident, in a different costume: green tests, absent
+        // data, and nothing pointing at it.
+        assert_eq!(
+            s.measured_at,
+            Some(
+                DateTime::parse_from_rfc3339("2026-08-09T11:45:00Z")
+                    .unwrap()
+                    .with_timezone(&Utc)
+            ),
+            "`ts` must round-trip through read_quota"
+        );
+        assert_eq!(
+            s.five_hour_resets_at,
+            DateTime::from_timestamp(1786275000, 0),
+            "five_hour resets_at must round-trip"
+        );
+        assert_eq!(
+            s.seven_day_resets_at,
+            DateTime::from_timestamp(1786431600, 0),
+            "seven_day resets_at must round-trip"
+        );
     }
 
     // Test: top-level string -> None.
     #[test]
     fn top_level_string_returns_none() {
         let payload = serde_json::json!("hello");
-        let result = parse_value(&payload, Utc::now());
+        let result = parse_value(&payload, fixed_now());
         assert!(result.is_none());
     }
 
@@ -512,7 +556,7 @@ mod tests {
     #[test]
     fn top_level_number_returns_none() {
         let payload = serde_json::json!(42);
-        let result = parse_value(&payload, Utc::now());
+        let result = parse_value(&payload, fixed_now());
         assert!(result.is_none());
     }
 
@@ -520,7 +564,7 @@ mod tests {
     #[test]
     fn top_level_null_returns_none() {
         let payload = serde_json::json!(null);
-        let result = parse_value(&payload, Utc::now());
+        let result = parse_value(&payload, fixed_now());
         assert!(result.is_none());
     }
 
@@ -530,7 +574,7 @@ mod tests {
         let payload = serde_json::json!({
             "context_window": { "used_percentage": 28 }
         });
-        let now = Utc::now();
+        let now = fixed_now();
         let result = parse_value(&payload, now).expect("context_window must still work");
         assert_eq!(result.five_hour_used_pct, None);
         assert_eq!(result.seven_day_used_pct, None);
@@ -544,7 +588,7 @@ mod tests {
             "rate_limits": null,
             "context_window": { "used_percentage": 28 }
         });
-        let now = Utc::now();
+        let now = fixed_now();
         let result = parse_value(&payload, now).expect("must succeed");
         assert_eq!(result.five_hour_used_pct, None);
         assert_eq!(result.seven_day_used_pct, None);
@@ -560,10 +604,7 @@ mod tests {
                 "seven_day": { "used_percentage": 86, "resets_at": 1786431600 }
             }
         });
-        let fixed_dt =
-            chrono::NaiveDateTime::parse_from_str("2026-06-08T12:50:00", "%Y-%m-%dT%H:%M:%S")
-                .unwrap()
-                .and_utc();
+        let fixed_dt = fixed_now();
         let result = parse_value(&payload, fixed_dt).expect("must succeed");
         assert_eq!(result.context_used_pct, None);
         assert_eq!(result.five_hour_used_pct, Some(9));

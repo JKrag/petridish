@@ -1,0 +1,1521 @@
+//! The **focus panel** — one renderer for "what is the state of this one project, and what
+//! can I do about it right now?", mounted at three sizes (`petri/PROPOSAL-focus-panel.md`
+//! §1): a popup over the Dashboard (#30), the whole screen (`petri --mini`, #31), and the
+//! Browser's existing detail popup (#32).
+//!
+//! **The tests came first.** `petri/tests/s11_focus_plan.rs` and
+//! `petri/tests/s11_focus_render.rs` were written against this module's signature before
+//! any of it was implemented, by the planner rather than the implementer, and they are the
+//! spec (`petri/PLAN-focus-panel.md` §1). `plan_rungs`' gate table below is the part worth
+//! reading before changing anything: it is fitted to the proposal's mockups, so it is a
+//! design decision expressed as constants, and both sides of every threshold are pinned.
+//!
+//! ## The structural decision
+//!
+//! `plan_rungs` (which rungs fit) is separated from `focus_lines` (what they say), mirroring
+//! `dashboard.rs`'s existing `plan_layout`/`DashPlan` idiom. The responsive behaviour is the
+//! part most likely to be got wrong and least likely to *look* wrong, so it is unit-testable
+//! at a pinned `Rect` with no `TestBackend` involved.
+//!
+//! ## Borders: ratatui's default set, deliberately
+//!
+//! The proposal's §3.1 mockup draws the popup with `╭╮╰╯`, which are **not** on the glyph
+//! allowlist (`petri/tests/glyph_portability.rs`), and `PLAN-focus-panel.md` §9 makes a new
+//! glyph a stop-and-escalate signal rather than a line to add mid-round. Decision, made here
+//! so the mount task (T5) does not have to stop for it: **the popup uses ratatui's default
+//! `Borders::ALL`** (`┌┐└┘─│`), the same as `picker.rs` and `help.rs` already do. `--mini`
+//! draws no border at all (§9: the terminal edge already frames it). That the gate does not
+//! see ratatui-generated border characters at all is a real, pre-existing hole in it,
+//! recorded in `IDEAS.md` §5 — it is not this feature's to fix, and not this feature's to
+//! widen either.
+
+use chrono::{DateTime, Utc};
+use petridish_core::present;
+use petridish_core::schema::{Project, Radar, StatusBucket};
+use ratatui::layout::Rect;
+use ratatui::style::{Modifier, Style};
+use ratatui::text::{Line, Span};
+
+use std::collections::HashMap;
+use std::sync::{LazyLock, Mutex};
+
+use crate::feed::FeedState;
+use crate::prefs::Prefs;
+use crate::theme;
+
+/// Narrowest panel that renders anything at all. Below this the mount shows the
+/// terminal-too-small message naming these dimensions (`PROPOSAL-focus-panel.md` §3.5).
+pub const MIN_FOCUS_WIDTH: u16 = 24;
+
+/// Shortest panel that renders anything at all. See `MIN_FOCUS_WIDTH`.
+pub const MIN_FOCUS_HEIGHT: u16 = 6;
+
+/// What the panel is pointed at.
+///
+/// Not a bare `usize`: the Dashboard's cursor visits section headers too (`SPEC.md` §3.2)
+/// and every collapsed-strip entry is its own stop, so a cursor-following popup lands on a
+/// non-project stop on essentially every `j`/`k` walk. The empty selection must therefore be
+/// representable and must not panic — the same requirement `SPEC.md` §3.1 already places on
+/// the Browser's detail pane, here extended to the Dashboard.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum FocusTarget {
+    /// Index into `Radar::projects`. Never held across a reload by a caller — the scanner
+    /// re-sorts on every scan (`SPEC.md` §4.3).
+    Project(usize),
+    /// The cursor is on a section header (or a collapsed-strip entry): the bucket and how
+    /// many projects it holds. Renders the "nothing focused" state naming the section.
+    Section(StatusBucket, usize),
+    /// No selection at all.
+    Nothing,
+}
+
+/// The content ladder (`PROPOSAL-focus-panel.md` §2), in **render** order.
+///
+/// `plan_rungs` returns a subset of these in this order. Note that the order rungs are
+/// *rendered* in is not the order they are *dropped* in — §9's removal test cuts `Path`
+/// first, above rungs that sit below it on screen — so the returned vector is a subsequence
+/// of this list, not necessarily a prefix of it. See `plan_rungs`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub enum Rung {
+    /// R0 — glyph, name, dirty marker, `✎N`; right: waiting/silence/no-agent.
+    Identity,
+    /// R1 — the `~`-abbreviated path.
+    Path,
+    /// R2 — branch · commit age + the 14-day daily-commits sparkline.
+    Git,
+    /// R3 — agent · session + the activity sparkline.
+    Agent,
+    /// R4 — `last  {event} · {n files} · {HH:MM}`.
+    LastEvent,
+    /// R5 — the action registry as live affordances.
+    Actions,
+    /// R6 — this project's slice of the activity feed.
+    Recent,
+    /// R7 — `mine_last_commit_at` vs `last_commit_at`, plus the GitHub url.
+    Repo,
+    /// R8 — the worktree family via `parent_path`.
+    Tree,
+}
+
+/// Everything a rung might need. Borrowed, never owned — the panel is re-planned and
+/// re-rendered from scratch on every frame, so nothing here survives a reload.
+pub struct FocusCtx<'a> {
+    pub radar: &'a Radar,
+    pub target: FocusTarget,
+    /// Pinned by the caller rather than read from the clock inside a rung, so a render is
+    /// reproducible in a test and every rung on one frame agrees about what "now" is.
+    pub now: DateTime<Utc>,
+    /// `None` is a real state, not an error: `--mini` may start before two snapshots have
+    /// been diffed. The `Recent` rung is then absent, not empty.
+    pub feed: Option<&'a FeedState>,
+    pub prefs: &'a Prefs,
+}
+
+/// Which rungs fit in `area`. Pure: no `Frame`, no `Buffer`, no clock read.
+///
+/// `area` is the panel's **content** rect — the mount has already subtracted its own chrome
+/// (a popup's border, `--mini`'s header rule and footer). This function knows nothing about
+/// which mount it is serving.
+///
+/// # The rules, which are chosen rather than derived
+///
+/// The thresholds below were fitted to `PROPOSAL-focus-panel.md` §10's pressure table and
+/// §3.2–§3.4's mockups. They are a design decision expressed as constants, not arithmetic
+/// anyone can re-derive — treat them as spec, and change them deliberately.
+///
+/// - Below `MIN_FOCUS_WIDTH` × `MIN_FOCUS_HEIGHT`, the result is empty. That is the **only**
+///   empty return, so an empty vector always means "too small" and never "nothing is
+///   selected" — above the floor a `Section`/`Nothing` target still plans the full geometric
+///   ladder, and it is `focus_lines` that branches on the target and renders the empty state
+///   instead. (`ctx.target` is read here for exactly one thing: resolving `Recent`'s feed
+///   gate below, which has no project to look up when the target is not a `Project`.)
+/// - `Identity`, `Git` and `Agent` are unconditional above the floor — three rows.
+/// - The rest are admitted in this **priority** order, each if its own gates pass:
+///   `LastEvent`, `Actions`, `Path`, `Recent`, `Repo`, `Tree`. `Path` sits below `Actions`
+///   deliberately (§9's removal test: the path is the first thing cut, because `--mini` is
+///   run *from* the project and the path is the one fact the user already knows).
+///
+/// | Rung | rows | min width | min height | other |
+/// |---|---|---|---|---|
+/// | `Identity` | 1 | 24 | 6 | |
+/// | `Git` | 1 | 24 | 6 | |
+/// | `Agent` | 1 | 24 | 6 | |
+/// | `LastEvent` | 1 | 30 | 6 | |
+/// | `Actions` | 3 if height ≥ 16 else 1 | 24 | 6 | the 3 buys a blank row + the `ACTIONS` label; the 1 is the bare-keys degradation of §3.3 |
+/// | `Path` | 1 | 30 | 10 | |
+/// | `Recent` | 3 | 40 | 15 | the 3 is the `RECENT` label + two event rows, so unlike `Actions` this rung has no label-less reduced form; **and** `ctx.feed` must carry ≥1 event for this project |
+/// | `Repo` | 1 | 56 | 28 | |
+/// | `Tree` | 2 | 56 | 32 | |
+///
+/// `Recent`'s feed condition is the one non-geometric gate, and it is load-bearing twice
+/// over: `feed: None` must render the rung as absent rather than as an empty box (T4), and a
+/// project the feed has never seen an event for has nothing to put in it.
+///
+/// There is deliberately **no separate row-budget check**. The height gates were chosen so
+/// that the admitted rungs' minimum rows always fit inside `area.height` with slack (5 rows
+/// at the floor, 14 at the top of the ladder), and that slack is what the `Recent` rung
+/// grows into at render time — §2's "3–8 rows". A budget subtraction on top would be a
+/// second, quietly-disagreeing statement of the same rule.
+///
+/// The returned vector is in `Rung` declaration order (render order), regardless of the
+/// priority order rungs were admitted in.
+pub fn plan_rungs(area: Rect, ctx: &FocusCtx) -> Vec<Rung> {
+    if area.width < MIN_FOCUS_WIDTH || area.height < MIN_FOCUS_HEIGHT {
+        return Vec::new();
+    }
+
+    let mut admitted = vec![Rung::Identity, Rung::Git, Rung::Agent];
+
+    // Priority order, which is NOT render order — see this function's doc comment and
+    // `Rung`'s. Each rung is admitted on its own gates alone; there is no running budget,
+    // because the height gates already encode one.
+    for rung in [
+        Rung::LastEvent,
+        Rung::Actions,
+        Rung::Path,
+        Rung::Recent,
+        Rung::Repo,
+        Rung::Tree,
+    ] {
+        let (min_w, min_h) = rung_floor(rung);
+        if area.width < min_w || area.height < min_h {
+            continue;
+        }
+        if rung == Rung::Recent && !feed_has_events_for_target(ctx) {
+            continue;
+        }
+        admitted.push(rung);
+    }
+
+    // Back into render order, so the caller can walk the result top to bottom.
+    admitted.sort();
+    admitted
+}
+
+/// The `(min width, min height)` gate for one rung, per `plan_rungs`' table.
+fn rung_floor(rung: Rung) -> (u16, u16) {
+    match rung {
+        Rung::Identity | Rung::Git | Rung::Agent | Rung::Actions => {
+            (MIN_FOCUS_WIDTH, MIN_FOCUS_HEIGHT)
+        }
+        Rung::LastEvent => (30, MIN_FOCUS_HEIGHT),
+        Rung::Path => (30, 10),
+        Rung::Recent => (40, 15),
+        Rung::Repo => (56, 28),
+        Rung::Tree => (56, 32),
+    }
+}
+
+/// Rows a rung occupies once rendered. Only `Recent` is elastic — it takes whatever the
+/// others leave, between this minimum and `RECENT_MAX_ROWS`.
+fn rung_rows(rung: Rung, height: u16) -> u16 {
+    match rung {
+        // 3 = a blank separator, the `ACTIONS` label, and one row of entries. Below 16 rows
+        // there is no room for the label, and §3.3's degradation drops it: the footer's job
+        // at that size is to say the keys still work, not to teach them.
+        Rung::Actions if height >= 16 => 3,
+        // 3 = the `RECENT` label plus two event rows. Unlike `Actions`, this rung has no
+        // label-less reduced form: a stamp column with no heading reads as part of whatever
+        // sits above it.
+        Rung::Recent => 3,
+        Rung::Tree => 2,
+        _ => 1,
+    }
+}
+
+/// Ceiling on the `Recent` rung, per `PROPOSAL-focus-panel.md` §2's "3-8 rows". Past this
+/// the panel stops being a focus view and starts being the activity feed, which the
+/// Dashboard already has.
+const RECENT_MAX_ROWS: u16 = 8;
+
+/// Does the feed hold at least one event for whatever the panel is pointed at?
+///
+/// The one non-geometric gate in `plan_rungs`. A non-`Project` target has no project to
+/// filter by and therefore never passes — see `plan_rungs`' doc comment for why that does
+/// not make an empty plan ambiguous.
+fn feed_has_events_for_target(ctx: &FocusCtx) -> bool {
+    let Some(project) = focused_project(ctx) else {
+        return false;
+    };
+    let Some(feed) = ctx.feed else {
+        return false;
+    };
+    feed.events().iter().any(|e| e.project == project.name)
+}
+
+/// The project the panel is pointed at, if it is pointed at one that still exists.
+///
+/// The index is bounds-checked rather than indexed into: `FocusTarget::Project` carries a
+/// position in `radar.projects`, the scanner re-sorts and re-populates that vector on every
+/// scan (`SPEC.md` §4.3), and a panel that panics because a reload shortened the list is a
+/// worse failure than one that renders the empty state for a frame.
+fn focused_project<'a>(ctx: &FocusCtx<'a>) -> Option<&'a Project> {
+    match ctx.target {
+        FocusTarget::Project(idx) => ctx.radar.projects.get(idx),
+        _ => None,
+    }
+}
+
+/// Render the planned rungs as `area.height`-or-fewer lines.
+///
+/// Branches on `ctx.target` first:
+/// - `FocusTarget::Project` — renders `plan_rungs`' output, in order.
+/// - `FocusTarget::Section` — the "nothing focused" state, naming the section and its count.
+/// - `FocusTarget::Nothing` — the same empty state without a section name.
+///
+/// Every rung is its own `fn rung_*_lines`, so a Phase B task can implement one without
+/// touching the others.
+pub fn focus_lines(area: Rect, ctx: &FocusCtx) -> Vec<Line<'static>> {
+    let plan = plan_rungs(area, ctx);
+    if plan.is_empty() {
+        // Below the floor. The *mount* owns the "needs 24x6" message, because only it knows
+        // whether the right wording is `--mini`'s or the popup's (`PROPOSAL` §3.5).
+        return Vec::new();
+    }
+
+    let w = area.width as usize;
+    let Some(project) = focused_project(ctx) else {
+        return empty_state_lines(ctx, area);
+    };
+
+    // `Recent` is the one elastic rung: it takes the rows the fixed ones leave, between its
+    // 3-row minimum and `RECENT_MAX_ROWS`. Everything else costs what `rung_rows` says.
+    let fixed_rows: u16 = plan
+        .iter()
+        .filter(|r| **r != Rung::Recent)
+        .map(|r| rung_rows(*r, area.height))
+        .sum();
+    let recent_rows = area.height.saturating_sub(fixed_rows).min(RECENT_MAX_ROWS);
+
+    let mut lines: Vec<Line<'static>> = Vec::new();
+    for rung in &plan {
+        match rung {
+            Rung::Identity => lines.push(identity_line(project, ctx, w)),
+            Rung::Path => lines.push(path_line(project, w)),
+            Rung::Git => lines.push(git_line(project, ctx, w)),
+            Rung::Agent => lines.push(agent_line(project, ctx, w)),
+            Rung::LastEvent => lines.extend(last_event_lines(project, w)),
+            Rung::Actions => {
+                lines.extend(actions_lines(project, ctx, w, area.height >= 16));
+            }
+            Rung::Recent => lines.extend(recent_lines(project, ctx, w, recent_rows)),
+            Rung::Repo => lines.extend(repo_lines(project, ctx, w)),
+            Rung::Tree => lines.extend(tree_lines(project, ctx, w)),
+        }
+    }
+
+    // Belt and braces. The gates are supposed to make this unreachable (and
+    // `s11_focus_plan.rs` asserts as much), but a rung that renders one row more than its
+    // table entry claims must clip rather than push content off a `Frame`'s bottom edge.
+    lines.truncate(area.height as usize);
+    lines
+}
+
+/// The `FocusTarget::Section` / `FocusTarget::Nothing` states.
+///
+/// `PROPOSAL` §3.1 option (b): the Dashboard's cursor visits header stops, so a
+/// cursor-following popup lands on one constantly. Rather than change what `j`/`k` mean
+/// while the popup is open, the panel says plainly what the cursor is on.
+fn empty_state_lines(ctx: &FocusCtx, area: Rect) -> Vec<Line<'static>> {
+    let w = area.width as usize;
+    let dim = Style::default().fg(theme::DIM);
+    let mut lines = Vec::new();
+
+    match &ctx.target {
+        FocusTarget::Section(bucket, count) => {
+            let label = crate::dashboard::SECTION_LABELS
+                .iter()
+                .find(|(b, _)| b == bucket)
+                .map(|(_, l)| *l)
+                .unwrap_or("SECTION");
+            let noun = if *count == 1 { "project" } else { "projects" };
+            lines.push(Line::from(vec![
+                Span::raw(INDENT),
+                Span::styled(
+                    elide(label, w.saturating_sub(1)),
+                    Style::default()
+                        .fg(crate::theme::bucket_color(*bucket))
+                        .add_modifier(Modifier::BOLD),
+                ),
+                Span::styled(format!(" {count} {noun}"), dim),
+            ]));
+        }
+        _ => lines.push(Line::from(Span::styled(
+            format!("{INDENT}{}", elide("nothing focused", w.saturating_sub(1))),
+            dim,
+        ))),
+    }
+
+    if area.height >= 3 {
+        lines.push(Line::default());
+        lines.push(Line::from(Span::styled(
+            format!(
+                "{INDENT}{}",
+                elide("j/k to a project row", w.saturating_sub(1))
+            ),
+            Style::default().fg(theme::DIMMER),
+        )));
+    }
+    lines.truncate(area.height as usize);
+    lines
+}
+
+// ---------------------------------------------------------------------------
+// Shared row assembly.
+// ---------------------------------------------------------------------------
+
+/// Leading indent on every row. One column, not the roomy card's two: the card sits inside
+/// a grid cell that already has a gutter, the panel owns its whole rect.
+const INDENT: &str = " ";
+
+/// At and above this width a zone row carries its label column. Below it the labels go
+/// (`PROPOSAL` §9: at 24 columns a 7-cell label costs 29% of the line).
+const LABEL_MIN_WIDTH: usize = 30;
+
+/// Columns the facts may claim before the sparkline takes the rest. Without a cap a wide
+/// panel spends everything on a session id nobody reads past the first eight characters.
+const FACTS_CAP: usize = 44;
+
+/// A sparkline narrower than this says nothing worth a column; the row drops it and gives
+/// the space to the facts instead.
+const MIN_SPARKLINE: usize = 8;
+
+/// Fixed width of the scale tag (`14d`, `46m`) at the end of a sparkline row. Fixed, so the
+/// tag's width is known before the sparkline is sized — the two would otherwise define each
+/// other.
+const TAG_WIDTH: usize = 4;
+
+/// `s` cut to `budget` columns with a `…` marker when it does not fit, and **not** padded
+/// when it does. `width::fit_exact` pads to exactly the budget, which is right for a column
+/// in a table and wrong immediately before another span.
+fn elide(s: &str, budget: usize) -> String {
+    if crate::width::width(s) <= budget {
+        return s.to_string();
+    }
+    if budget == 0 {
+        return String::new();
+    }
+    format!("{}\u{2026}", crate::width::take_width(s, budget - 1))
+}
+
+/// The tail of `s` that fits `budget` columns, marked with a leading `…`. For paths, where
+/// the end is the informative part.
+fn elide_start(s: &str, budget: usize) -> String {
+    if crate::width::width(s) <= budget {
+        return s.to_string();
+    }
+    if budget == 0 {
+        return String::new();
+    }
+    format!("\u{2026}{}", crate::width::take_width_end(s, budget - 1))
+}
+
+/// A sparkline for a zone row: the samples, the most it is worth widening to, and how the
+/// scale tag is spelled once the width is known.
+struct ZoneSpark<'a> {
+    samples: &'a [u32],
+    /// Cap in samples. Past this the sparkline pads with the zero bar rather than showing
+    /// more history, because there is no more history to show.
+    max_width: usize,
+    style: Style,
+    /// `Some(t)` for a fixed tag (`14d` — the git window is a constant); `None` spells the
+    /// tag from the chosen width in minutes (`46m` — one agent sample is one tick).
+    fixed_tag: Option<&'static str>,
+}
+
+struct ZoneSpec<'a> {
+    label: &'static str,
+    label_style: Style,
+    facts: String,
+    facts_style: Style,
+    spark: Option<ZoneSpark<'a>>,
+}
+
+/// One labelled zone row, fitted to exactly `width` columns.
+///
+/// This is the focus panel's own row assembler rather than `dashboard::zone_row`, and the
+/// difference is the reason it exists: the card's version never truncates, because a roomy
+/// card is only ever drawn at a width its content is known to fit. The panel is drawn from
+/// 24 columns upward, so every field here is a budget — measured in **columns** via
+/// `crate::width`, not characters, or `hostile.json`'s CJK name overruns the rect.
+fn zone_line(spec: ZoneSpec, width: usize) -> Line<'static> {
+    let show_label = width >= LABEL_MIN_WIDTH;
+    let label_field = if show_label {
+        crate::width::fit_exact(spec.label, crate::dashboard::ZONE_LABEL_WIDTH)
+    } else {
+        String::new()
+    };
+    let fixed = crate::width::width(INDENT) + crate::width::width(&label_field);
+    let body = width.saturating_sub(fixed);
+
+    if let Some(spark) = spec.spark {
+        let want = crate::width::width(&spec.facts).min(FACTS_CAP);
+        let spark_w = body
+            .saturating_sub(want + 2 + TAG_WIDTH)
+            .min(spark.max_width);
+        if spark_w >= MIN_SPARKLINE {
+            let facts_budget = body - spark_w - 2 - TAG_WIDTH;
+            let tag = match spark.fixed_tag {
+                Some(t) => t.to_string(),
+                None => format!("{spark_w}m"),
+            };
+            return Line::from(vec![
+                Span::raw(INDENT),
+                Span::styled(label_field, spec.label_style),
+                Span::styled(
+                    crate::width::fit_exact(&spec.facts, facts_budget),
+                    spec.facts_style,
+                ),
+                Span::raw("  "),
+                Span::styled(
+                    crate::dashboard::sparkline_glyphs(spark.samples, spark_w),
+                    spark.style,
+                ),
+                Span::styled(
+                    crate::width::fit_exact(&tag, TAG_WIDTH),
+                    Style::default().fg(theme::DIM),
+                ),
+            ]);
+        }
+    }
+
+    Line::from(vec![
+        Span::raw(INDENT),
+        Span::styled(label_field, spec.label_style),
+        Span::styled(crate::width::fit_exact(&spec.facts, body), spec.facts_style),
+    ])
+}
+
+/// `dt` as an age relative to `ctx.now`, e.g. `"18h ago"`.
+///
+/// Deliberately **not** `dashboard::commit_ago`, which reads `Utc::now()` internally. Every
+/// derived string on this panel has to come off `ctx.now` or a pinned-clock test measures
+/// the calendar instead of the code — the same class of bug as trusting `waiting_since`
+/// without re-deriving the latch. `humanize_secs` (the part with no clock in it) is reused.
+fn ago(dt: DateTime<Utc>, now: DateTime<Utc>) -> String {
+    let secs = now.signed_duration_since(dt).num_seconds().max(0);
+    format!("{} ago", crate::dashboard::humanize_secs(secs as u64))
+}
+
+/// Seconds since this project last did anything, per `ctx.now`.
+fn silence_secs(p: &Project, now: DateTime<Utc>) -> Option<i64> {
+    p.last_activity_at
+        .map(|dt| now.signed_duration_since(dt).num_seconds().max(0))
+}
+
+// ---------------------------------------------------------------------------
+// R0-R3 — identity, path, git, agent.
+// ---------------------------------------------------------------------------
+
+/// R0: `● alpha-project ✎2` on the left, the attention state on the right.
+///
+/// The right group has two spellings and can be dropped entirely, in that order, so the
+/// project's name never loses columns to it. `▲ waiting on you 4m` degrades to `▲ 4m`
+/// (§3.3's mockup) rather than vanishing: `MECH-5` is the one state the product exists to
+/// surface, and it keeps all three of its signals — glyph, colour, words — as long as any
+/// right group is drawn at all.
+fn identity_line(p: &Project, ctx: &FocusCtx, width: usize) -> Line<'static> {
+    let waiting = petridish_core::schema::waiting_latch_live(p.agent.waiting_since, ctx.now);
+    let silence = silence_secs(p, ctx.now);
+    let tier = if waiting {
+        theme::DANGER
+    } else {
+        crate::dashboard::silence_tier_color(silence.unwrap_or(i64::MAX / 2))
+    };
+    let glyph = if waiting {
+        "\u{25B2}"
+    } else if p.agent.state == petridish_core::schema::AgentActivity::Working {
+        "\u{25CF}"
+    } else {
+        "\u{25CB}"
+    };
+
+    let (right_full, right_short) = silence_group(p, ctx.now);
+
+    let dirty = present::dirty_marker(&p.git).trim_end().to_string();
+    let uncommitted = if p.git.uncommitted_files > 0 {
+        format!(" \u{270E}{}", p.git.uncommitted_files)
+    } else {
+        String::new()
+    };
+    let lead = format!("{INDENT}{glyph} ");
+    let trailer = format!("{dirty}{uncommitted}");
+
+    // Enough of the name to be worth showing at all before the right group gets any room.
+    const MIN_NAME: usize = 8;
+    let overhead = crate::width::width(&lead) + crate::width::width(&trailer);
+    let room_for = |right: &str| {
+        let cost = if right.is_empty() {
+            0
+        } else {
+            crate::width::width(right) + 1
+        };
+        width >= overhead + MIN_NAME + cost
+    };
+    let right = if room_for(&right_full) {
+        right_full
+    } else if room_for(&right_short) {
+        right_short
+    } else {
+        String::new()
+    };
+
+    let right_cost = if right.is_empty() {
+        0
+    } else {
+        crate::width::width(&right) + 1
+    };
+    let name_budget = width.saturating_sub(overhead + right_cost);
+    let name = elide(&p.name, name_budget);
+    let used = overhead + crate::width::width(&name) + right_cost;
+    let pad = width.saturating_sub(used) + if right.is_empty() { 0 } else { 1 };
+
+    Line::from(vec![
+        Span::styled(lead, Style::default().fg(tier)),
+        Span::styled(
+            name,
+            Style::default().fg(theme::FG).add_modifier(Modifier::BOLD),
+        ),
+        Span::styled(trailer, Style::default().fg(theme::DANGER)),
+        Span::raw(" ".repeat(pad)),
+        Span::styled(
+            right,
+            Style::default().fg(tier).add_modifier(Modifier::BOLD),
+        ),
+    ])
+}
+
+/// How long the latch has been held, as a bare duration. `None` when the stamp is in the
+/// future (clock skew), which reads better as no duration than as `0s`.
+fn silence_string(now: DateTime<Utc>, since: DateTime<Utc>) -> Option<String> {
+    let secs = now.signed_duration_since(since).num_seconds();
+    (secs >= 0).then(|| crate::dashboard::humanize_secs(secs as u64))
+}
+
+/// The project's activity state as a `(full, short)` pair, for a right-aligned group that
+/// may or may not have room for the long form.
+///
+/// Shared by `identity_line` (R0) and `mini_header_line`, which is what keeps the panel from
+/// saying `▲ waiting on you 4m` one row below a header that computed the same fact its own
+/// way and reached a different answer.
+fn silence_group(p: &Project, now: DateTime<Utc>) -> (String, String) {
+    let waiting = petridish_core::schema::waiting_latch_live(p.agent.waiting_since, now);
+    if waiting {
+        // Age of the latch itself, not of the last activity: "how long have you been
+        // blocking this run" is the question, and four minutes and forty are very
+        // different situations (`PROPOSAL` §11.6).
+        let age = p
+            .agent
+            .waiting_since
+            .and_then(|since| silence_string(now, since))
+            .unwrap_or_default();
+        (
+            format!("\u{25B2} waiting on you {age}")
+                .trim_end()
+                .to_string(),
+            format!("\u{25B2} {age}").trim_end().to_string(),
+        )
+    } else if p.agent.active_agent.is_some() {
+        match silence_secs(p, now) {
+            Some(s) => {
+                let age = crate::dashboard::humanize_secs(s as u64);
+                (format!("silent {age}"), age)
+            }
+            None => ("silent \u{2014}".to_string(), "\u{2014}".to_string()),
+        }
+    } else {
+        ("no agent".to_string(), String::new())
+    }
+}
+
+/// R1: the `~`-abbreviated path, keeping its **tail** when it does not fit — the leading
+/// directories are the part the user can infer.
+fn path_line(p: &Project, width: usize) -> Line<'static> {
+    let shown = crate::dashboard::abbreviate_home(&p.path);
+    Line::from(Span::styled(
+        format!(
+            "{INDENT}{}",
+            elide_start(&shown, width.saturating_sub(crate::width::width(INDENT)))
+        ),
+        Style::default().fg(theme::DIM),
+    ))
+}
+
+/// R2: branch and commit age, paired with git's own daily-commits sparkline.
+fn git_line(p: &Project, ctx: &FocusCtx, width: usize) -> Line<'static> {
+    let facts = if !p.git.is_repo {
+        "not a git repo".to_string()
+    } else {
+        let branch = p.git.branch.as_deref().unwrap_or("-");
+        let dirty = present::dirty_marker(&p.git).trim_end().to_string();
+        let commit = match p.git.last_commit_at {
+            Some(dt) => format!("commit {}", ago(dt, ctx.now)),
+            None => "no commits".to_string(),
+        };
+        format!("{branch}{dirty} \u{00B7} {commit}")
+    };
+
+    zone_line(
+        ZoneSpec {
+            label: "git",
+            label_style: Style::default()
+                .fg(theme::BRANCH)
+                .add_modifier(Modifier::BOLD),
+            facts,
+            facts_style: Style::default().fg(theme::DIM),
+            spark: p.git.is_repo.then_some(ZoneSpark {
+                samples: &p.git.daily_commits,
+                max_width: petridish_core::schema::GIT_ACTIVITY_WINDOW_DAYS,
+                style: Style::default().fg(theme::BRANCH),
+                fixed_tag: Some("14d"),
+            }),
+        },
+        width,
+    )
+}
+
+/// R3: the agent and its session, paired with the activity ring.
+fn agent_line(p: &Project, ctx: &FocusCtx, width: usize) -> Line<'static> {
+    let waiting = petridish_core::schema::waiting_latch_live(p.agent.waiting_since, ctx.now);
+    let tier = if waiting {
+        theme::DANGER
+    } else {
+        crate::dashboard::silence_tier_color(silence_secs(p, ctx.now).unwrap_or(i64::MAX / 2))
+    };
+
+    let facts = match p.agent.active_agent.as_deref() {
+        Some(agent) => match p.agent.session_id.as_deref() {
+            // By characters, not bytes: a session id is copied verbatim out of a transcript
+            // and the schema does not constrain it to ASCII, so a byte slice can land
+            // inside a code point and panic.
+            Some(session) => {
+                let short: String = session.chars().take(18).collect();
+                format!("{agent} \u{00B7} sess {short}")
+            }
+            None => agent.to_string(),
+        },
+        None => "idle".to_string(),
+    };
+
+    zone_line(
+        ZoneSpec {
+            label: "agent",
+            label_style: Style::default().fg(tier).add_modifier(Modifier::BOLD),
+            facts,
+            facts_style: Style::default().fg(theme::DIM),
+            spark: Some(ZoneSpark {
+                samples: &p.agent_activity,
+                max_width: petridish_core::schema::AGENT_ACTIVITY_WINDOW,
+                style: Style::default().fg(tier),
+                fixed_tag: None,
+            }),
+        },
+        width,
+    )
+}
+
+// ---------------------------------------------------------------------------
+// Rungs still to come. Each returns nothing until its own task lands, so a
+// planned-but-unbuilt rung costs no rows and misreports nothing.
+// ---------------------------------------------------------------------------
+
+/// R4: `last  pre tool use · 2 files · 09:14` — what the agent last *did*.
+///
+/// Carried in the schema since the beginning and shown nowhere outside the feed, which
+/// means only for projects that happened to change between two scans.
+///
+/// **`agent.last_event` being `None` is legitimate, not a defect.** `swab` derives event
+/// names from an allowlist, and an unmodelled record type yields `None` on purpose. The row
+/// falls back to `feed::agent_detail`, so `claude-code activity · 2 files` is correct
+/// output. Do not "fix" it by widening the allowlist — that lives in `swab`.
+fn last_event_lines(p: &Project, width: usize) -> Vec<Line<'static>> {
+    let facts = last_event_facts(p);
+
+    vec![zone_line(
+        ZoneSpec {
+            label: "last",
+            label_style: Style::default().fg(theme::DIM).add_modifier(Modifier::BOLD),
+            facts,
+            facts_style: Style::default().fg(theme::DIM),
+            spark: None,
+        },
+        width,
+    )]
+}
+
+/// R4's facts string, without any layout — shared with the Dashboard's lush card
+/// (`SPACE-3`/#33), which renders the same content through `dashboard::zone_row` rather than
+/// this module's `zone_line`. `IDEAS.md`'s `SURF-8` entry is explicit that the two tiers
+/// share the ladder's content ordering and its per-field renderers and **not** its layout
+/// function: a roomy card must stay uniform across a grid column, a focus panel owns a
+/// full-width rect.
+pub(crate) fn last_event_facts(p: &Project) -> String {
+    let body = match p.agent.last_event.as_deref() {
+        Some(raw) => {
+            let mut s = crate::feed::humanize_event(raw);
+            if p.git.is_repo && p.git.uncommitted_files > 0 {
+                let n = p.git.uncommitted_files;
+                let unit = if n == 1 { "file" } else { "files" };
+                s.push_str(&format!(" \u{00B7} {n} {unit}"));
+            }
+            s
+        }
+        None => crate::feed::agent_detail(p),
+    };
+    match p.agent.last_event_at {
+        Some(at) => format!("{body} \u{00B7} {}", at.format("%H:%M")),
+        None => body,
+    }
+}
+
+/// R7's facts string, without any layout — shared with the lush card, same rule as
+/// `last_event_facts`. `None` for a non-repo, which is what makes the rung absent in the
+/// panel and the row blank on a card that must keep a uniform height.
+pub(crate) fn repo_facts(p: &Project, now: DateTime<Utc>) -> Option<String> {
+    if !p.git.is_repo {
+        return None;
+    }
+    let commits = match (p.git.mine_last_commit_at, p.git.last_commit_at) {
+        (Some(mine), Some(newest)) if mine != newest => format!(
+            "yours {} \u{00B7} newest {}",
+            ago(mine, now),
+            ago(newest, now)
+        ),
+        (_, Some(newest)) => format!("commit {}", ago(newest, now)),
+        (Some(mine), None) => format!("yours {}", ago(mine, now)),
+        (None, None) => "no commits".to_string(),
+    };
+    // The scheme is nine columns saying nothing — every url the sensor produces is https.
+    Some(match p.git.github_url.as_deref() {
+        Some(url) => format!("{commits} \u{00B7} {}", strip_scheme(url)),
+        None => commits,
+    })
+}
+
+/// What an action can do for *this* project, right now.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum Affordance {
+    /// The tool resolved and the target exists: `e edit code`.
+    Live { tool: String },
+    /// Several tools are installed and the user has not chosen. The key works — it opens
+    /// the picker — so the entry is shown, just without a tool name to promise.
+    Choice,
+    /// The tooling is fine; this project has nothing to act on (`ACT-9`).
+    NoTarget { why: &'static str },
+}
+
+/// Compact display names, keyed by action id.
+///
+/// The registry's own `label` is written for the picker's title and a transient notice
+/// (`"open in editor"`, `"reveal in Finder"`); this row is a dense grid where those cost
+/// more than they say. Display-only — the id, the key and the behaviour are all unchanged.
+fn short_label(id: &str, fallback: &'static str) -> &'static str {
+    match id {
+        "browse" => "remote",
+        "edit" => "edit",
+        "gitlog" => "history",
+        "reveal" => "finder",
+        "rescan" => "rescan",
+        _ => fallback,
+    }
+}
+
+/// R5: the registry as visible affordances rather than a fixed key list (`ACT-7`).
+///
+/// Three states, and none of them is colour-only (`PROPOSAL` §4):
+///
+/// | state | render | why |
+/// |---|---|---|
+/// | live | `e edit code` — key accented, tool dim | it will work |
+/// | no target | `o remote ─ no url`, whole entry `DIMMER` | `Resolution::NoTarget` |
+/// | no tool | omitted entirely | `SPEC.md` §5: never advertise a key that does nothing |
+///
+/// Naming the resolved tool is the other half of `ACT-7` — it turns the registry from
+/// invisible machinery into something you can see, and it makes the shifted re-pick key
+/// (`ACT-11`) discoverable for the first time.
+fn actions_lines(
+    p: &Project,
+    ctx: &FocusCtx,
+    width: usize,
+    with_label: bool,
+) -> Vec<Line<'static>> {
+    let mut entries: Vec<(char, &'static str, Affordance)> = Vec::new();
+    for action in crate::tools::registry() {
+        let configured = ctx.prefs.tools.get(action.id).map(String::as_str);
+        // Tool availability is asked FIRST, which inverts `tools::resolve`'s own order
+        // (it checks the target first). Deliberate, and the two are answering different
+        // questions: `resolve` is picking which message to show after a keypress, while
+        // this row decides whether to advertise the key at all — and `SPEC.md` §5 says a
+        // key nothing can service must not appear. A key whose *project* has no target
+        // still appears, dimmed, because pressing it is a reasonable thing to try.
+        let Some(tool) = tool_status(&action, configured) else {
+            continue; // Resolution::NoTool — omitted entirely.
+        };
+        let affordance = if action.target == crate::tools::Target::Url && p.git.github_url.is_none()
+        {
+            Affordance::NoTarget { why: "no url" }
+        } else {
+            match tool {
+                ToolStatus::Ready(program) => Affordance::Live { tool: program },
+                ToolStatus::Ambiguous => Affordance::Choice,
+            }
+        };
+        entries.push((action.key, short_label(action.id, action.label), affordance));
+    }
+
+    if entries.is_empty() {
+        return Vec::new();
+    }
+
+    if !with_label {
+        // §3.3's degradation: at this height the row's job is to say the keys still work,
+        // not to teach them. Labels and tool names go; the keys do not.
+        let keys: Vec<String> = entries.iter().map(|(k, _, _)| k.to_string()).collect();
+        return vec![Line::from(Span::styled(
+            format!(
+                "{INDENT}{}",
+                elide(
+                    &keys.join(" "),
+                    width.saturating_sub(crate::width::width(INDENT))
+                )
+            ),
+            Style::default().fg(theme::ACCENT),
+        ))];
+    }
+
+    let key_style = Style::default()
+        .fg(theme::ACCENT)
+        .add_modifier(Modifier::BOLD);
+    let dim = Style::default().fg(theme::DIM);
+    let dimmer = Style::default().fg(theme::DIMMER);
+
+    let mut spans: Vec<Span<'static>> = vec![Span::raw(INDENT)];
+    let mut used = crate::width::width(INDENT);
+    let mut dropped = 0usize;
+    const GAP: &str = "   ";
+
+    for (i, (key, label, affordance)) in entries.iter().enumerate() {
+        let gap = if i == 0 { "" } else { GAP };
+        let tail = match affordance {
+            Affordance::Live { tool } => format!(" {tool}"),
+            Affordance::Choice => String::new(),
+            // The glyph and the words carry the disabled state. Dimming alone fails
+            // `NO_COLOR` and fails colour-vision-deficient readers.
+            Affordance::NoTarget { why } => format!(" \u{2500} {why}"),
+        };
+        let entry_w =
+            crate::width::width(gap) + 2 + crate::width::width(label) + crate::width::width(&tail);
+        // Reserve room for the `+N…` that announces anything that did not fit.
+        if used + entry_w + 4 > width && i > 0 {
+            dropped = entries.len() - i;
+            break;
+        }
+        if !gap.is_empty() {
+            spans.push(Span::raw(gap));
+        }
+        let body_style = if matches!(affordance, Affordance::NoTarget { .. }) {
+            dimmer
+        } else {
+            dim
+        };
+        spans.push(Span::styled(
+            format!("{key} "),
+            if matches!(affordance, Affordance::NoTarget { .. }) {
+                dimmer
+            } else {
+                key_style
+            },
+        ));
+        spans.push(Span::styled(
+            format!("{label}{tail}"),
+            if matches!(affordance, Affordance::Live { .. }) {
+                Style::default().fg(theme::FG)
+            } else {
+                body_style
+            },
+        ));
+        used += entry_w;
+    }
+    if dropped > 0 {
+        spans.push(Span::styled(format!(" +{dropped}\u{2026}"), dimmer));
+    }
+
+    vec![
+        Line::default(),
+        Line::from(Span::styled(
+            format!("{INDENT}ACTIONS"),
+            Style::default()
+                .fg(theme::DIMMER)
+                .add_modifier(Modifier::BOLD),
+        )),
+        Line::from(spans),
+    ]
+}
+
+/// Whether an action has a tool behind it on *this machine* — the half of resolution that
+/// touches the filesystem.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum ToolStatus {
+    Ready(String),
+    Ambiguous,
+}
+
+/// `tool_status`'s memo. `None` in the map means `Resolution::NoTool`.
+///
+/// **Why a cache at all:** resolving one action probes `PATH` (and `/Applications`) once per
+/// candidate, and `browse` alone has nine. The panel re-renders on every poll tick — 2-5
+/// seconds — and, in the Dashboard popup, on every cursor move. Doing that much filesystem
+/// work per frame to draw six words is the kind of cost that never shows up in a test and
+/// always shows up on a laptop.
+///
+/// **Why it is safe to cache for the process's lifetime:** the answer depends on the
+/// machine and on the user's stored choice, both of which are keyed here — not on the
+/// project, which is why the target half of resolution is computed fresh on every frame in
+/// `actions_lines`. A tool *installed while petri is running* is the one thing this will
+/// miss, which is what `invalidate_tool_cache` is for; `lib.rs` calls it when a re-pick
+/// writes `prefs.tools`, the one moment the stored half of the key changes under us.
+///
+/// **A note for whoever writes the next test that renders this rung.** This is a process
+/// global, and `is_installed_probe` behind it reads process-global `PATH` and
+/// `/Applications`. Cargo runs a binary's tests in parallel threads, so the first test to
+/// render an ACTIONS rung fixes the answer for every later one in that binary. That is the
+/// same cross-test coupling issue #20 was filed about (three tests mutating `$HOME`), one
+/// layer down: nothing writes `PATH` mid-run today, so nothing races today. A test that
+/// needs a *specific* resolution must inject it rather than arrange the environment and
+/// hope — which is what `tools::resolve`'s injected `installed` closure already exists
+/// for, and why the impure probe lives in `exec.rs` on the other side of that seam.
+/// Cache key: the action's id plus the user's stored choice for it. Both are what the
+/// answer depends on; the project is not, which is why the target half of resolution is
+/// recomputed every frame.
+type ToolCacheKey = (&'static str, Option<String>);
+
+static TOOL_CACHE: LazyLock<Mutex<HashMap<ToolCacheKey, Option<ToolStatus>>>> =
+    LazyLock::new(|| Mutex::new(HashMap::new()));
+
+/// Forget every cached tool lookup. Call after anything that could change the answer: a
+/// re-pick that writes `prefs.tools`, or an explicit user-driven rescan.
+pub fn invalidate_tool_cache() {
+    if let Ok(mut cache) = TOOL_CACHE.lock() {
+        cache.clear();
+    }
+}
+
+/// Is there a tool for this action, and what is it called? `None` is `NoTool`.
+fn tool_status(action: &crate::tools::Action, configured: Option<&str>) -> Option<ToolStatus> {
+    let key = (action.id, configured.map(str::to_string));
+    if let Ok(cache) = TOOL_CACHE.lock()
+        && let Some(hit) = cache.get(&key)
+    {
+        return hit.clone();
+    }
+
+    // Deliberately fed a placeholder target, so `resolve` answers the machine question
+    // only: rule 1 would otherwise short-circuit every `Target::Url` action to `NoTarget`
+    // for reasons that vary per project and must not be cached. Only `Launch::program` is
+    // read, and that never depends on the substituted path or url.
+    let facts = crate::tools::Facts {
+        path: "/",
+        url: Some("https://example.invalid"),
+    };
+    let status = match crate::tools::resolve(action, &facts, configured, &|probe| {
+        crate::exec::is_installed_probe(probe)
+    }) {
+        crate::tools::Resolution::Ready(launch) => Some(ToolStatus::Ready(launch.program)),
+        crate::tools::Resolution::Ambiguous(_) => Some(ToolStatus::Ambiguous),
+        crate::tools::Resolution::NoTool => None,
+        crate::tools::Resolution::NoTarget => {
+            // Unreachable: the placeholder facts above give every action a target. Assert
+            // in debug so a change to `resolve`'s rules surfaces in the test suite rather
+            // than as a mystery entry on screen with no tool name; degrade in release,
+            // because a wrong label is not worth a panic in a render path.
+            debug_assert!(
+                false,
+                "tools::resolve returned NoTarget for placeholder facts — rule 1 changed"
+            );
+            Some(ToolStatus::Ambiguous)
+        }
+    };
+
+    if let Ok(mut cache) = TOOL_CACHE.lock() {
+        cache.insert(key, status.clone());
+    }
+    status
+}
+
+/// R6: this project's slice of the activity feed — the rung that makes the panel a
+/// dashboard rather than a taller fact sheet.
+///
+/// `feed.rs` already diffs successive `Radar` snapshots fleet-wide; filtering that stream to
+/// one project is close to free, and everything above this rung is a fact sheet while this
+/// one is a history.
+///
+/// `rows` is the whole rung including its label, so the caller's elastic budget and this
+/// function's output cannot disagree.
+fn recent_lines(p: &Project, ctx: &FocusCtx, width: usize, rows: u16) -> Vec<Line<'static>> {
+    let Some(feed) = ctx.feed else {
+        return Vec::new();
+    };
+    let budget = rows.saturating_sub(1) as usize; // one row goes to the label
+    if budget == 0 {
+        return Vec::new();
+    }
+
+    // `FeedState` is already newest-first, so the filter preserves the order.
+    let events: Vec<_> = feed
+        .events()
+        .iter()
+        .filter(|e| e.project == p.name)
+        .take(budget)
+        .collect();
+    if events.is_empty() {
+        return Vec::new();
+    }
+
+    let mut lines = vec![Line::from(Span::styled(
+        format!("{INDENT}RECENT"),
+        Style::default()
+            .fg(theme::DIMMER)
+            .add_modifier(Modifier::BOLD),
+    ))];
+
+    for e in events {
+        // `stamp` and `detail`, not `row_text`/`body_text`: the latter two prefix the
+        // project name, which every row here would repeat back at the panel's own header.
+        // The stamp's date-vs-clock switch is already solved in `feed.rs` and getting it
+        // wrong reads as a sorting bug, so it is reused rather than reformatted.
+        let stamp = e.stamp(ctx.now);
+        // Today's events tint fresh, earlier dates cold — the same rule the fleet-wide
+        // feed uses, so a row does not change meaning when it moves between the two.
+        let stamp_style = if e.is_today(ctx.now) {
+            Style::default().fg(theme::FRESH)
+        } else {
+            Style::default().fg(theme::COLD)
+        };
+        let lead = format!("{INDENT} {stamp}  ");
+        let detail_budget = width.saturating_sub(crate::width::width(&lead));
+        lines.push(Line::from(vec![
+            Span::raw(format!("{INDENT} ")),
+            Span::styled(stamp, stamp_style),
+            Span::raw("  "),
+            Span::styled(
+                elide(&e.detail, detail_budget),
+                Style::default().fg(theme::DIM),
+            ),
+        ]));
+    }
+    lines
+}
+
+/// R7: the repository facts nothing else in the UI shows — whether the newest commit here
+/// is yours, and where the remote is.
+///
+/// `mine_last_commit_at == last_commit_at` is the common case and renders **one** age, not
+/// two identical ones. The two-age form is the whole point of the row when they differ:
+/// "someone else pushed here" is otherwise unavailable anywhere in `petri`.
+fn repo_lines(p: &Project, ctx: &FocusCtx, width: usize) -> Vec<Line<'static>> {
+    let Some(facts) = repo_facts(p, ctx.now) else {
+        return Vec::new();
+    };
+
+    vec![zone_line(
+        ZoneSpec {
+            label: "repo",
+            label_style: Style::default()
+                .fg(theme::BRANCH)
+                .add_modifier(Modifier::BOLD),
+            facts,
+            facts_style: Style::default().fg(theme::DIM),
+            spark: None,
+        },
+        width,
+    )]
+}
+
+fn strip_scheme(url: &str) -> &str {
+    url.strip_prefix("https://")
+        .or_else(|| url.strip_prefix("http://"))
+        .unwrap_or(url)
+}
+
+/// R8: the worktree family, via `parent_path`.
+///
+/// Two rows: what this project is within its family, then who the family is. Today the
+/// Browser can only be made to show this by scanning the list by eye.
+///
+/// A project with no family still renders — `plan_rungs` admits `Tree` on geometry alone —
+/// and says so rather than leaving a labelled row blank.
+fn tree_lines(p: &Project, ctx: &FocusCtx, width: usize) -> Vec<Line<'static>> {
+    let children: Vec<&str> = ctx
+        .radar
+        .projects
+        .iter()
+        .filter(|o| o.parent_path.as_deref() == Some(p.path.as_str()))
+        .map(|o| o.name.as_str())
+        .collect();
+    let siblings: Vec<&str> = match p.parent_path.as_deref() {
+        Some(parent) => ctx
+            .radar
+            .projects
+            .iter()
+            .filter(|o| o.parent_path.as_deref() == Some(parent) && o.path != p.path)
+            .map(|o| o.name.as_str())
+            .collect(),
+        None => Vec::new(),
+    };
+
+    let (summary, family) = match p.parent_path.as_deref() {
+        Some(parent) => (
+            format!("worktree of {}", present::worktree_parent_name(parent)),
+            siblings,
+        ),
+        None if !children.is_empty() => {
+            let unit = if children.len() == 1 {
+                "worktree"
+            } else {
+                "worktrees"
+            };
+            (format!("{} {unit}", children.len()), children)
+        }
+        None => ("no worktrees".to_string(), Vec::new()),
+    };
+
+    let mut lines = vec![zone_line(
+        ZoneSpec {
+            label: "tree",
+            label_style: Style::default()
+                .fg(theme::BRANCH)
+                .add_modifier(Modifier::BOLD),
+            facts: summary,
+            facts_style: Style::default().fg(theme::DIM),
+            spark: None,
+        },
+        width,
+    )];
+
+    // Second row: the family itself, indented under the label column so it reads as a
+    // continuation rather than as another zone. Skipped entirely when there is no family —
+    // this rung is admitted on geometry alone, and a labelled row followed by a blank one
+    // is exactly the "renders something plausible but wrong" failure a row budget cannot
+    // catch. The row it gives back is not reclaimed by `Recent`'s budget, which is sized
+    // from `rung_rows`' table; spending it on nothing would be worse than leaving it empty.
+    if !family.is_empty() {
+        let indent = format!("{INDENT}{}", " ".repeat(crate::dashboard::ZONE_LABEL_WIDTH));
+        lines.push(Line::from(Span::styled(
+            format!(
+                "{indent}{}",
+                elide(
+                    &family.join(" \u{00B7} "),
+                    width.saturating_sub(crate::width::width(&indent))
+                )
+            ),
+            Style::default().fg(theme::DIMMER),
+        )));
+    }
+    lines
+}
+
+// ---------------------------------------------------------------------------
+// The `--mini` mount (issue #31, `PLAN-focus-panel.md` T7).
+//
+// Lives here rather than in `lib.rs` because it is chrome around the panel, not run-loop
+// logic — the same split `dashboard::render_focus_overlay` makes for the popup mount.
+// ---------------------------------------------------------------------------
+
+/// `--mini` grows a header + rule only once the frame can spare two rows for them AND is
+/// wide enough for the title to say something. Below either threshold the panel takes the
+/// whole frame, per `PROPOSAL-focus-panel.md` §3.4: "no header, no rule, no zone labels —
+/// at 24 columns a 7-cell label costs 29% of the line."
+const MINI_CHROME_MIN_WIDTH: u16 = 30;
+
+/// See `MINI_CHROME_MIN_WIDTH`. 8 = the 6-row panel floor plus the two rows the chrome
+/// costs, so growing a header can never push the panel below the floor.
+const MINI_CHROME_MIN_HEIGHT: u16 = MIN_FOCUS_HEIGHT + 2;
+
+/// Above this many rows the header rule is the Dashboard's HEAVY `═`; below it, a light
+/// `─`. Both mockups in `PROPOSAL-focus-panel.md` §3.2/§3.3 draw it that way — the heavy
+/// rule reads as a title bar, which a ten-row pane has no room to be.
+const MINI_HEAVY_RULE_MIN_HEIGHT: u16 = 15;
+
+/// Render a whole `petri --mini` frame: `--mini`'s own chrome plus the panel.
+///
+/// **No border** (`PROPOSAL-focus-panel.md` §9, "border-nesting depth: 0 for `--mini`"):
+/// the terminal edge already frames it. The footer the mockups show is not chrome either —
+/// it is the `Actions` rung in its degraded, label-less form, which `plan_rungs` already
+/// admits at every size down to the floor.
+///
+/// The below-the-floor message is `--mini`'s own wording, not the popup's
+/// (`PROPOSAL-focus-panel.md` §10's last row): it names the binary and the dimensions,
+/// because someone who typed `petri --mini` into a split needs to know what to resize to.
+pub fn render_mini(frame: &mut ratatui::Frame, area: Rect, ctx: &FocusCtx) {
+    use ratatui::widgets::Paragraph;
+
+    if area.width == 0 || area.height == 0 {
+        return;
+    }
+
+    let chrome = area.width >= MINI_CHROME_MIN_WIDTH && area.height >= MINI_CHROME_MIN_HEIGHT;
+    let content = if chrome {
+        Rect::new(area.x, area.y + 2, area.width, area.height - 2)
+    } else {
+        area
+    };
+
+    let mut lines: Vec<Line<'static>> = Vec::new();
+    if chrome {
+        lines.push(mini_header_line(ctx, area.width as usize));
+        let rule = if area.height >= MINI_HEAVY_RULE_MIN_HEIGHT {
+            "═"
+        } else {
+            "─"
+        };
+        lines.push(Line::from(Span::styled(
+            rule.repeat(area.width as usize),
+            Style::default().fg(theme::DIMMER),
+        )));
+    }
+
+    let body = focus_lines(content, ctx);
+    if body.is_empty() {
+        lines.extend(mini_too_small_lines(content));
+    } else {
+        lines.extend(body);
+    }
+
+    lines.truncate(area.height as usize);
+    frame.render_widget(Paragraph::new(lines), area);
+}
+
+/// ` petri · {project}` on the left, `5h 16% · 7d 1% · ▲ 4m` on the right — the pane's
+/// identity, since a `--mini` pane in a corner is often the only thing on screen saying
+/// which project it is watching, plus the two facts you keep a `--mini` pane open *for*.
+///
+/// **The ladder runs the other way round from the Dashboard's** (`dashboard::
+/// header_right_group`, where quota outranks the clock). Here the per-project silence
+/// indicator outranks the fleet-wide quota, because a `--mini` pane exists to watch one
+/// project — and `PROPOSAL-focus-panel.md` §3.3's 36×10 mockup pins exactly that, showing
+/// `▲ 4m` alone once the room runs out. Rungs:
+///
+/// ```text
+/// 5h 16% · 7d 1% · ▲ 4m
+/// 16%/1% · ▲ 4m
+/// ▲ 4m
+/// (nothing, and the identity gets the whole line)
+/// ```
+///
+/// The **short** silence form is the only one used, at every width: R0's identity line is
+/// one row below and already carries `▲ waiting on you 4m` in full, so spending 15 more
+/// columns here to repeat it would cost the quota segment its place for no new fact.
+fn mini_header_line(ctx: &FocusCtx, width: usize) -> Line<'static> {
+    let project = focused_project(ctx);
+    let name = project
+        .map(|p| p.name.clone())
+        .unwrap_or_else(|| "petri".to_string());
+    let left = format!("petri · {name}");
+
+    // `silence_group`'s short form; empty when there is no agent to be silent.
+    let silence = project
+        .map(|p| silence_group(p, ctx.now).1)
+        .unwrap_or_default();
+    let quota_full = crate::dashboard::quota_segment(ctx.radar.quota.as_ref(), false);
+    let quota_short = crate::dashboard::quota_segment(ctx.radar.quota.as_ref(), true);
+    let join = |a: Option<&str>, b: &str| -> String {
+        match (a, b.is_empty()) {
+            (Some(a), false) => format!("{a} · {b}"),
+            (Some(a), true) => a.to_string(),
+            (None, false) => b.to_string(),
+            (None, true) => String::new(),
+        }
+    };
+    let rungs = [
+        join(quota_full.as_deref(), &silence),
+        join(quota_short.as_deref(), &silence),
+        silence.clone(),
+    ];
+
+    // One column of right margin, mirroring `INDENT`'s left one, so the group never touches
+    // the frame edge; two of separation, so the identity and the right group read as two
+    // groups rather than one run-on string. Both are what make §3.3's 36×10 mockup drop
+    // quota — at 36 the compressed pair fits by exactly one column otherwise, and a
+    // one-space gap hard against the frame edge is not the line that mockup draws.
+    const RIGHT_MARGIN: usize = 1;
+    const MIN_GAP: usize = 2;
+
+    // The identity half never elides to make room for the right group: a pane that cannot
+    // say which project it is watching has lost the one thing it exists to say.
+    let inner = width.saturating_sub(RIGHT_MARGIN);
+    let lead = crate::width::width(INDENT) + crate::width::width(&left);
+    let right = rungs
+        .into_iter()
+        .find(|rung| !rung.is_empty() && lead + MIN_GAP + crate::width::width(rung) <= inner)
+        .unwrap_or_default();
+
+    let name_budget = inner
+        .saturating_sub(crate::width::width(INDENT))
+        .saturating_sub(if right.is_empty() {
+            0
+        } else {
+            crate::width::width(&right) + MIN_GAP
+        });
+    let shown = elide(&left, name_budget);
+    let pad = inner
+        .saturating_sub(crate::width::width(INDENT))
+        .saturating_sub(crate::width::width(&shown))
+        .saturating_sub(crate::width::width(&right));
+
+    let mut spans = vec![
+        Span::raw(INDENT),
+        Span::styled(
+            shown,
+            Style::default()
+                .fg(theme::ACCENT)
+                .add_modifier(Modifier::BOLD),
+        ),
+    ];
+    if !right.is_empty() {
+        spans.push(Span::raw(" ".repeat(pad)));
+        spans.push(Span::styled(right, Style::default().fg(theme::DIM)));
+    }
+    Line::from(spans)
+}
+
+/// `PROPOSAL-focus-panel.md` §3.5's exact wording, naming the dimensions rather than just
+/// refusing — the same honesty rule as `SPEC.md` §4.4's missing-state-file message.
+fn mini_too_small_lines(area: Rect) -> Vec<Line<'static>> {
+    let dim = Style::default().fg(theme::DIM);
+    let full = format!("petri --mini needs {MIN_FOCUS_WIDTH}x{MIN_FOCUS_HEIGHT}");
+    let mut lines = if area.width as usize >= full.chars().count() {
+        vec![Line::from(Span::styled(full, dim))]
+    } else {
+        // Two short lines, because the frame that triggers this is by definition too
+        // narrow to hold the one-line form.
+        vec![
+            Line::from(Span::styled("--mini needs", dim)),
+            Line::from(Span::styled(
+                format!("{MIN_FOCUS_WIDTH}x{MIN_FOCUS_HEIGHT}"),
+                dim,
+            )),
+        ]
+    };
+    lines.truncate(area.height as usize);
+    lines
+}
+
+#[cfg(test)]
+mod mini_mount_tests {
+    //! `render_mini`'s chrome arithmetic, which is the one part of the `--mini` mount that
+    //! is neither `plan_rungs`' (already pinned size-by-size in `s11_focus_plan.rs`) nor the
+    //! run loop's. Structural assertions against a reconstructed grid, per `SPEC.md` §8 —
+    //! what matters is *which rows* the chrome occupies and that the panel below it still
+    //! clears the floor, not the exact glyphs.
+
+    use super::*;
+    use ratatui::{Terminal, backend::TestBackend};
+
+    fn load_normal() -> Radar {
+        let path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("..")
+            .join("fixtures")
+            .join("normal.json");
+        serde_json::from_str(&std::fs::read_to_string(&path).expect("fixtures/normal.json"))
+            .expect("normal.json deserializes")
+    }
+
+    /// Render one `--mini` frame at `w`x`h` and hand back its rows as strings.
+    fn rows(radar: &Radar, w: u16, h: u16) -> Vec<String> {
+        let prefs = Prefs::default();
+        let ctx = FocusCtx {
+            radar,
+            target: FocusTarget::Project(0),
+            now: Utc::now(),
+            feed: None,
+            prefs: &prefs,
+        };
+        let mut terminal = Terminal::new(TestBackend::new(w, h)).expect("TestBackend");
+        terminal
+            .draw(|frame| render_mini(frame, frame.area(), &ctx))
+            .expect("draw");
+        let buf = terminal.backend().buffer().clone();
+        (0..h)
+            .map(|y| {
+                (0..w)
+                    .map(|x| buf[(x, y)].symbol())
+                    .collect::<String>()
+                    .trim_end()
+                    .to_string()
+            })
+            .collect()
+    }
+
+    #[test]
+    fn the_roomy_pane_grows_a_title_and_a_rule() {
+        // `PROPOSAL-focus-panel.md` §3.2's 60x20 mockup: title row, rule row, then panel.
+        let radar = load_normal();
+        let out = rows(&radar, 60, 20);
+        assert!(
+            out[0].contains("petri ·") && out[0].contains(&radar.projects[0].name),
+            "row 0 must name the pane's project, got {:?}",
+            out[0]
+        );
+        assert!(
+            out[1].chars().all(|c| c == '═'),
+            "row 1 must be the heavy rule, got {:?}",
+            out[1]
+        );
+        assert!(
+            out[2].contains(&radar.projects[0].name),
+            "the panel starts on row 2, got {:?}",
+            out[2]
+        );
+    }
+
+    #[test]
+    fn the_narrow_pane_uses_the_light_rule() {
+        // §3.3's 36x10 mockup keeps the header but drops to `─`: a ten-row pane has no
+        // room to read as a title bar.
+        let radar = load_normal();
+        let out = rows(&radar, 36, 10);
+        assert!(out[0].contains("petri ·"), "got {:?}", out[0]);
+        assert!(
+            out[1].chars().all(|c| c == '─'),
+            "row 1 must be the light rule, got {:?}",
+            out[1]
+        );
+    }
+
+    #[test]
+    fn the_floor_pane_has_no_chrome_at_all() {
+        // §3.4: at 24x6 a header would eat two of the six rows and push the panel below
+        // its own floor, so the panel takes the whole frame instead.
+        let radar = load_normal();
+        let out = rows(&radar, 24, 6);
+        assert!(
+            !out[0].contains("petri ·"),
+            "no title at the floor, got {:?}",
+            out[0]
+        );
+        assert!(
+            out.iter().any(|r| r.contains(&radar.projects[0].name)),
+            "the panel itself must still render, got {out:?}"
+        );
+    }
+
+    #[test]
+    fn below_the_floor_says_what_to_resize_to() {
+        // §3.5, and it must be `--mini`'s wording rather than the popup's.
+        let radar = load_normal();
+        let out = rows(&radar, 40, 4);
+        let whole = out.join("\n");
+        assert!(
+            whole.contains("--mini needs") && whole.contains("24x6"),
+            "got {whole:?}"
+        );
+    }
+
+    #[test]
+    fn a_degenerate_frame_does_not_panic() {
+        let radar = load_normal();
+        for (w, h) in [(1, 1), (1, 40), (40, 1)] {
+            let _ = rows(&radar, w, h);
+        }
+    }
+}
