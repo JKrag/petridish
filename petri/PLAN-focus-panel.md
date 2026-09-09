@@ -395,7 +395,33 @@ Six things Phase D inherits as decided rather than open:
   this way — copy that shape rather than inventing one.
 - **Gotcha:** `Enter` is unaffected. Do not "unify" the two keys.
 
-### T6 — re-point the Browser's popup · `[easy]`
+### T6 — re-point the Browser's popup · `[easy]` · **DROPPED (2026-09-09, human call)**
+
+> **The task's own premise is false, and the ratchet cannot grade it.** Kept here rather
+> than deleted, because the reasoning is the record for why #32 ships narrower than its
+> text reads.
+>
+> `s5_snapshot.rs::detail_popup_reaches_detail_fields_when_neither_placement_fits` asserts
+> that `github_url` appears in the `Space` popup at **60×10** — that assertion *is* issue
+> #35's reason for existing: the popup is the only way to reach detail-only fields when
+> neither inline placement fits. The focus panel's `Repo` rung, which is where a URL would
+> come from, gates at `(56, 28)`. A ten-row terminal cannot admit it at any popup size, so
+> the swap makes that protected test fail by construction, not by a sizing mistake.
+> Widening the gate instead breaks `s11_focus_plan.rs`.
+>
+> On top of that, **no test in Phase D grades T6** (BASE 52 = 23 in `s11_focus_mount.rs` +
+> 29 in `s12_mini_resolve.rs`), so it can only ever *lower* the score, and §2's keep rule
+> reverts every attempt — the same shape as T0b, which is why that one was pulled forward
+> into Phase A as cloud work.
+>
+> **Decision:** drop it. #32 closes for the Dashboard popup and `--mini` only; the
+> Browser's `Space` popup and its inline detail pane both keep the fact sheet, and the
+> re-point becomes a follow-up issue. The rejected alternatives were (b) authorise both a
+> spec change and an `s5_snapshot.rs` edit, accepting that the popup stops being #35's
+> escape hatch, and (c) render `focus_lines` only when the inner rect clears the `Repo`
+> gate and fall back to the fact sheet below it — two detail layouts in one screen
+> swapping on a size threshold, the least predictable of the three.
+
 - **Mutable:** `petri/src/browser.rs`
 - **Do:** the `Space` popup renders `focus_lines` instead of the fact sheet. The binding,
   the popup geometry and the `Esc` behaviour are all unchanged.
@@ -419,6 +445,58 @@ Six things Phase D inherits as decided rather than open:
   (§4.4). The not-a-project message follows the same rule.
 
 **Phase D exit:** `afk-verify.sh` prints 0; `make check` green.
+
+### Actual result (2026-09-09)
+
+Landed as **two** commits, not three — T6 is dropped (see above). `afk-verify.sh`: 52 → 29
+(T5) → 0 (T7). `make check` exits 0 workspace-wide.
+
+Six things worth carrying forward:
+
+- **`focus_placement`'s switch is tied to `plan_rungs`' `Path` gate `(30, 10)` plus the
+  border**, i.e. `FOCUS_POPUP_MIN_WIDTH/HEIGHT = 32/12`, not to a hand-fitted constant. An
+  overlay earns its place only once its content rect can carry more than the three
+  unconditional rungs the floor guarantees — and that rule reproduces §10's pressure table
+  exactly (60×20 is a popup at 48×16; 48×14 misses by one row at 38×11). The popup is also
+  capped at 64×24 so a large terminal gets an overlay rather than a bordered full screen;
+  the 80% bound still applies above the cap.
+- **`render_focus_overlay` is a separate call from `dashboard::render`**, not a branch
+  inside it. That signature is pinned by `s6_snapshot.rs`/`s9_feed_render.rs` and carries
+  no `Prefs`, which the `ACTIONS` rung needs; keeping it separate also keeps `MECH-1`'s
+  ordering explicit at the call site. `render_current` grew a `prefs` parameter — it is
+  private, so that was free.
+- **`toggle_selected` is untouched.** `press_space` is a new entry point and only the key
+  handler is rewired, because `Enter` on a header and `s6_dashboard.rs` both still want
+  `toggle_selected`'s current shape. A PTY test does press `Space` (`s6_pty.rs:140`) but
+  only asserts liveness, so the behaviour change is invisible to it.
+- **The ambiguous-name tie-break is case-insensitive**, then byte-wise for determinism.
+  §6 said "ties broken by `path` ascending" without saying under which ordering, and plain
+  byte order sorts `repos/JKrag/lantern` ahead of `repos/aaa-first/lantern` — ASCII puts
+  every capital before every lowercase letter, which is not what "alphabetically first"
+  means to anyone reading a fleet list. `tied_matches_break_by_path_not_by_radar_order`
+  fails under a raw compare. macOS paths are case-insensitive anyway.
+- **`--mini`'s chrome is itself responsive** and appears only at 30×8 and above, so a
+  header can never push the panel below its own 24×6 floor. That reproduces §3.2/§3.3/§3.4
+  as written. The footer those mockups show is **not** chrome: it is the `Actions` rung in
+  its degraded, label-less form, which `plan_rungs` already admits down to the floor. The
+  header's right-hand group is left empty for `TQ-b`, not half-built.
+- **A `--mini` target that stops resolving mid-run renders the error in-pane** rather than
+  exiting. The preflight (before the alternate screen, §4.4) covers the case the user can
+  act on; a pane pinned in a split for days must not vanish because one scan dropped a
+  project.
+
+Two things Phase E and the attended pass inherit:
+
+- **`petri/src/focus.rs` gained an inline `mini_mount_tests` module** — five `TestBackend`
+  tests over `render_mini`'s chrome arithmetic. It is the one part of the `--mini` mount
+  that is neither `plan_rungs`' (pinned size-by-size in `s11_focus_plan.rs`) nor the run
+  loop's, and it was otherwise ungraded. They live in `src/` rather than `tests/`, so
+  `EXPECTED_BINARIES` is unchanged.
+- **T5 briefly shipped a glyph-allowlist violation** — the popup's border was
+  `BorderType::Rounded`, whose `╭╮╰╯` are not on the allowlist, exactly the trap
+  `focus.rs`'s module doc had already called out. `glyph_portability.rs` did not catch it,
+  because the gate does not see ratatui-generated border characters at all. That hole is
+  `IDEAS.md` §5's, still open, and it is now known to be reachable rather than theoretical.
 
 ---
 
@@ -546,10 +624,12 @@ If you do go the AFK route:
    — that's `IDEAS.md`'s own stated convention, and the deferred-rung list stays behind.
 6. Issues closed, with one scope caveat worth stating rather than discovering on the issue:
    - **#30, #31** — fully.
-   - **#32 — for the popup only.** T6 re-points the Browser's `Space` popup at the focus
-     panel; the **inline** detail pane (beside/below, issue #35) keeps its fact-sheet layout.
-     `ACT-7`'s text says "the detail pane," so either widen T6 to cover the inline pane too,
-     or close #32 noting the inline pane is unchanged and open a follow-up. Decide before
-     closing, don't let the issue imply more than shipped.
+   - **#32 — for the Dashboard popup and `--mini` only.** T6 was dropped (§7): re-pointing
+     the Browser's `Space` popup at the focus panel would break `s5_snapshot.rs`'s
+     detail-fields-at-60×10 assertion by construction, since the `Repo` rung gates at
+     `(56, 28)`. Both the Browser's popup and its inline detail pane keep the fact sheet.
+     Close #32 saying exactly that, and open the re-point as a follow-up — `ACT-7`'s text
+     says "the detail pane," so the issue implies more than shipped unless it is scoped
+     explicitly.
    - **#33** — if T8 landed.
    - **#29 — MVP only.** The dedicated-token-TUI hand-off and `DATA-5` (`ctx%`) stay open.
