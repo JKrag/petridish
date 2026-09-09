@@ -54,6 +54,7 @@ fn with_git(mut p: Project, branch: &str, files: u32, commit_at: Option<&str>) -
         branch: Some(branch.to_string()),
         is_dirty: files > 0,
         uncommitted_files: files,
+        untracked_files: 0,
         last_commit_at: commit_at.map(ts),
         mine_last_commit_at: None,
         github_url: None,
@@ -677,6 +678,7 @@ fn agent_detail_suffix_follows_the_count_not_the_dirty_flag() {
         branch: Some("main".to_string()),
         is_dirty: true,
         uncommitted_files: 0,
+        untracked_files: 0,
         ..GitState::not_a_repo()
     };
     assert_eq!(agent_detail(&p), "claude-code stop");

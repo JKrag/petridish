@@ -100,6 +100,7 @@ pub fn scan(path: &Path, author_patterns: &[String], author_since: &str) -> GitS
         branch: None,
         is_dirty: false,
         uncommitted_files: 0,
+        untracked_files: 0,
         last_commit_at: None,
         mine_last_commit_at: None,
         github_url: None,
@@ -110,7 +111,11 @@ pub fn scan(path: &Path, author_patterns: &[String], author_since: &str) -> GitS
 
     let entries = status_entries(&repo);
     result.is_dirty = !entries.is_empty();
+    // `uncommitted_files` keeps its original meaning — the total — so every consumer
+    // written before the split still reads the number it expects. `untracked_files` is a
+    // subset of it, and the modified count is the difference.
     result.uncommitted_files = entries.len() as u32;
+    result.untracked_files = entries.iter().filter(|e| e.untracked).count() as u32;
 
     if let Ok(head_commit) = repo.head_commit()
         && let Ok(time) = head_commit.time()
@@ -278,7 +283,7 @@ fn resolve_remote_fetch_url(repo: &gix::Repository) -> Option<String> {
 /// `IndexWorktree::Modification` (confirmed via a throwaway probe against a real repo in
 /// this codebase's own dev tree that had exactly two such paths, inflating
 /// `uncommitted_files` by exactly 2 versus the real Python/git-CLI implementation).
-pub(crate) fn status_entries(repo: &gix::Repository) -> Vec<String> {
+pub(crate) fn status_entries(repo: &gix::Repository) -> Vec<StatusEntry> {
     let Ok(platform) = repo.status(gix::progress::Discard) else {
         return Vec::new();
     };
@@ -287,9 +292,43 @@ pub(crate) fn status_entries(repo: &gix::Repository) -> Vec<String> {
     };
     let mut seen = std::collections::HashSet::new();
     iter.filter_map(|item| item.ok())
-        .map(|item| item.location().to_string())
-        .filter(|loc| seen.insert(loc.clone()))
+        .map(|item| StatusEntry {
+            path: item.location().to_string(),
+            untracked: is_untracked(&item),
+        })
+        .filter(|entry| seen.insert(entry.path.clone()))
         .collect()
+}
+
+/// One line of `git status --porcelain`, as this module models it.
+///
+/// The `untracked` flag is what separates `?` from `!` in the Browser's git segment
+/// (issue #38): "six files I haven't added yet" and "six files I've changed" are
+/// different situations, and a single total says neither.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct StatusEntry {
+    pub(crate) path: String,
+    pub(crate) untracked: bool,
+}
+
+/// Is this status item a file git has never seen?
+///
+/// Untracked entries arrive as `DirectoryContents` — the directory walk's output, which
+/// has no counterpart in the index. That variant also carries *ignored* files when the
+/// walk is configured to emit them, so the entry's own status is checked rather than the
+/// variant alone; counting an ignored file as untracked would put `target/` in the number.
+///
+/// Everything else — an index-vs-worktree `Modification`, a tree-vs-index change, a
+/// detected `Rewrite` — is a change to something git already knows about, so it counts as
+/// modified. That mirrors how `git status --short` splits `??` from every other code.
+fn is_untracked(item: &gix::status::Item) -> bool {
+    matches!(
+        item,
+        gix::status::Item::IndexWorktree(gix::status::index_worktree::Item::DirectoryContents {
+            entry,
+            ..
+        }) if entry.status == gix::dir::entry::Status::Untracked
+    )
 }
 
 /// `pattern` is a regular expression, exactly like `git log --author=<pattern>` (config's
@@ -453,6 +492,61 @@ mod tests {
         assert!(!state.is_dirty);
         assert_eq!(state.uncommitted_files, 0);
         assert_eq!(state.last_commit_at, Some(parse_date(AUTHOR_DATE).unwrap()));
+    }
+
+    #[test]
+    fn untracked_files_are_counted_separately_from_modified_ones() {
+        // Issue #38's `!N ?M` split. Cross-verified against the real `git status --short`
+        // rather than trusted: this walks gix's status stream and classifies each item, and
+        // the classification is exactly the part a unit test alone would rubber-stamp.
+        let tmp = make_tmp_dir("untracked_split");
+        git_init(&tmp);
+        git_add_and_commit(&tmp, "tracked.txt", "original");
+
+        // One tracked file changed, two files git has never seen.
+        fs::write(tmp.join("tracked.txt"), "edited").expect("edit tracked");
+        fs::write(tmp.join("new-a.txt"), "a").expect("write new-a");
+        fs::write(tmp.join("new-b.txt"), "b").expect("write new-b");
+
+        let state = scan(&tmp, &[], "3 years");
+        assert!(state.is_dirty);
+        assert_eq!(state.uncommitted_files, 3, "total is unchanged in meaning");
+        assert_eq!(state.untracked_files, 2, "both `??` files, and only those");
+
+        // Parity: the same two numbers the git CLI would print.
+        let out = Command::new("git")
+            .args(["status", "--short"])
+            .current_dir(&tmp)
+            .output()
+            .expect("run git status");
+        let text = String::from_utf8_lossy(&out.stdout);
+        let cli_untracked = text.lines().filter(|l| l.starts_with("??")).count();
+        let cli_total = text.lines().filter(|l| !l.trim().is_empty()).count();
+        assert_eq!(
+            (
+                state.untracked_files as usize,
+                state.uncommitted_files as usize
+            ),
+            (cli_untracked, cli_total),
+            "gix status parity check: got {text:?}"
+        );
+    }
+
+    #[test]
+    fn an_ignored_file_is_neither_modified_nor_untracked() {
+        // `DirectoryContents` carries ignored entries too when the walk emits them, so the
+        // entry's own status is what decides. Counting ignored files as untracked would put
+        // every `target/` in the number — the reason `is_untracked` checks more than the
+        // variant.
+        let tmp = make_tmp_dir("untracked_ignored");
+        git_init(&tmp);
+        git_add_and_commit(&tmp, ".gitignore", "ignored.txt\n");
+        fs::write(tmp.join("ignored.txt"), "invisible").expect("write ignored");
+
+        let state = scan(&tmp, &[], "3 years");
+        assert!(!state.is_dirty, "an ignored file leaves the repo clean");
+        assert_eq!(state.uncommitted_files, 0);
+        assert_eq!(state.untracked_files, 0);
     }
 
     #[test]
