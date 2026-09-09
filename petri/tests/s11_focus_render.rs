@@ -505,6 +505,25 @@ fn r5_a_missing_target_is_disabled_in_words_not_only_in_colour() {
     );
 }
 
+#[test]
+fn r5_git_history_is_disabled_in_a_project_that_is_not_a_repo() {
+    // Issue #38. `lunar-fetcher` in `hostile.json` has `is_repo: false` — a directory
+    // discovery admitted on a manifest rather than a `.git`, which is a legitimate fleet
+    // member. `g` there used to launch git and have it exit immediately, flashing the
+    // screen; it is now the same dimmed, annotated entry `o` gets with no remote.
+    let c = Case::seeded("hostile.json");
+    let r = c.render_project("lunar-fetcher", ROOMY);
+    r.assert_has(
+        "not a repo",
+        "the reason `g` is inert, in words rather than by dimming alone",
+    );
+    assert!(
+        r.row_with("not a repo").contains('─'),
+        "…with §4's non-colour fallback glyph: got {:?}",
+        r.row_with("not a repo")
+    );
+}
+
 // ---------------------------------------------------------------------------
 // R6 — the per-project recent slice (T4).
 // ---------------------------------------------------------------------------

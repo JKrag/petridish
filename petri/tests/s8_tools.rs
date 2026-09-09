@@ -48,11 +48,21 @@ fn browse_fixture() -> Action {
 const PROJECT: Facts<'static> = Facts {
     path: "/Users/x/repos/thing",
     url: Some("https://github.com/x/thing"),
+    is_repo: true,
 };
 
 const NO_REMOTE: Facts<'static> = Facts {
     path: "/Users/x/repos/thing",
     url: None,
+    is_repo: true,
+};
+
+/// A project discovery admitted on a manifest file rather than a `.git` — issue #38's
+/// case. Legitimate fleet member, nothing for `g` to show.
+const NOT_A_REPO: Facts<'static> = Facts {
+    path: "/Users/x/repos/notes",
+    url: None,
+    is_repo: false,
 };
 
 // ---------------------------------------------------------------- rule 1 --
@@ -590,12 +600,15 @@ fn reveal_in_finder_is_bound_and_uses_open() {
 }
 
 #[test]
-fn browse_is_the_only_url_targeted_action() {
+fn each_action_declares_the_target_it_needs() {
+    // Spelled as an explicit table rather than "browse is the odd one out", which is what
+    // this test used to say: issue #38 gave `gitlog` a target of its own, and a rule phrased
+    // as one exception silently mis-states the registry the moment there are two.
     for action in tools::registry() {
-        let expected = if action.id == "browse" {
-            Target::Url
-        } else {
-            Target::Path
+        let expected = match action.id {
+            "browse" => Target::Url,
+            "gitlog" => Target::GitRepo,
+            _ => Target::Path,
         };
         assert_eq!(
             action.target, expected,
@@ -603,6 +616,64 @@ fn browse_is_the_only_url_targeted_action() {
             action.id
         );
     }
+}
+
+// ---------------------------------------------------- issue #38: `g` ---------
+
+#[test]
+fn git_history_has_no_target_in_a_project_that_is_not_a_repo() {
+    // #38: `g` on a non-repo used to resolve `Ready`, launch, and have git exit at once —
+    // the screen flashed and came straight back. `SPEC.md` §5 forbids advertising a key
+    // that does nothing, so this must be `NoTarget`, the same answer `o` gives a project
+    // with no remote.
+    let reg = tools::registry();
+    let gitlog = reg.iter().find(|a| a.id == "gitlog").expect("gitlog");
+
+    // Every git tool in the world installed makes no difference — this is a per-project
+    // fact, and rule 1 is checked before any machine question.
+    let got = tools::resolve(gitlog, &NOT_A_REPO, None, &|_| true);
+    assert_eq!(got, Resolution::NoTarget);
+
+    // ... and the same project still resolves the actions that only need a path.
+    let reveal = reg.iter().find(|a| a.id == "reveal").expect("reveal");
+    assert!(
+        matches!(
+            tools::resolve(reveal, &NOT_A_REPO, None, &only(&["open"])),
+            Resolution::Ready(_)
+        ),
+        "a non-repo is a legitimate project, not a disabled one"
+    );
+}
+
+#[test]
+fn git_history_offers_no_repick_in_a_project_that_is_not_a_repo() {
+    // `repick_candidates` carries its own copy of rule 1; if the two drift, `R` opens a
+    // picker for an action that cannot run.
+    let reg = tools::registry();
+    let gitlog = reg.iter().find(|a| a.id == "gitlog").expect("gitlog");
+    assert_eq!(
+        tools::repick_candidates(gitlog, &NOT_A_REPO, &|_| true),
+        None
+    );
+}
+
+#[test]
+fn each_target_states_its_own_reason() {
+    // The notice and the panel's dimmed entry both come from the target, so `o` and `g`
+    // cannot end up telling the user the same wrong thing. Regression for the hardcoded
+    // "has no remote" that used to serve both.
+    assert_eq!(Target::Url.notice(), "has no remote");
+    assert_eq!(Target::GitRepo.notice(), "is not a git repository");
+    assert_ne!(Target::Url.short_reason(), Target::GitRepo.short_reason());
+
+    assert!(Target::Url.missing(&NO_REMOTE));
+    assert!(!Target::Url.missing(&PROJECT));
+    assert!(Target::GitRepo.missing(&NOT_A_REPO));
+    assert!(!Target::GitRepo.missing(&PROJECT));
+    assert!(
+        !Target::Path.missing(&NOT_A_REPO),
+        "every project has a path"
+    );
 }
 
 // ------------------------------------------------------- launch_for ----------

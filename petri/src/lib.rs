@@ -1373,6 +1373,7 @@ fn begin_action(
     let facts = crate::tools::Facts {
         path: &project.path,
         url: project.git.github_url.as_deref(),
+        is_repo: project.git.is_repo,
     };
     // `ACT-4`'s resolution order for the editor: the stored answer first, then
     // `$VISUAL`, then `$EDITOR`, then the registry probe. Reading the environment here
@@ -1428,7 +1429,12 @@ fn begin_action(
         // `ACT-9`'s per-project axis, phrased in terms of the project rather
         // than the tooling: this is the half the user can see on the row in
         // front of them.
-        crate::tools::Resolution::NoTarget => Some(format!("{} has no remote", project.name)),
+        // `ACT-9`'s per-project axis. The reason comes from the target rather
+        // than being spelled here, so `o` on a project with no remote and `g` on
+        // a directory that is not a repository each say their own true thing.
+        crate::tools::Resolution::NoTarget => {
+            Some(format!("{} {}", project.name, action.target.notice()))
+        }
     }
 }
 
@@ -1452,11 +1458,12 @@ fn begin_repick(
     let facts = crate::tools::Facts {
         path: &project.path,
         url: project.git.github_url.as_deref(),
+        is_repo: project.git.is_repo,
     };
     match crate::tools::repick_candidates(action, &facts, &|p| crate::exec::is_installed_probe(p)) {
         // `ACT-9`'s per-project axis, phrased the same way `begin_action`
         // phrases it, so the two paths never disagree on screen.
-        None => Some(format!("{} has no remote", project.name)),
+        None => Some(format!("{} {}", project.name, action.target.notice())),
         // An empty list still opens the popup: `Other — specify path…` is
         // always a row, so a machine with nothing installed is still usable.
         Some(installed) => {
@@ -1496,6 +1503,7 @@ fn run_action(
     let facts = crate::tools::Facts {
         path: &project.path,
         url: project.git.github_url.as_deref(),
+        is_repo: project.git.is_repo,
     };
     let launch = crate::tools::launch_for(action, &facts, program);
     launch_now(terminal, &launch, std::path::Path::new(&project.path))
