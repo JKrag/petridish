@@ -506,7 +506,7 @@ Neither needs `focus.rs`. **But both mutate `dashboard.rs`, as does T0b** — so
 freely parallel with Phase B. Sequence them *after* T0b and they are conflict-free; run them
 concurrently with it and you get a three-way conflict on the one file.
 
-### TQ-a — quota in the header · `[easy]`
+### TQ-a — quota in the header · `[easy]` · **DONE (2026-09-09)**
 - **Depends on:** T0b (file-ordering only, not logically)
 - **Mutable:** `petri/src/dashboard.rs` (`header_lines`)
 - **Do:** `5h {n}% · 7d {n}%` in the header's right group, with the elision ladder
@@ -519,14 +519,14 @@ concurrently with it and you get a three-way conflict on the one file.
   `last-status.json` last and is not attributable to any project (`DATA-5`).
 - **Gotcha:** `None` omits the segment. Never `0%`.
 
-### TQ-b — the same header line in `--mini` · `[easy]`
+### TQ-b — the same header line in `--mini` · `[easy]` · **DONE (2026-09-09)**
 - **Depends on:** T7 and TQ-a
 - **Mutable:** `petri/src/focus.rs`
 - **Do:** reuse TQ-a's segment builder in `--mini`'s header. Split out from TQ-a precisely
   because it is the only part that depends on `--mini` existing — leaving it inside TQ-a
   made a task drawn as independent silently depend on the last task in Phase D.
 
-### T8 — the lush tier (#33) · `[medium]`
+### T8 — the lush tier (#33) · `[medium]` · **DONE (2026-09-09)**
 - **Depends on:** T0b (file-ordering only)
 - **Mutable:** `petri/src/dashboard.rs`
 - **Do:** a third density tier: roomy + rungs R4 and R7 as two extra card rows, plus the
@@ -537,6 +537,64 @@ concurrently with it and you get a three-way conflict on the one file.
   already wrong once).
 - **Gotcha:** the feed must still yield entirely when any section was skipped or truncated.
   That rule is unchanged and its test must keep passing.
+
+### Actual result (2026-09-09)
+
+Landed as **two** commits, not three: `TQ-a` and `TQ-b` are one user-visible feature behind
+one test file, and `TQ-b`'s only stated dependency (`T7`) had already shipped. `make check`
+exits 0 workspace-wide; `EXPECTED_BINARIES` 36 → 37 → 38, each bump in the commit that added
+the test file. No pre-existing test moved in either commit.
+
+**`T8` was spiked before it was built**, and that was the decision that mattered. `feed_rows_for`
+has deliberately no ceiling and claims every spare row, so `T8` is not additive — it *takes*
+rows the feed currently holds, and every feed test is protected (§3). A one-line throwaway
+spike (widen `item_span`, run `cargo test -p petri`) named the true scope before any of it
+was written: **three tests move, none of them feed tests, and all three are artifacts of the
+spike itself** — `render_section` inferred roominess from `item_span == ROOMY_CARD_BOX_ROWS +
+1`, so widening the span silently flipped the whole RUNNING section into the *compact*
+renderer while every layout assertion still passed. That is exactly §1's "renders something
+plausible but wrong", found for the cost of one `sed` and one test run rather than at the end
+of the task. `SectionPlan` now carries `card_box_rows` explicitly and nothing re-derives it.
+
+Six things worth carrying forward:
+
+- **The header's elision ladder is new machinery, not a quota detail.** `split_line` pads to
+  at least one space and never truncates, so the right group already overflowed the frame at
+  around 55 columns and `Paragraph` clipped it — taking the title's right edge with it.
+  Adding a fifth segment made that unacceptable rather than untidy. With `Radar.quota: None`
+  the ladder collapses to exactly the pre-quota group, which is what keeps every earlier
+  header assertion an assertion about the old behaviour.
+- **The two ladders run opposite ways, deliberately.** On the Dashboard quota outranks the
+  clock (§6: a clock is available everywhere, the burn number is why you opened the screen).
+  In `--mini` the per-project silence indicator outranks quota, because a `--mini` pane exists
+  to watch one project — and §3.3's 36×10 mockup pins exactly that, showing `▲ 4m` alone.
+- **`--mini`'s header uses only the *short* silence form**, at every width. R0 is one row
+  below and already says `▲ waiting on you 4m` in full; spending fifteen more columns to
+  repeat it would cost the quota segment its place for no new fact. Reproducing §3.3's drop
+  also needed the header to reserve one column of right margin (mirroring `INDENT`) and two
+  of separation: at 36 columns the compressed pair otherwise fits by exactly one column,
+  hard against the frame edge, which is not the line that mockup draws.
+- **`identity_line`'s right group is now `silence_group`**, shared with the mini header, so
+  the panel cannot say one thing one row below a header that computed the same fact its own
+  way and got a different answer.
+- **`T8`'s bound is enforced as a whole-plan comparison, not a per-section gate.**
+  `plan_layout` plans twice and keeps the lush pass only if it skips no section, truncates
+  nothing and loses no project row anywhere. Two passes because RUNNING growing can push a
+  *later* section off the screen entirely — a per-section check cannot see that, and the
+  failure would have read as "STALE randomly vanished on a tall terminal". The tier therefore
+  cannot switch on while anything is already truncating, which is what makes the rows the feed
+  gives up provably rows no project row could have used.
+- **`plan_layout_at_density` is a testability seam, not a feature.** The tier's contract is
+  comparative — "it never costs a project row" — and the plan the same terminal would have
+  produced without the tier is otherwise unobservable, so the one assertion that matters could
+  not be written at all. Nothing in the app passes `allow_lush: false`. Same justification as
+  `feed_rows_for` being public.
+
+One consequence to accept rather than discover: **the feed can be squeezed to zero rows** on a
+tall terminal with several RUNNING projects, since the cards' claim is ordered ahead of it and
+`FEED_MIN_ROWS` is a floor on drawing the block at all, not a reservation against the cards.
+That is §5's stated ordering working as designed, but it is the first case where a feature can
+remove the feed entirely rather than merely shrink it.
 
 ### Dependency graph
 
@@ -641,5 +699,5 @@ If you do go the AFK route:
      Close #32 saying exactly that, and open the re-point as a follow-up — `ACT-7`'s text
      says "the detail pane," so the issue implies more than shipped unless it is scoped
      explicitly.
-   - **#33** — if T8 landed.
+   - **#33** — fully. T8 landed, including PROPOSAL §5's surplus-priority rule.
    - **#29 — MVP only.** The dedicated-token-TUI hand-off and `DATA-5` (`ctx%`) stay open.
