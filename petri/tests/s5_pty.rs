@@ -57,7 +57,7 @@ fn initial_frame_shows_section_labels() {
         grid.iter().any(|r| r.contains("COLD"))
     });
     session.writer.write_all(b"q").ok();
-    let _ = session.wait_with_timeout(Duration::from_secs(5));
+    let _ = session.wait_with_timeout(EXIT_BUDGET);
 
     let body = first_frame.join("\n");
     for label in ["RUNNING", "IN FLIGHT", "STALE", "COLD"] {
@@ -74,7 +74,7 @@ fn navigation_and_filter_keystrokes_do_not_crash_the_binary() {
     // j/k/arrows move selection, / opens the filter, Esc clears it — none of
     // this should crash or hang the real binary end-to-end.
     let mut session = Session::spawn(&fixture_path("normal.json"), 80, 24);
-    let _ = session.settle(Duration::from_secs(5), Duration::from_millis(300));
+    wait_until_ready(&mut session, 80, 24);
 
     for keys in [&b"j"[..], b"j", b"k", b"/", b"ab", &[0x1b]] {
         session
@@ -90,13 +90,37 @@ fn navigation_and_filter_keystrokes_do_not_crash_the_binary() {
         .writer
         .write_all(b"q")
         .expect("write 'q' must succeed");
-    let status = session.wait_with_timeout(Duration::from_secs(5));
+    let status = session.wait_with_timeout(EXIT_BUDGET);
     assert_eq!(
         status.exit_code(),
         0,
         "'q' must still exit 0 after a sequence of navigation/filter keystrokes"
     );
 }
+
+/// Wait until petri has actually taken the terminal and painted, before sending it a key.
+///
+/// A bare `settle` returns as soon as the stream is quiet for 300ms, which can be *before*
+/// the binary has entered raw mode. A key written then is buffered by the line discipline
+/// in canonical mode and discarded when raw mode is enabled — the same mechanism that made
+/// `s8_pty_handoff` lose its `q`, but at startup rather than after a hand-off. It surfaces
+/// the same way too: not as a wrong frame, but as "child did not exit", seconds later.
+/// Measured at 8 failures in 24 runs at eight-way concurrency on an idle machine.
+fn wait_until_ready(session: &mut Session, cols: u16, rows: u16) {
+    session.screen_until(
+        cols,
+        rows,
+        Duration::from_secs(5),
+        Duration::from_millis(300),
+        10,
+        |grid| grid.iter().any(|r| r.contains("petri")),
+    );
+}
+
+/// The exit budget is a HANG DETECTOR, not a performance assertion. Five seconds is tight
+/// enough to trip on a busy machine, and a test that fails because the box was loaded
+/// teaches people to re-run rather than to look.
+const EXIT_BUDGET: Duration = Duration::from_secs(20);
 
 fn settle_grid(session: &mut Session, cols: u16, rows: u16) -> Vec<String> {
     session.screen_retry(
@@ -252,7 +276,7 @@ fn space_toggles_the_detail_popup_at_a_hidden_geometry() {
         .writer
         .write_all(b"q")
         .expect("write 'q' must succeed");
-    let status = session.wait_with_timeout(Duration::from_secs(5));
+    let status = session.wait_with_timeout(EXIT_BUDGET);
     assert_eq!(
         status.exit_code(),
         0,
@@ -265,12 +289,12 @@ fn q_still_quits_cleanly_with_browser_active() {
     // Regression guard: S5 must not break S4's basic "q quits" contract while
     // wiring BrowserState into the event loop.
     let mut session = Session::spawn(&fixture_path("normal.json"), 80, 24);
-    let _ = session.settle(Duration::from_secs(5), Duration::from_millis(300));
+    wait_until_ready(&mut session, 80, 24);
     session
         .writer
         .write_all(b"q")
         .expect("write 'q' must succeed");
-    let status = session.wait_with_timeout(Duration::from_secs(5));
+    let status = session.wait_with_timeout(EXIT_BUDGET);
     assert_eq!(
         status.exit_code(),
         0,
