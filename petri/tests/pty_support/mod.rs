@@ -464,6 +464,53 @@ impl Session {
         grid
     }
 
+    /// Settle repeatedly until `predicate` accepts the RAW accumulated stream, or
+    /// `attempts` is exhausted. Returns whether the predicate was ever satisfied.
+    ///
+    /// The grid-based `screen_until` is the right tool for "has the screen reached this
+    /// state". This one exists for the case it cannot express: **an event whose completion
+    /// leaves the screen looking exactly as it did before.** A terminal hand-off is that
+    /// case — petri leaves the alternate screen, runs the child, re-enters and repaints the
+    /// same content — so no predicate over the reconstructed grid can distinguish "the
+    /// hand-off finished" from "the hand-off has not started". The control sequences can:
+    /// they carry the transition the grid throws away.
+    ///
+    /// Deliberately NOT for content assertions. `SPEC.md` §8 names raw byte-stream
+    /// substring matching as the root cause of the Python TUI's worst CI flakiness, and
+    /// that verdict stands — a *frame* must be asserted against the grid. This is for
+    /// waiting on a terminal-mode transition, which is not content at all.
+    pub fn settle_until_raw(
+        &mut self,
+        timeout: Duration,
+        quiet_for: Duration,
+        attempts: u32,
+        mut predicate: impl FnMut(&str) -> bool,
+    ) -> bool {
+        for attempt in 1..=attempts {
+            let stream = self.settle(timeout, quiet_for);
+            if predicate(&stream) {
+                return true;
+            }
+            if attempt < attempts {
+                eprintln!(
+                    "settle_until_raw attempt {attempt}/{attempts}: not satisfied yet, retrying"
+                );
+            }
+        }
+        false
+    }
+
+    /// How many times the child has entered the alternate screen so far.
+    ///
+    /// One at startup; a second one only after a terminal hand-off has run its child and
+    /// come back. That makes `>= 2` the precise, non-timing-based answer to "is petri in
+    /// charge of the terminal again", which is what a test must know before it can send
+    /// another keystroke — a key written while the child still owns the terminal is queued
+    /// by the line discipline in canonical mode and lost when raw mode is restored.
+    pub fn alt_screen_entries(stream: &str) -> usize {
+        stream.matches("\x1b[?1049h").count()
+    }
+
     /// Wait for the child to exit, with a hard timeout so a genuine hang fails
     /// this test instead of the whole suite. The drain thread keeps running
     /// throughout (it owns its own reader clone), so this cannot deadlock the

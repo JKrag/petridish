@@ -29,6 +29,30 @@ fn settle(session: &mut Session) -> Vec<String> {
     )
 }
 
+/// Settle, but keep waiting until the grid actually shows what the caller is about to
+/// assert on.
+///
+/// `screen_retry` only retries a *blank* grid, which is the wrong race for a
+/// post-keystroke assertion: the frame that comes back is fully painted and perfectly
+/// well-formed — it is just the frame from *before* the key was processed. See
+/// `screen_until`'s own doc comment, which exists for precisely this.
+///
+/// It matters more here than anywhere else in the suite, because `y` is the one binding
+/// that shells out before it can produce anything to draw: `yank_selected_path` spawns
+/// `pbcopy` and blocks on `child.wait()`, so the redraw waits on a whole process
+/// lifecycle. Measured on this machine: 0 failures in 15 runs idle, but 1 in 15 with the
+/// cores busy — a process spawn under load routinely outlasts the 300ms quiet window.
+fn settle_until(session: &mut Session, needle: &'static str) -> Vec<String> {
+    session.screen_until(
+        90,
+        40,
+        Duration::from_secs(5),
+        Duration::from_millis(300),
+        5,
+        |grid| grid.iter().any(|r| r.contains(needle)),
+    )
+}
+
 fn send(session: &mut Session, bytes: &[u8]) {
     session.writer.write_all(bytes).expect("write must succeed");
     session.writer.flush().expect("flush must succeed");
@@ -38,7 +62,7 @@ fn to_browser(home: &std::path::Path) -> Session {
     let mut session = Session::spawn_with_home(&fixture_path("loaded.json"), 90, 40, home);
     settle(&mut session);
     send(&mut session, b"\t");
-    let screen = settle(&mut session);
+    let screen = settle_until(&mut session, "browser");
     assert!(
         screen.iter().any(|r| r.contains("browser")),
         "expected to be on the Browser after Tab, got:\n{}",
@@ -56,7 +80,7 @@ fn yank_produces_a_notice_on_every_platform() {
     let home = scratch_home("yank");
     let mut session = to_browser(&home);
     send(&mut session, b"y");
-    let screen = settle(&mut session);
+    let screen = settle_until(&mut session, "clipboard");
     assert!(
         screen.iter().any(|r| r.contains("clipboard")),
         "expected a clipboard-related notice after pressing y, got:\n{}",
