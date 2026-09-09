@@ -522,6 +522,26 @@ pub fn run_scan(config: &Config, paths: &ScanPaths, previous: Option<&Radar>) ->
         .collect();
     all_roots.extend(merged.keys().cloned());
 
+    // 3b. Drop roots that are no longer on disk (issue #41). A signal root is a `cwd` read
+    // out of a transcript or an event, and those are immutable records of where a session
+    // *ran* — moving or deleting the directory does not rewrite them, so without this the
+    // sensor re-supplies the dead path on every tick and a rescan never clears it. That is
+    // the whole of #41's "rescan apparently doesn't update anything": the entry is not
+    // stale state being kept, it is being recreated. The symptoms all follow from the
+    // path: `git::scan` reports `is_repo: false` (so the Browser says there is no remote)
+    // and every tool action fails with ENOENT against a directory that isn't there.
+    //
+    // Discovery needs no such guard — `discover` canonicalises its seeds and skips what it
+    // cannot resolve, so it only ever yields live paths — but the filter is applied to the
+    // whole union anyway, so a repo deleted between the crawl and here is covered too.
+    //
+    // `is_dir` rather than `exists`: a project root is a directory, and this must also
+    // reject the case where the old path has been replaced by a file. An unreachable
+    // network mount will drop out of the fleet while it is unmounted and return when it is
+    // back, which is the honest answer for a live view — petri cannot act on a project it
+    // cannot reach either.
+    all_roots.retain(|root| Path::new(root).is_dir());
+
     // Bucket thresholds — fall back to the documented defaults if config omits them. Python
     // uses `thresholds.get("active", 48.0)`, same fallback semantics.
     let thresholds = &config.bucket_thresholds;
@@ -1859,5 +1879,56 @@ mod tests {
         }"#;
         let agent: AgentState = serde_json::from_str(json).expect("older payload must parse");
         assert_eq!(agent.waiting_since, None);
+    }
+
+    // ═══ Test 13: a moved project must not linger at its old path. ══════════════════
+
+    /// Issue #41. Move a repo and its old location keeps showing up in `projects.json`,
+    /// with `o`/`g`/`e` failing against a directory that is no longer there.
+    ///
+    /// The cause is the union in step 3: a *signal* root is a `cwd` read out of a Claude
+    /// transcript, and a transcript is an immutable record of where a session ran. Moving
+    /// the directory does not rewrite history, so the dead path is re-supplied by the
+    /// sensor on every tick — which is why a rescan never cleared it. Discovery cannot
+    /// balance it out either: `discover` canonicalizes its seeds, so it only ever yields
+    /// paths that exist.
+    #[test]
+    fn a_moved_repo_does_not_linger_at_its_old_path() {
+        let fixture = Tmp::new("moved_repo");
+        let old_path = fixture.path.join("old").join("thing");
+        let new_path = fixture.path.join("new").join("thing");
+        git_init_at(&old_path);
+
+        // A session that ran while the repo was still at `old/thing` — the record #41's
+        // stale entry is resurrected from every tick.
+        let projects_dir = fixture.path.join(".claude/projects");
+        write_transcript(
+            &projects_dir.join("-old-thing").join("session.jsonl"),
+            &[&tline(Some("sess-moved"), old_path.to_str().unwrap())],
+            0,
+        );
+
+        // The move itself.
+        std::fs::create_dir_all(new_path.parent().unwrap()).expect("mkdir new parent");
+        std::fs::rename(&old_path, &new_path).expect("move the repo");
+        assert!(!old_path.exists(), "the old location must really be gone");
+
+        // Discovery now sees only the new location.
+        let radar = run_scan_with_home(&fixture.path, &new_path);
+
+        // Compare canonical forms: discovery canonicalises its seeds, and on macOS the
+        // per-test tmpdir lives under `/var`, a symlink to `/private/var`.
+        let expected = new_path.canonicalize().expect("the new location exists");
+        let stale = discovery::resolve_root(&old_path, &test_config(vec![new_path.clone()]));
+        let paths: Vec<&str> = radar.projects.iter().map(|p| p.path.as_str()).collect();
+        assert!(
+            !paths.contains(&stale.to_str().unwrap()),
+            "the old path must not survive the move: {paths:?}"
+        );
+        assert_eq!(
+            paths,
+            vec![expected.to_str().unwrap()],
+            "exactly the new location, once"
+        );
     }
 }
