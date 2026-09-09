@@ -10,7 +10,7 @@
 # returns only the LAST command's exit status, so a formatting failure would
 # report success. Verified empirically — keep them as prerequisites.
 
-.PHONY: help fmt fmt-check clippy test deny msrv raycast check check-all clean
+.PHONY: help fmt fmt-check clippy test deny msrv raycast check check-all clean flake-hunt
 
 .DEFAULT_GOAL := help
 
@@ -30,6 +30,13 @@ clippy:         ## Lint, warnings are errors.
 
 test:           ## Run the Rust workspace tests.
 	cargo test --locked --workspace
+
+# Deliberately NOT a prerequisite of `check` or `check-all`: it takes minutes,
+# and a gate that slow gets skipped — which is how a suite stops being trusted.
+# Run it before a release, or when a PTY test fails once and you want to know
+# whether that meant anything. Args: RUNS, CONCURRENCY, FILTER.
+flake-hunt:     ## Measure PTY test flakiness (slow; RUNS=24 CONC=8 by default).
+	petri/scripts/flake-hunt.sh $(RUNS) $(CONC)
 
 deny:           ## Licence + advisory audit (needs `cargo install cargo-deny`).
 	cargo deny check licenses advisories
