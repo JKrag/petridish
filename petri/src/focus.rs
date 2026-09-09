@@ -530,32 +530,7 @@ fn identity_line(p: &Project, ctx: &FocusCtx, width: usize) -> Line<'static> {
         "\u{25CB}"
     };
 
-    let (right_full, right_short) = if waiting {
-        // Age of the latch itself, not of the last activity: "how long have you been
-        // blocking this run" is the question, and four minutes and forty are very
-        // different situations (`PROPOSAL` §11.6).
-        let age = p
-            .agent
-            .waiting_since
-            .and_then(|since| silence_string(ctx.now, since))
-            .unwrap_or_default();
-        (
-            format!("\u{25B2} waiting on you {age}")
-                .trim_end()
-                .to_string(),
-            format!("\u{25B2} {age}").trim_end().to_string(),
-        )
-    } else if p.agent.active_agent.is_some() {
-        match silence {
-            Some(s) => {
-                let age = crate::dashboard::humanize_secs(s as u64);
-                (format!("silent {age}"), age)
-            }
-            None => ("silent \u{2014}".to_string(), "\u{2014}".to_string()),
-        }
-    } else {
-        ("no agent".to_string(), String::new())
-    };
+    let (right_full, right_short) = silence_group(p, ctx.now);
 
     let dirty = present::dirty_marker(&p.git).trim_end().to_string();
     let uncommitted = if p.git.uncommitted_files > 0 {
@@ -615,6 +590,42 @@ fn identity_line(p: &Project, ctx: &FocusCtx, width: usize) -> Line<'static> {
 fn silence_string(now: DateTime<Utc>, since: DateTime<Utc>) -> Option<String> {
     let secs = now.signed_duration_since(since).num_seconds();
     (secs >= 0).then(|| crate::dashboard::humanize_secs(secs as u64))
+}
+
+/// The project's activity state as a `(full, short)` pair, for a right-aligned group that
+/// may or may not have room for the long form.
+///
+/// Shared by `identity_line` (R0) and `mini_header_line`, which is what keeps the panel from
+/// saying `▲ waiting on you 4m` one row below a header that computed the same fact its own
+/// way and reached a different answer.
+fn silence_group(p: &Project, now: DateTime<Utc>) -> (String, String) {
+    let waiting = petridish_core::schema::waiting_latch_live(p.agent.waiting_since, now);
+    if waiting {
+        // Age of the latch itself, not of the last activity: "how long have you been
+        // blocking this run" is the question, and four minutes and forty are very
+        // different situations (`PROPOSAL` §11.6).
+        let age = p
+            .agent
+            .waiting_since
+            .and_then(|since| silence_string(now, since))
+            .unwrap_or_default();
+        (
+            format!("\u{25B2} waiting on you {age}")
+                .trim_end()
+                .to_string(),
+            format!("\u{25B2} {age}").trim_end().to_string(),
+        )
+    } else if p.agent.active_agent.is_some() {
+        match silence_secs(p, now) {
+            Some(s) => {
+                let age = crate::dashboard::humanize_secs(s as u64);
+                (format!("silent {age}"), age)
+            }
+            None => ("silent \u{2014}".to_string(), "\u{2014}".to_string()),
+        }
+    } else {
+        ("no agent".to_string(), String::new())
+    }
 }
 
 /// R1: the `~`-abbreviated path, keeping its **tail** when it does not fit — the leading
@@ -1256,24 +1267,97 @@ pub fn render_mini(frame: &mut ratatui::Frame, area: Rect, ctx: &FocusCtx) {
     frame.render_widget(Paragraph::new(lines), area);
 }
 
-/// ` petri · {project}` — the pane's identity, since a `--mini` pane in a corner is often
-/// the only thing on screen saying which project it is watching.
+/// ` petri · {project}` on the left, `5h 16% · 7d 1% · ▲ 4m` on the right — the pane's
+/// identity, since a `--mini` pane in a corner is often the only thing on screen saying
+/// which project it is watching, plus the two facts you keep a `--mini` pane open *for*.
 ///
-/// The right-hand group (`5h 16% · 7d 1% · ▲ 4m` in the §3.2 mockup) is `TQ-b`'s, in
-/// Phase E, and deliberately left empty here rather than half-built.
+/// **The ladder runs the other way round from the Dashboard's** (`dashboard::
+/// header_right_group`, where quota outranks the clock). Here the per-project silence
+/// indicator outranks the fleet-wide quota, because a `--mini` pane exists to watch one
+/// project — and `PROPOSAL-focus-panel.md` §3.3's 36×10 mockup pins exactly that, showing
+/// `▲ 4m` alone once the room runs out. Rungs:
+///
+/// ```text
+/// 5h 16% · 7d 1% · ▲ 4m
+/// 16%/1% · ▲ 4m
+/// ▲ 4m
+/// (nothing, and the identity gets the whole line)
+/// ```
+///
+/// The **short** silence form is the only one used, at every width: R0's identity line is
+/// one row below and already carries `▲ waiting on you 4m` in full, so spending 15 more
+/// columns here to repeat it would cost the quota segment its place for no new fact.
 fn mini_header_line(ctx: &FocusCtx, width: usize) -> Line<'static> {
-    let name = focused_project(ctx)
+    let project = focused_project(ctx);
+    let name = project
         .map(|p| p.name.clone())
         .unwrap_or_else(|| "petri".to_string());
-    Line::from(vec![
+    let left = format!("petri · {name}");
+
+    // `silence_group`'s short form; empty when there is no agent to be silent.
+    let silence = project
+        .map(|p| silence_group(p, ctx.now).1)
+        .unwrap_or_default();
+    let quota_full = crate::dashboard::quota_segment(ctx.radar.quota.as_ref(), false);
+    let quota_short = crate::dashboard::quota_segment(ctx.radar.quota.as_ref(), true);
+    let join = |a: Option<&str>, b: &str| -> String {
+        match (a, b.is_empty()) {
+            (Some(a), false) => format!("{a} · {b}"),
+            (Some(a), true) => a.to_string(),
+            (None, false) => b.to_string(),
+            (None, true) => String::new(),
+        }
+    };
+    let rungs = [
+        join(quota_full.as_deref(), &silence),
+        join(quota_short.as_deref(), &silence),
+        silence.clone(),
+    ];
+
+    // One column of right margin, mirroring `INDENT`'s left one, so the group never touches
+    // the frame edge; two of separation, so the identity and the right group read as two
+    // groups rather than one run-on string. Both are what make §3.3's 36×10 mockup drop
+    // quota — at 36 the compressed pair fits by exactly one column otherwise, and a
+    // one-space gap hard against the frame edge is not the line that mockup draws.
+    const RIGHT_MARGIN: usize = 1;
+    const MIN_GAP: usize = 2;
+
+    // The identity half never elides to make room for the right group: a pane that cannot
+    // say which project it is watching has lost the one thing it exists to say.
+    let inner = width.saturating_sub(RIGHT_MARGIN);
+    let lead = crate::width::width(INDENT) + crate::width::width(&left);
+    let right = rungs
+        .into_iter()
+        .find(|rung| !rung.is_empty() && lead + MIN_GAP + crate::width::width(rung) <= inner)
+        .unwrap_or_default();
+
+    let name_budget = inner
+        .saturating_sub(crate::width::width(INDENT))
+        .saturating_sub(if right.is_empty() {
+            0
+        } else {
+            crate::width::width(&right) + MIN_GAP
+        });
+    let shown = elide(&left, name_budget);
+    let pad = inner
+        .saturating_sub(crate::width::width(INDENT))
+        .saturating_sub(crate::width::width(&shown))
+        .saturating_sub(crate::width::width(&right));
+
+    let mut spans = vec![
         Span::raw(INDENT),
         Span::styled(
-            elide(&format!("petri · {name}"), width.saturating_sub(1)),
+            shown,
             Style::default()
                 .fg(theme::ACCENT)
                 .add_modifier(Modifier::BOLD),
         ),
-    ])
+    ];
+    if !right.is_empty() {
+        spans.push(Span::raw(" ".repeat(pad)));
+        spans.push(Span::styled(right, Style::default().fg(theme::DIM)));
+    }
+    Line::from(spans)
 }
 
 /// `PROPOSAL-focus-panel.md` §3.5's exact wording, naming the dimensions rather than just

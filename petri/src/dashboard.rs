@@ -28,7 +28,7 @@
 //!   selected).
 
 use petridish_core::present;
-use petridish_core::schema::{AgentActivity, Project, Radar, StatusBucket};
+use petridish_core::schema::{AgentActivity, Project, QuotaState, Radar, StatusBucket};
 use ratatui::{
     layout::{Constraint, Layout, Rect},
     style::{Color, Modifier, Style},
@@ -602,15 +602,18 @@ pub struct SectionPlan {
 /// `references/ecosystem-rust.md`'s testing section: "extracting layout math into a pure
 /// `fn compute_layout(area) -> ...` makes per-size assertions cheap."
 ///
-/// Two things this struct deliberately does NOT carry, both raised in the dashboard redesign
-/// discussion as "keep the door open, don't build it now": a quota-gauge rail (`Radar.quota:
-/// Option<QuotaState>` already exists in the schema; SPEC.md §7 already names it "the most
-/// likely first post-v1 addition") and a >200-col merged Dashboard+Browser pane. Both slot in
-/// the same way when someone actually builds them: carve their `Rect` from `fleet` before the
-/// per-section column math runs (rail from one edge, secondary pane as its own region), which
-/// only touches this function — `render`'s section-drawing loop and `DashboardState`'s cursor
-/// are unaffected either way. Not modeled as `Option<Rect>` fields here because nothing reads
-/// them yet; add them when the first real consumer exists.
+/// This struct deliberately does not carry a >200-col merged Dashboard+Browser pane, raised
+/// in the dashboard redesign discussion as "keep the door open, don't build it now". It slots
+/// in by carving its `Rect` from `fleet` before the per-section column math runs, which only
+/// touches this function — `render`'s section-drawing loop and `DashboardState`'s cursor are
+/// unaffected. Not modeled as an `Option<Rect>` field here because nothing reads it yet.
+///
+/// **The quota-gauge rail this comment used to predict alongside it was built as something
+/// else, and the prediction is retracted rather than left contradicting the built thing**
+/// (`PROPOSAL-focus-panel.md` §6). Quota went into the header (`header_right_group`), not a
+/// rail: a rail permanently spends a column of width on ~13 characters of data, on the one
+/// screen whose whole problem (`SPACE-*`) is that it runs out of room, whereas the header is
+/// already the global-context row and quota costs zero body rows there.
 pub struct DashPlan {
     pub compact_tier: bool,
     pub fleet_rows: usize,
@@ -1428,20 +1431,117 @@ pub(crate) fn zone_row(spec: ZoneRowSpec, width: usize) -> Line<'static> {
 /// colors on just the app name) plus the heavy rule is what makes this read
 /// as a header at a glance, matching petripy's `_header` — a single plain
 /// line of text was the thing that "nearly disappears into the rest."
+/// The header's leading label, whose width the right group has to work around. A constant
+/// rather than a literal in two places, since the elision ladder's whole job is knowing
+/// exactly how many columns it is not allowed to use.
+const HEADER_TITLE: &str = " petri · dashboard ";
+
+/// `5h 16% · 7d 1%` — the #29 MVP, display-only (`PROPOSAL-focus-panel.md` §6). `swab`'s
+/// quota sensor already populates `Radar.quota` on every scan; nothing here reads a file.
+///
+/// `compressed` is the ladder's second-to-last rung: `16%/1%`, the same two numbers without
+/// their labels. A **lone** half keeps its label even when compressed — `16%/1%` is only
+/// unambiguous because both halves are present in a fixed order, and at six columns the
+/// labelled single form costs nothing extra anyway.
+///
+/// `None` (no `QuotaState` at all, or one whose every percentage degraded to `None`) means
+/// **omit the segment**, never render `0%`. A zero reads as "you have used nothing", which
+/// is the opposite of "we do not know" — and field-by-field degradation is the sensor's
+/// documented behaviour, so the half-populated case is real rather than defensive.
+///
+/// `context_used_pct` is deliberately not rendered anywhere: it is parsed from a single
+/// `~/.claude/last-status.json` owned by whichever session wrote it last, so it is
+/// attributable neither to the fleet nor to any project (`DATA-5`).
+pub fn quota_segment(quota: Option<&QuotaState>, compressed: bool) -> Option<String> {
+    let q = quota?;
+    match (q.five_hour_used_pct, q.seven_day_used_pct) {
+        (Some(five), Some(seven)) if compressed => Some(format!("{five}%/{seven}%")),
+        (Some(five), Some(seven)) => Some(format!("5h {five}% · 7d {seven}%")),
+        (Some(five), None) => Some(format!("5h {five}%")),
+        (None, Some(seven)) => Some(format!("7d {seven}%")),
+        (None, None) => None,
+    }
+}
+
+/// The header's right-hand group, already elided to fit beside `HEADER_TITLE` in `width`
+/// columns.
+///
+/// **The ladder is new machinery.** Before quota, this group was built unconditionally and
+/// handed to `split_line`, which pads to at least one space and never truncates — so a
+/// too-long group ran off the frame and `Paragraph` clipped it, taking the title's own
+/// right edge with it. Adding a fifth segment to a line that already overflowed at ~55
+/// columns made that unacceptable rather than merely untidy.
+///
+/// Order, most-droppable first (`PROPOSAL-focus-panel.md` §6):
+///
+/// ```text
+/// N projects · 5h 16% · 7d 1% · 14:22 · scan 0.3s
+/// N projects · 5h 16% · 7d 1% · 14:22               -- scan goes first: pure diagnostics
+/// 5h 16% · 7d 1% · 14:22                            -- the count is on screen already
+/// 5h 16% · 7d 1%                                    -- quota outranks the clock
+/// 16%/1%                                            -- labels, not numbers
+/// (nothing)
+/// ```
+///
+/// **Quota outranking the clock is the deliberate call**: a clock is available everywhere
+/// else on the machine, and the burn number is the thing you opened this screen to keep half
+/// an eye on. With `Radar.quota: None` the ladder collapses to exactly the group this
+/// header rendered before the feature, which is what keeps every pre-existing header
+/// assertion an assertion about the old behaviour rather than silently about the new one.
+///
+/// Returns `""` when not even the compressed quota fits; the caller then draws the title
+/// alone rather than a stray trailing space.
+pub fn header_right_group(
+    radar: &Radar,
+    now: &chrono::DateTime<chrono::Utc>,
+    scan_secs: f64,
+    width: usize,
+) -> String {
+    let projects = format!("{} projects", radar.projects.len());
+    let clock = now.format("%H:%M").to_string();
+    let scan = format!("scan {scan_secs:.1}s");
+    let quota_full = quota_segment(radar.quota.as_ref(), false);
+    let quota_short = quota_segment(radar.quota.as_ref(), true);
+
+    let join = |parts: &[Option<&str>]| -> String {
+        parts
+            .iter()
+            .filter_map(|p| *p)
+            .collect::<Vec<_>>()
+            .join(" · ")
+    };
+    let q = quota_full.as_deref();
+    let rungs = [
+        join(&[Some(&projects), q, Some(&clock), Some(&scan)]),
+        join(&[Some(&projects), q, Some(&clock)]),
+        join(&[q, Some(&clock)]),
+        join(&[q]),
+        quota_short.clone().unwrap_or_default(),
+    ];
+
+    // A rendered rung costs its own columns plus the trailing space `header_lines` appends
+    // and the one pad column `split_line` guarantees between the halves.
+    let budget = width.saturating_sub(HEADER_TITLE.chars().count() + 2);
+    rungs
+        .into_iter()
+        .find(|rung| !rung.is_empty() && rung.chars().count() <= budget)
+        .unwrap_or_default()
+}
+
 fn header_lines(
     radar: &Radar,
     now: &chrono::DateTime<chrono::Utc>,
     scan_secs: f64,
     width: usize,
 ) -> Vec<Line<'static>> {
-    let right = format!(
-        "{} projects · {} · scan {scan_secs:.1}s",
-        radar.projects.len(),
-        now.format("%H:%M")
-    );
+    let right = header_right_group(radar, now, scan_secs, width);
     let title = split_line(
-        " petri · dashboard ".to_string(),
-        format!("{right} "),
+        HEADER_TITLE.to_string(),
+        if right.is_empty() {
+            String::new()
+        } else {
+            format!("{right} ")
+        },
         width,
         Style::default()
             .fg(Color::Black)
