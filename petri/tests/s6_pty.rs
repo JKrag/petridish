@@ -41,15 +41,22 @@ fn scratch_home(name: &str) -> std::path::PathBuf {
 #[test]
 fn initial_frame_shows_the_dashboard_header_and_a_populated_section_label() {
     let home = scratch_home("initial_frame");
-    let (mut session, first_frame) = spawn_and_settle_nonempty_with_home(
-        &fixture_path("loaded.json"),
+    let mut session = Session::spawn_with_home(&fixture_path("loaded.json"), 80, 40, &home);
+    // `spawn_and_settle_nonempty_with_home` retries only on completely empty output, and petri's first write
+    // need not be a frame — S7's "preferences file missing, using defaults" warning goes to
+    // stderr before the alternate screen is entered, which makes the output non-empty and
+    // ends the retry loop with no frame in it. Wait for the header itself. (Same root cause
+    // as the fix in this file's enter-on-a-row test; measured at 1 failure in 24 runs at
+    // eight-way concurrency.)
+    let grid = session.screen_until(
         80,
         40,
-        &home,
         Duration::from_secs(5),
         Duration::from_millis(300),
-        3,
+        5,
+        |g| g.iter().any(|r| r.contains("petri · dashboard")),
     );
+    let first_frame = grid.join("\n");
     session.writer.write_all(b"q").ok();
     let _ = session.wait_with_timeout(Duration::from_secs(5));
 
