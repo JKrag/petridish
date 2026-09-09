@@ -687,10 +687,32 @@ If you do go the AFK route:
    (additive; both existing entry points delegate to it with an empty slice) because
    `Session` could otherwise only ever spawn `petri <state>`, and `--mini`'s whole
    contract is about how a flag and that positional interact. `EXPECTED_BINARIES` 34 → 36.
-4. `SPEC.md` updated with the three decisions from §9, by a human.
-5. `IDEAS.md`'s `SURF-8` gets its `DONE` pointer and the narrative moves to `IDEAS_LOG.md`
-   — that's `IDEAS.md`'s own stated convention, and the deferred-rung list stays behind.
-6. Issues closed, with one scope caveat worth stating rather than discovering on the issue:
+4. ~~`SPEC.md` updated with the three decisions from §9, by a human.~~ **Done
+   (2026-09-09), on the human's explicit instruction.** It turned out to be six things,
+   not three: the panel itself, `--mini` and contextual `Space` had *no* SPEC coverage at
+   all, and §3.2's `Space` rule was factually wrong. New §3.3 and §3.4; §3.2 gains the
+   quota segment, the lush tier and the surplus-priority rule; §5's `Space`/`Esc` rows and
+   §7's quota deferral updated. The panel's size-by-size gates were deliberately **not**
+   copied into SPEC — it points at `plan_rungs` and `s11_focus_plan.rs`, which own them.
+   One correction made in passing: §3.2's three activity-feed bullets still described a
+   yield rule and a compact-tier suppression that `feed_rows_for` had removed as redundant.
+   They are merged into the surplus rule rather than patched separately, because they are
+   the same argument from the other side — the feed only ever gets rows no section could
+   have used, which is exactly why a bounded card claim ahead of it is safe.
+5. ~~`IDEAS.md`'s `SURF-8` gets its `DONE` pointer and the narrative moves to
+   `IDEAS_LOG.md`.~~ **Done (2026-09-09).** `SURF-6`/`SURF-7`/`SURF-8`/`SPACE-3` carry
+   `DONE` pointers and leave the open-ideas table; `SURF-4` and `ACT-7` stay in it,
+   narrowed to what is genuinely still open. `IDEAS_LOG.md` slice 8 carries the narrative
+   and eleven findings. `SURF-8`'s deferred-rung list stays behind, as intended.
+6. ~~Issues closed~~ **Done (2026-09-09)** — #30, #31, #32, #33 closed; #29 commented and
+   left open; the `T6` re-point opened as
+   [#43](https://github.com/JKrag/petridish/issues/43), first, so #32's closing comment
+   could link it. Two scope caveats surfaced from the issue *bodies* rather than from this
+   plan: #30 asked for expansion *in place* (it shipped as a `MECH-1` overlay; inline
+   expansion stays deferred in `SPEC.md` §7), and #33 asked for *more sparkline history*
+   (the sparkline scales with width, and the lush tier adds rows — the full
+   `agent_activity` ring is on `SURF-8`'s deferred list). Both closed saying so. Original
+   note follows:
    - **#30, #31** — fully.
    - **#32 — for the Dashboard popup and `--mini` only.** T6 was dropped (§7): re-pointing
      the Browser's `Space` popup at the focus panel would break `s5_snapshot.rs`'s
