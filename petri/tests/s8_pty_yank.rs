@@ -41,23 +41,25 @@ fn settle(session: &mut Session) -> Vec<String> {
 /// that shells out before it can produce anything to draw: `yank_selected_path` spawns
 /// `pbcopy` and blocks on `child.wait()`, so the redraw waits on a whole process lifecycle.
 ///
-/// **The attempt count is the budget, and it has to exceed how long `pbcopy` actually
-/// takes.** That is not a small number: measured on this machine, `echo hello | pbcopy`
-/// takes 1.8-2.2s with nothing else running and up to 3.0s with eight in flight. At the
-/// suite's usual 5 attempts the budget is ~1.5s of quiet windows — *less than the operation
-/// being waited for* — so the test passed only when pbcopy landed on the fast side of its
-/// own variance, which reads as flakiness and is really an under-budgeted wait. It measured
-/// 18 failures in 24 at eight-way concurrency before this went up.
+/// The attempt count is the budget, and it is set generously because a process spawn is
+/// the slowest thing in any key path here. `screen_until` returns as soon as the predicate
+/// holds, so the extra attempts cost nothing on the common path.
 ///
-/// `screen_until` returns as soon as the predicate holds, so a generous count costs nothing
-/// on the common path; it only buys headroom on the slow one.
+/// **A correction worth keeping, because the wrong version of it was briefly committed.**
+/// This budget was once raised to 30 on the strength of a measurement showing `pbcopy`
+/// taking 1.8-2.2s. That measurement was invalid: it was taken on a machine with 126
+/// runaway busy-loops left behind by the flake-hunt tooling's own load generation. On an
+/// idle machine `echo hello | pbcopy` takes 10-20ms, which is what anyone would expect.
+/// The lesson is not about pbcopy — it is that a measurement is only as good as the state
+/// of the machine it was taken on, and "surprisingly slow" is a reason to check the
+/// machine before believing the number.
 fn settle_until(session: &mut Session, needle: &'static str) -> Vec<String> {
     session.screen_until(
         90,
         40,
         Duration::from_secs(5),
         Duration::from_millis(300),
-        30,
+        10,
         |grid| grid.iter().any(|r| r.contains(needle)),
     )
 }

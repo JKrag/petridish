@@ -34,12 +34,13 @@ fn switching_screens_preserves_stored_tool_choices() {
     .expect("seed prefs must be writable");
 
     let mut session = Session::spawn_with_home(&fixture_path("loaded.json"), 80, 40, &home);
-    let screen = session.screen_retry(
+    let screen = session.screen_until(
         80,
         40,
         Duration::from_secs(5),
         Duration::from_millis(300),
-        5,
+        6,
+        |grid| grid.iter().any(|r| r.contains("petri · dashboard")),
     );
     assert!(
         screen[0].contains("petri"),
@@ -53,12 +54,15 @@ fn switching_screens_preserves_stored_tool_choices() {
         .write_all(b"\t")
         .expect("write Tab must succeed");
     session.writer.flush().expect("flush must succeed");
-    session.screen_retry(
+    // Tab must have been PROCESSED before `q` — the prefs write this test is about happens
+    // in that handler, and a `q` that overtakes it exits before the write.
+    session.screen_until(
         80,
         40,
         Duration::from_secs(5),
         Duration::from_millis(300),
-        5,
+        6,
+        |grid| grid.iter().any(|r| r.contains("petri · browser")),
     );
 
     session

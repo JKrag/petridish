@@ -78,12 +78,15 @@ fn a_state_file_reload_does_not_reopen_a_collapsed_section() {
     std::fs::write(&state_path, &body).expect("state copy must be writable");
 
     let mut session = Session::spawn_with_home(&state_path, 100, 50, &home);
-    let before = session.screen_retry(
+    // The header's scan duration is the fixture's own, and it is what the reload below
+    // changes — so it is both the right thing to wait for here and the proof there.
+    let before = session.screen_until(
         100,
         50,
         Duration::from_secs(5),
         Duration::from_millis(300),
-        5,
+        6,
+        |grid| grid.iter().any(|l| l.contains("scan 0.3s")),
     );
     assert!(
         !in_flight_rows_visible(&before),
@@ -111,12 +114,16 @@ fn a_state_file_reload_does_not_reopen_a_collapsed_section() {
     // soon as the stream goes quiet, so they do NOT wait this out on their own.
     std::thread::sleep(Duration::from_secs(7));
 
-    let after = session.screen_retry(
+    // Wait for the NEW duration rather than for the stream to go quiet. The sleep above
+    // clears the poll interval, but the reload still has to happen and repaint after it,
+    // and a quiet window cannot tell "repainted" from "about to".
+    let after = session.screen_until(
         100,
         50,
         Duration::from_secs(12),
         Duration::from_millis(400),
-        6,
+        10,
+        |grid| grid.iter().any(|l| l.contains("scan 9.9s")),
     );
 
     // Proof the reload landed. If this fails the test is inconclusive about the

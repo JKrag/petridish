@@ -28,6 +28,31 @@ fn settle(session: &mut Session) -> Vec<String> {
     )
 }
 
+/// Settle until the grid shows `needle`. Every post-keystroke assertion goes through this
+/// or `settle_until_gone`, never bare `settle` — see `CLAUDE.md`'s PTY rules.
+fn settle_until(session: &mut Session, needle: &'static str) -> Vec<String> {
+    session.screen_until(
+        90,
+        40,
+        Duration::from_secs(5),
+        Duration::from_millis(300),
+        10,
+        |grid| grid.iter().any(|r| r.contains(needle)),
+    )
+}
+
+/// Settle until `needle` is gone — for asserting the popup closed.
+fn settle_until_gone(session: &mut Session, needle: &'static str) -> Vec<String> {
+    session.screen_until(
+        90,
+        40,
+        Duration::from_secs(5),
+        Duration::from_millis(300),
+        10,
+        |grid| !grid.iter().any(|r| r.contains(needle)),
+    )
+}
+
 fn send(session: &mut Session, bytes: &[u8]) {
     session.writer.write_all(bytes).expect("write must succeed");
     session.writer.flush().expect("flush must succeed");
@@ -37,7 +62,7 @@ fn to_browser(home: &std::path::Path) -> Session {
     let mut session = Session::spawn_with_home(&fixture_path("loaded.json"), 90, 40, home);
     settle(&mut session);
     send(&mut session, b"\t");
-    let screen = settle(&mut session);
+    let screen = settle_until(&mut session, "browser");
     assert!(
         screen.iter().any(|r| r.contains("browser")),
         "expected to be on the Browser after Tab, got:\n{}",
@@ -50,8 +75,12 @@ fn to_browser(home: &std::path::Path) -> Session {
 fn help_popup_opens_and_closes_on_any_key() {
     let home = scratch_home("help");
     let mut session = to_browser(&home);
+    // "any key closes" is the popup's own footer — chrome that exists nowhere else, so it
+    // separates the opened frame from the Browser underneath. "help" would not: the
+    // Browser's footer advertises `? help`, so waiting for it is satisfied before `?` is
+    // processed at all.
     send(&mut session, b"?");
-    let opened = settle(&mut session);
+    let opened = settle_until(&mut session, "any key closes");
     assert!(
         opened.iter().any(|r| r.contains("help")),
         "expected the help popup title after pressing ?, got:\n{}",
@@ -61,7 +90,7 @@ fn help_popup_opens_and_closes_on_any_key() {
     // proving the popup consumed the keystroke rather than letting it fall
     // through to e.g. move_selection.
     send(&mut session, b"j");
-    let closed = settle(&mut session);
+    let closed = settle_until_gone(&mut session, "any key closes");
     assert!(
         !closed.iter().any(|r| r.contains("any key closes")),
         "expected the help popup to be gone after any keypress, got:\n{}",

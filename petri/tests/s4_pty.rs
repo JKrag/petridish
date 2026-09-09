@@ -34,18 +34,14 @@ fn missing_state_file_exits_one_with_message() {
         std::env::temp_dir().join(format!("petri_s4_pty_missing_{}.json", std::process::id()));
     let _ = std::fs::remove_file(&missing);
 
-    let mut output = String::new();
-    let mut status = None;
-    for attempt in 1..=3 {
-        let mut session = Session::spawn(&missing, 80, 24);
-        output = session.settle(Duration::from_secs(5), Duration::from_millis(300));
-        status = Some(session.wait_with_timeout(Duration::from_secs(5)));
-        if !output.is_empty() {
-            break;
-        }
-        eprintln!("attempt {attempt}/3: empty output (suspected PTY race), retrying");
-    }
-    let status = status.expect("at least one attempt must have run");
+    // Wait for EXIT, then drain. This invocation prints one message and terminates, so
+    // there is no frame to wait for and no quiet window to guess at — and draining after
+    // the child is gone collects everything it wrote, because the reader thread runs to
+    // EOF and `settle` stops on the resulting disconnect. That removes the empty-output
+    // race this loop was retrying around, rather than retrying it.
+    let mut session = Session::spawn(&missing, 80, 24);
+    let status = session.wait_with_timeout(Duration::from_secs(20));
+    let output = session.settle(Duration::from_secs(5), Duration::from_millis(300));
 
     assert_eq!(
         status.exit_code(),
@@ -61,7 +57,19 @@ fn missing_state_file_exits_one_with_message() {
 #[test]
 fn q_quits_cleanly_and_restores_the_terminal() {
     let mut session = Session::spawn(&fixture_path("minimal.json"), 80, 24);
-    let first_frame = session.settle(Duration::from_secs(5), Duration::from_millis(300));
+    // Raw, not a grid: the assertion further down is about a control SEQUENCE
+    // (`\x1b[?1049l`), which a reconstructed grid deliberately throws away. But the wait
+    // still has to state its condition rather than trust a quiet window.
+    let mut first_frame = String::new();
+    session.settle_until_raw(
+        Duration::from_secs(5),
+        Duration::from_millis(300),
+        6,
+        |stream| {
+            first_frame = stream.to_string();
+            stream.contains("petri")
+        },
+    );
     assert!(
         first_frame.contains("petri"),
         "first frame must render before we send any keystroke, got: {first_frame:?}"
