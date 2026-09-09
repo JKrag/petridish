@@ -125,7 +125,7 @@ pub struct Session {
 
 impl Session {
     pub fn spawn(state_path: &std::path::Path, cols: u16, rows: u16) -> Self {
-        Self::spawn_inner(state_path, cols, rows, None)
+        Self::spawn_inner(state_path, cols, rows, None, &[])
     }
 
     /// Like `spawn`, but overrides `HOME` for the child process — needed to
@@ -141,7 +141,25 @@ impl Session {
         rows: u16,
         home: &std::path::Path,
     ) -> Self {
-        Self::spawn_inner(state_path, cols, rows, Some(home))
+        Self::spawn_inner(state_path, cols, rows, Some(home), &[])
+    }
+
+    /// Like `spawn_with_home`, but appends `extra_args` after the state-path
+    /// positional — the only way to reach `petri --mini` (issue #31), whose
+    /// whole contract is about how a flag and that positional interact
+    /// (`petri::parse_args`). `home` is `Option` here rather than two more
+    /// wrappers because a `--mini` test needs both axes independently.
+    ///
+    /// Additive: every existing entry point below delegates to this with an
+    /// empty slice, so no already-written PTY test changes behaviour.
+    pub fn spawn_with_args(
+        state_path: &std::path::Path,
+        cols: u16,
+        rows: u16,
+        home: Option<&std::path::Path>,
+        extra_args: &[&str],
+    ) -> Self {
+        Self::spawn_inner(state_path, cols, rows, home, extra_args)
     }
 
     fn spawn_inner(
@@ -149,6 +167,7 @@ impl Session {
         cols: u16,
         rows: u16,
         home: Option<&std::path::Path>,
+        extra_args: &[&str],
     ) -> Self {
         let pty_system = native_pty_system();
         let pair = pty_system
@@ -186,6 +205,9 @@ impl Session {
 
         let mut cmd = CommandBuilder::new(petri_bin());
         cmd.arg(state_path);
+        for arg in extra_args {
+            cmd.arg(arg);
+        }
         cmd.env("LANG", "en_US.UTF-8");
         cmd.env("LC_ALL", "en_US.UTF-8");
         if let Some(home) = home {

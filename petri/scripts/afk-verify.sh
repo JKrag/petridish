@@ -28,11 +28,13 @@ set -uo pipefail
 # Update it in the same commit that adds or removes a test file, never in a
 # commit that is trying to move the score.
 #
-# 32 as of Phase A. Derived empirically by running the `grep -c` below, NOT by
-# counting the files under tests/: `cargo test -p petri` also reports for the
-# lib target's inline `#[cfg(test)]` modules and for the doc-test pass, so a
-# file count is off by several and would fire guard 2 on every round.
-EXPECTED_BINARIES=${EXPECTED_BINARIES:-34}
+# 32 as of Phase A, 34 after Phase C, 36 after the attended PTY pass added
+# s11_pty_focus.rs and s12_pty_mini.rs. Derived empirically by running the
+# `grep -c` below, NOT by counting the files under tests/: `cargo test -p petri`
+# also reports for the lib target's inline `#[cfg(test)]` modules and for the
+# doc-test pass, so a file count is off by several and would fire guard 2 on
+# every round.
+EXPECTED_BINARIES=${EXPECTED_BINARIES:-36}
 
 if ! cargo test -p petri --no-run >/dev/null 2>&1; then
   echo 9999            # guard 1: something does not compile
