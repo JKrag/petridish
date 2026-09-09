@@ -335,3 +335,41 @@ fn the_repo_row_renders_one_age_when_the_newest_commit_is_yours() {
         "one age, not `yours 2h · newest 2h`, got:\n{screen}"
     );
 }
+
+/// A non-repo project has no R7 facts at all, and the card's height is fixed by the
+/// section's `item_span` — so the row goes blank rather than being dropped (which would
+/// misalign every card below it in the column) or filled with an invented value. Untested,
+/// this branch is the one that reads as a rendering bug rather than an honest absence.
+#[test]
+fn a_lush_card_for_a_non_repo_leaves_the_repo_row_blank_and_keeps_its_height() {
+    let mut r = radar(2, &[]);
+    r.projects[0].git = GitState::not_a_repo();
+    assert!(plan(&r, 80, 25, 0).lush, "precondition for this test");
+
+    let screen = rendered(&r, 80, 25);
+    let whole = screen.join("\n");
+    // Both cards still drew their bottom border, i.e. neither lost a row.
+    assert_eq!(
+        whole.matches('\u{256F}').count(),
+        2,
+        "both cards must keep the same box height, got:\n{whole}"
+    );
+    // The non-repo card carries no `repo` label and invents no commit age.
+    let first_card_end = screen
+        .iter()
+        .position(|l| l.contains('\u{256F}'))
+        .expect("the first card must have a bottom border");
+    let first_card = screen[..first_card_end].join("\n");
+    assert!(
+        first_card.contains("run0"),
+        "sanity: the first card is the non-repo one, got:\n{first_card}"
+    );
+    assert!(
+        !first_card.contains("repo "),
+        "no `repo` row for a non-repo, got:\n{first_card}"
+    );
+    assert!(
+        first_card.contains("last "),
+        "R4 is unaffected — `last_event_facts` never degrades to nothing, got:\n{first_card}"
+    );
+}

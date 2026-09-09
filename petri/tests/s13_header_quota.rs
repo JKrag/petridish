@@ -63,10 +63,17 @@ fn project(id: &str) -> Project {
 }
 
 /// A radar with `n` projects and the given quota.
+///
+/// `updated_at` is the **live** clock, not `now()`'s pinned literal. `plan_layout` compares
+/// it against `Utc::now()` to decide whether to spend a row on the staleness banner, so a
+/// pinned stamp would quietly add a row to the frame the day after this was written and push
+/// the header off row 0 — `PLAN-focus-panel.md` §10's time-bomb shape, which has already
+/// cost this repo a day once (`swab/src/sensors/quota.rs`, fixed in `90aed29`). The pinned
+/// `now()` stays where it belongs: injected into the functions that take a clock.
 fn radar(n: usize, q: Option<QuotaState>) -> Radar {
     Radar {
         schema_version: 1,
-        updated_at: now(),
+        updated_at: chrono::Utc::now(),
         scan_duration_ms: 300,
         projects: (0..n).map(|i| project(&format!("p{i}"))).collect(),
         quota: q,
