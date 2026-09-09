@@ -39,16 +39,25 @@ fn settle(session: &mut Session) -> Vec<String> {
 ///
 /// It matters more here than anywhere else in the suite, because `y` is the one binding
 /// that shells out before it can produce anything to draw: `yank_selected_path` spawns
-/// `pbcopy` and blocks on `child.wait()`, so the redraw waits on a whole process
-/// lifecycle. Measured on this machine: 0 failures in 15 runs idle, but 1 in 15 with the
-/// cores busy — a process spawn under load routinely outlasts the 300ms quiet window.
+/// `pbcopy` and blocks on `child.wait()`, so the redraw waits on a whole process lifecycle.
+///
+/// **The attempt count is the budget, and it has to exceed how long `pbcopy` actually
+/// takes.** That is not a small number: measured on this machine, `echo hello | pbcopy`
+/// takes 1.8-2.2s with nothing else running and up to 3.0s with eight in flight. At the
+/// suite's usual 5 attempts the budget is ~1.5s of quiet windows — *less than the operation
+/// being waited for* — so the test passed only when pbcopy landed on the fast side of its
+/// own variance, which reads as flakiness and is really an under-budgeted wait. It measured
+/// 18 failures in 24 at eight-way concurrency before this went up.
+///
+/// `screen_until` returns as soon as the predicate holds, so a generous count costs nothing
+/// on the common path; it only buys headroom on the slow one.
 fn settle_until(session: &mut Session, needle: &'static str) -> Vec<String> {
     session.screen_until(
         90,
         40,
         Duration::from_secs(5),
         Duration::from_millis(300),
-        5,
+        30,
         |grid| grid.iter().any(|r| r.contains(needle)),
     )
 }
