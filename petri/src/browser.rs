@@ -451,7 +451,10 @@ pub fn render(frame: &mut Frame, radar: &Radar, state: &BrowserState, nerd: bool
     // `state.selected` regardless of scroll, kept showing those still
     // off-screen rows' details — before `compute_scroll_offset` finally
     // caught up and scrolled the list.
-    let (list_lines, selected_line) = render_list_lines(radar, state, nerd);
+    // The INNER width: the bordered block spends one column on each side, and a row laid
+    // out to the outer width would wrap.
+    let inner_width = list_area.width.saturating_sub(2) as usize;
+    let (list_lines, selected_line) = render_list_lines(radar, state, nerd, inner_width);
     let visible_rows = list_content_rows(list_area.height); // top + bottom border consumed
     let scroll_offset = compute_scroll_offset(selected_line, list_lines.len(), visible_rows);
 
@@ -668,6 +671,7 @@ fn render_list_lines(
     radar: &Radar,
     state: &BrowserState,
     nerd: bool,
+    avail: usize,
 ) -> (Vec<Line<'static>>, Option<usize>) {
     let mut lines = Vec::new();
     let mut selected_line: Option<usize> = None;
@@ -681,6 +685,26 @@ fn render_list_lines(
         )));
         return (lines, None);
     }
+
+    // Measured across every VISIBLE row, not the whole radar: a filtered list should lay
+    // itself out for what it shows, and a project hidden by the filter must not reserve
+    // width for a name nobody can see.
+    let cols = {
+        let mut widest_name = 0usize;
+        let mut widest_git = 0usize;
+        let mut widest_silence = 0usize;
+        for &idx in &state.visible {
+            let Some(p) = radar.projects.get(idx) else {
+                continue;
+            };
+            let name = format!("{}{}", p.name, present::dirty_marker(&p.git).trim_end());
+            widest_name = widest_name.max(crate::width::width(&name));
+            widest_git = widest_git.max(crate::width::width(&git_segment(&p.git, nerd)));
+            widest_silence =
+                widest_silence.max(crate::width::width(&silence_display(p.last_activity_at)));
+        }
+        column_widths(widest_name, widest_git, widest_silence, avail)
+    };
 
     let mut idx_in_visible = 0usize;
 
@@ -730,7 +754,7 @@ fn render_list_lines(
             if is_selected {
                 selected_line = Some(lines.len());
             }
-            lines.push(render_project_row(radar, proj_idx, is_selected, nerd));
+            lines.push(render_project_row(radar, proj_idx, is_selected, nerd, cols));
             idx_in_visible += 1;
         }
 
@@ -817,13 +841,100 @@ fn is_github(git: &GitState) -> bool {
     })
 }
 
-/// Render one project row: glyph (● working / ○ otherwise), name, dirty marker
-/// + the git segment, silence age. Selection highlight applied via `is_selected`.
+/// Columns spent before the name: the leading glyph and the spaces around it.
+const ROW_LEADER_COLS: usize = 3;
+/// Blank columns between two adjacent cells.
+const COLUMN_GAP: usize = 2;
+/// The narrowest the name column may be squeezed to before the columns to its right start
+/// giving up width instead. Below this a name is mostly ellipsis and identifies nothing.
+const NAME_COLUMN_MIN: usize = 6;
+
+/// The widest the name column may grow, however long the longest name is.
+///
+/// Without a cap, one outlier name pads *every* row out to its length — and it does not
+/// even have to be on screen, since the column is measured across the whole visible list
+/// while only a screenful is drawn. Observed on real data: a list of `alpha-NN` rows sat
+/// with eleven dead columns before the git cell because of a longer name in a section
+/// further down. 28 columns clears every project name in the author's own fleet
+/// (`devops-academy-handins` is 22), so the cap costs nothing in the common case and
+/// bounds the damage in the uncommon one; anything longer is ellipsised by `fit_exact` and
+/// still readable in the detail pane.
+const NAME_COLUMN_MAX: usize = 28;
+
+/// The three data columns' widths for one render pass, in display columns.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct RowColumns {
+    pub(crate) name: usize,
+    pub(crate) git: usize,
+    pub(crate) silence: usize,
+}
+
+/// Fit the three columns into the pane, shrinking under pressure.
+///
+/// **Every row is laid out to exactly the same total width**, which is what makes the git
+/// and age cells line up down the list instead of floating after names of differing length.
+/// That total must never exceed the pane: the list is drawn by a `Paragraph` with
+/// `Wrap { trim: false }`, so a row one column too wide does not clip — it *wraps*, and a
+/// wrapped row pushes every row below it out of step with the scroll maths, which counts
+/// lines. Hence a shrink ladder rather than a plain max.
+///
+/// The order is deliberate. The name gives way first, because it is the only cell that
+/// degrades gracefully — `petridish-cl…` still identifies a project — down to
+/// `NAME_COLUMN_MIN`. The git segment goes next. The age gives way last: it is the shortest
+/// cell and the one truncation destroys rather than degrades, since the unit is the final
+/// character and `20d ago` cut to `20d` is a different claim.
+pub(crate) fn column_widths(
+    widest_name: usize,
+    widest_git: usize,
+    widest_silence: usize,
+    avail: usize,
+) -> RowColumns {
+    let fixed = ROW_LEADER_COLS + COLUMN_GAP * 2;
+    let mut cols = RowColumns {
+        name: widest_name.min(NAME_COLUMN_MAX),
+        git: widest_git,
+        silence: widest_silence,
+    };
+    let over = |c: &RowColumns| (fixed + c.name + c.git + c.silence).saturating_sub(avail);
+
+    let excess = over(&cols);
+    if excess > 0 {
+        cols.name = cols.name.saturating_sub(excess).max(NAME_COLUMN_MIN);
+    }
+    let excess = over(&cols);
+    if excess > 0 {
+        cols.git = cols.git.saturating_sub(excess);
+    }
+    let excess = over(&cols);
+    if excess > 0 {
+        cols.silence = cols.silence.saturating_sub(excess);
+    }
+    // A pane too narrow for even the floor: the name gives up the remainder. Nothing may
+    // return a total wider than `avail`, or the row wraps.
+    let excess = over(&cols);
+    if excess > 0 {
+        cols.name = cols.name.saturating_sub(excess);
+    }
+    cols
+}
+
+/// Right-aligned cell, for the age column: the unit is the last character, and a ragged
+/// right edge is what makes a column of ages hard to compare at a glance.
+fn cell_right(text: &str, w: usize) -> String {
+    let text = crate::width::take_width(text, w);
+    let pad = w.saturating_sub(crate::width::width(&text));
+    format!("{}{}", " ".repeat(pad), text)
+}
+
+/// Render one project row: glyph (● working / ○ otherwise), name with its dirty marker,
+/// the git segment, and the silence age — each in the column width `cols` allots it, so the
+/// cells line up down the list. Selection highlight applied via `is_selected`.
 fn render_project_row(
     radar: &Radar,
     proj_idx: usize,
     is_selected: bool,
     nerd: bool,
+    cols: RowColumns,
 ) -> Line<'static> {
     let project = &radar.projects[proj_idx];
 
@@ -832,15 +943,16 @@ fn render_project_row(
         _ => "○",
     };
 
-    let name = &project.name;
-    let dirty_marker = present::dirty_marker(&project.git);
+    // The dirty marker is a suffix on the name, not a column of its own — it is one
+    // character and belongs against the thing it qualifies. `dirty_marker` pads to a space
+    // for a clean repo, which would otherwise widen every name cell by one.
+    let name = format!(
+        "{}{}",
+        project.name,
+        present::dirty_marker(&project.git).trim_end()
+    );
 
     let git = git_segment(&project.git, nerd);
-    let git = if git.is_empty() {
-        String::from(" ")
-    } else {
-        git
-    };
 
     let silence = silence_display(project.last_activity_at);
 
@@ -865,11 +977,14 @@ fn render_project_row(
         Style::default().fg(theme::DIM)
     };
 
+    let gap = " ".repeat(COLUMN_GAP);
     Line::from(vec![
         Span::styled(format!(" {} ", glyph), style),
-        Span::styled(format!("{}{}", name, dirty_marker), style),
-        Span::styled(format!("  {}", git), meta_style),
-        Span::styled(format!(" {}", silence), meta_style),
+        Span::styled(crate::width::fit_exact(&name, cols.name), style),
+        Span::styled(gap.clone(), meta_style),
+        Span::styled(crate::width::fit_exact(&git, cols.git), meta_style),
+        Span::styled(gap, meta_style),
+        Span::styled(cell_right(&silence, cols.silence), meta_style),
     ])
 }
 
@@ -1156,6 +1271,109 @@ mod tests {
     }
 
     #[test]
+    fn every_row_is_laid_out_to_the_same_width() {
+        // The alignment property itself, and the safety property behind it: the list is
+        // drawn with `Wrap { trim: false }`, so a row wider than the pane wraps rather than
+        // clips and takes the scroll maths with it.
+        for avail in 8..80 {
+            let cols = super::column_widths(30, 6, 7, avail);
+            let total = super::ROW_LEADER_COLS
+                + cols.name
+                + super::COLUMN_GAP * 2
+                + cols.git
+                + cols.silence;
+            assert!(
+                total <= avail,
+                "columns {cols:?} total {total} exceed the pane's {avail}"
+            );
+        }
+    }
+
+    #[test]
+    fn one_outlier_name_does_not_pad_every_row() {
+        // The cap exists because the column is measured across the whole visible list while
+        // only a screenful is drawn, so an off-screen name could widen every row on screen.
+        let cols = super::column_widths(120, 6, 7, 200);
+        assert_eq!(cols.name, super::NAME_COLUMN_MAX);
+    }
+
+    #[test]
+    fn a_roomy_pane_gives_every_column_what_it_asked_for() {
+        let cols = super::column_widths(20, 6, 7, 100);
+        assert_eq!(
+            cols,
+            super::RowColumns {
+                name: 20,
+                git: 6,
+                silence: 7
+            }
+        );
+    }
+
+    #[test]
+    fn the_name_gives_up_width_before_the_other_columns_do() {
+        // Order matters: the name is the only cell that degrades gracefully, and the age is
+        // the one truncation destroys outright ("20d ago" -> "20d" is a different claim).
+        let cols = super::column_widths(28, 6, 7, 40);
+        assert!(cols.name < 28, "the name must have been squeezed");
+        assert_eq!(
+            cols.git, 6,
+            "git keeps its width while the name can still give"
+        );
+        assert_eq!(cols.silence, 7, "and the age is untouched");
+    }
+
+    #[test]
+    fn a_pane_too_narrow_for_the_floor_still_fits() {
+        // Below `NAME_COLUMN_MIN` everything gives way in turn rather than overflowing.
+        let cols = super::column_widths(30, 6, 7, 12);
+        let total =
+            super::ROW_LEADER_COLS + cols.name + super::COLUMN_GAP * 2 + cols.git + cols.silence;
+        assert!(total <= 12, "got {cols:?} totalling {total}");
+    }
+
+    #[test]
+    fn the_git_and_age_cells_start_at_the_same_column_on_every_row() {
+        // The end-to-end version of the property: render real rows whose names differ in
+        // length and assert the columns line up in the buffer.
+        let mut short = project("s", "short", StatusBucket::Active);
+        short.git = repo(1, 0, None);
+        let mut long = project("l", "a-much-longer-project-name", StatusBucket::Active);
+        long.git = repo(2, 0, None);
+        let radar = radar_of(vec![short, long]);
+        let state = BrowserState::new(&radar);
+        let (lines, _) = super::render_list_lines(&radar, &state, false, 60);
+
+        let rows: Vec<String> = lines
+            .iter()
+            .map(|l| {
+                l.spans
+                    .iter()
+                    .map(|s| s.content.as_ref())
+                    .collect::<String>()
+            })
+            .filter(|t| t.contains("short") || t.contains("a-much-longer-project-name"))
+            .collect();
+        assert_eq!(rows.len(), 2, "expected both project rows, got {rows:?}");
+
+        let marker_col = |row: &str, needle: &str| -> usize {
+            crate::width::width(&row[..row.find(needle).expect("cell must be present")])
+        };
+        assert_eq!(
+            marker_col(&rows[0], "!1"),
+            marker_col(&rows[1], "!2"),
+            "git cells must start at the same column:\n{}\n{}",
+            rows[0],
+            rows[1]
+        );
+        assert_eq!(
+            crate::width::width(&rows[0]),
+            crate::width::width(&rows[1]),
+            "rows must be equally wide"
+        );
+    }
+
+    #[test]
     fn a_non_repo_is_marked_positively_not_by_an_empty_cell() {
         // Issue #38's first ask. "Not a repo" and "clean repo" must not look alike, which
         // rules out simply leaving the cell blank for one of them.
@@ -1274,7 +1492,7 @@ mod tests {
 
         // Line 0 is the "RUNNING [3]" header, so the first project row (the
         // default selection) must be line 1, not line 0.
-        let (_, selected_line) = render_list_lines(&radar, &state, false);
+        let (_, selected_line) = render_list_lines(&radar, &state, false, 60);
         assert_eq!(
             selected_line,
             Some(1),
@@ -1282,7 +1500,7 @@ mod tests {
         );
 
         state.move_selection(1);
-        let (_, selected_line) = render_list_lines(&radar, &state, false);
+        let (_, selected_line) = render_list_lines(&radar, &state, false, 60);
         assert_eq!(
             selected_line,
             Some(2),
@@ -1290,7 +1508,7 @@ mod tests {
         );
 
         state.move_selection(1);
-        let (_, selected_line) = render_list_lines(&radar, &state, false);
+        let (_, selected_line) = render_list_lines(&radar, &state, false, 60);
         assert_eq!(selected_line, Some(3));
     }
 
@@ -1325,7 +1543,7 @@ mod tests {
             state.move_selection(1);
         }
 
-        let (list_lines, selected_line) = render_list_lines(&radar, &state, false);
+        let (list_lines, selected_line) = render_list_lines(&radar, &state, false, 60);
         let visible_rows = 5usize;
         let scroll_offset = compute_scroll_offset(selected_line, list_lines.len(), visible_rows);
 
@@ -1470,7 +1688,7 @@ mod tests {
         // scrolling happened at all.
         for _ in 0..2 {
             state.move_selection(1);
-            let (list_lines, selected_line) = render_list_lines(&radar, &state, false);
+            let (list_lines, selected_line) = render_list_lines(&radar, &state, false, 60);
             let scroll_offset =
                 compute_scroll_offset(selected_line, list_lines.len(), visible_rows);
             assert_eq!(
