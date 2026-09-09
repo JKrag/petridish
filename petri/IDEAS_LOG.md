@@ -509,6 +509,145 @@ rather than built.
 
 ---
 
+## Slice 8 — `SURF-8`, the focus panel (plus `SURF-6`/`SURF-7`/`SPACE-3`/`SURF-4`)
+
+Landed 2026-09-08/09, issues [#30](https://github.com/JKrag/petridish/issues/30),
+[#31](https://github.com/JKrag/petridish/issues/31),
+[#32](https://github.com/JKrag/petridish/issues/32),
+[#33](https://github.com/JKrag/petridish/issues/33),
+[#29](https://github.com/JKrag/petridish/issues/29). Design: `petri/PROPOSAL-focus-panel.md`.
+Build record, phase by phase: `petri/PLAN-focus-panel.md`.
+
+The premise: four issues were four descriptions of the same thing — "show me one project
+properly." One pure `focus_lines(area, ctx) -> Vec<Line>` behind every mount, so the
+surfaces cannot drift into three different accounts of the same project. It shipped with
+**two** of the three planned mounts; the third is the interesting failure, below.
+
+### The plan structure, which mattered more than any single task
+
+`make check` passes on unwritten code. A delegate told to "add a focus panel" can add an
+empty module, run the gate, see green, and report success — and TUI layout makes that worse
+than usual, because the failure mode is "renders something plausible but wrong," which no
+exit code catches. So the job inverted the usual order: **the tests are the spec, written
+before the implementation and by whoever is planning, not by whoever is implementing.** That
+turned progress into a single number — failing tests in `petri`, lower is better — and made
+each task a ratchet: a round either lowers the count or gets reverted.
+
+Two things that only became visible once the ratchet existed:
+
+1. **Some correct work scores zero, and the ratchet reverts it.** Widening a visibility
+   keyword so another module can reuse a helper makes no test go from fail to pass. Under
+   "commit if the score dropped", such a task is reverted every time — and it was the one
+   thing four other tasks depended on. Same shape for the Browser re-point, which no test in
+   its phase graded. Both had to be pulled out of the graded loop and done as reviewed work
+   instead. **A ratchet cannot grade a change that is invisible to it**, and noticing which
+   tasks those are is a planning job, not something the loop discovers.
+2. **A test file that covers six rungs at once scores zero for five of the six tasks that
+   own them**, and gets their correct work reverted. The render tests were deliberately
+   written one rung per test for that reason.
+
+### Findings worth keeping
+
+1. **The ambiguous-name tie-break is a product decision, not a safety one.** `--mini smoke`
+   is ambiguous — the fleet has three `smoke`s. The first draft errored out. Erroring is
+   technically safer and practically useless: the tool already knows which one you mean.
+   It resolves to the **most recently active** match, which is `swab`'s own ordering and the
+   same judgement the Dashboard's top-of-list already encodes. Two details that only showed
+   up in the test: the tie-break must be **case-insensitive** (plain byte order sorts
+   `repos/JKrag/lantern` ahead of `repos/aaa-first/lantern`, since ASCII puts every capital
+   before every lowercase letter — not what "alphabetically first" means to anyone reading a
+   fleet list), and the ordering must be **re-derived** rather than read off
+   `radar.projects`, so the answer does not silently follow a future change to the writer's
+   sort.
+2. **`--mini`'s failure modes split by whether the user can act on them.** The
+   missing-state-file and not-a-project checks run *before* entering the alternate screen.
+   But a target that stops resolving mid-run renders its error **in-pane**: a pane pinned in
+   a split for days must not vanish because one scan happened to drop a project.
+3. **Scaffolding a panicking API into a live key path inverts the ratchet.** Phase C left
+   the mount deliberately unwired — wiring an `unimplemented!()` into the `Space` handler
+   would have made every `Space` in the PTY suite panic, which is a *drop* in the failing
+   count, which the ratchet reads as progress. The wiring belonged to the task that filled
+   the function in.
+4. **Nothing graded the run loop, and the phase could have scored a perfect zero without
+   one.** `run_mini` → `mini_poll_loop` → `render_mini_frame` was covered by no test at all;
+   the attended PTY pass afterwards is what caught it. All fifteen PTY tests were
+   *mutation-checked* rather than merely observed green — blanking `render_mini` fails the
+   two rendering tests and neither quit test; dropping `Esc` from the mini key match fails
+   only the `Esc` test. A green PTY test that stays green when you delete the thing it
+   covers is worth less than no test.
+5. **The glyph-portability gate does not see ratatui-generated borders**, and that hole is
+   now known reachable rather than theoretical: the Dashboard popup briefly shipped with
+   `BorderType::Rounded`, whose `╭╮╰╯` are not on the allowlist, and the gate said nothing.
+   Worth stating precisely — `render_section`'s roomy cards have *always* used
+   `BorderType::Rounded`, so those glyphs reach the screen from a second, pre-existing site
+   too. `IDEAS.md` §5's `┌┐└┘` gap is the same hole. Fix it deliberately, not as a side
+   effect of a round trying to go green.
+6. **Test the density decision, not the density.** `SPACE-3`'s lush tier began as a
+   one-line spike — widen `item_span`, run the suite — precisely to find out what it would
+   break before writing any of it. Three tests moved, none of them the feed tests that were
+   the real risk, and all three for the same reason: `render_section` inferred "is this a
+   roomy card section" from `item_span == ROOMY_CARD_BOX_ROWS + 1`. Widening the span
+   silently flipped the entire RUNNING section into the *compact* renderer while every
+   layout assertion still passed — "plausible but wrong", found for the cost of one `sed`
+   rather than at the end of the task. `SectionPlan` now carries `card_box_rows` explicitly
+   and nothing re-derives it.
+7. **The lush tier's contract is comparative, so it needed a seam to be testable at all.**
+   "It never costs a project row" is a statement about the plan the same terminal *would*
+   have produced without the tier, which is otherwise unobservable — so
+   `plan_layout_at_density` exists purely to expose it. Nothing in the app passes
+   `allow_lush: false`. The alternative was a test that compared the tier to itself and
+   proved nothing, which is what the first draft did.
+8. **Quota wanted a pane; it belonged in the header.** `SURF-4` and `SPEC.md` §7 both
+   imagined bars, and `DashPlan`'s own doc comment predicted a "quota-gauge rail" carved out
+   of the fleet rect. A rail permanently spends a column of width on ~13 characters, on the
+   one screen whose whole problem (`SPACE-*`) is running out of room. The header already
+   *is* the global-context row, so quota joins facts of its own kind at zero cost in body
+   rows. The prediction in the doc comment was retracted rather than left contradicting the
+   built thing.
+9. **Adding a segment to the header exposed that the header never elided.** `split_line`
+   pads to at least one space and never truncates, so the right group already ran off the
+   frame at around 55 columns, taking the title's right edge with it. The elision ladder is
+   new machinery, not a quota detail — and the two screens run it in **opposite** directions
+   on purpose: the Dashboard drops the clock before quota (a clock is available everywhere;
+   the burn number is why you opened the screen), `--mini` drops quota before the silence
+   indicator (a `--mini` pane exists to watch one project).
+10. **The third mount was dropped, and its premise was false rather than merely hard.**
+    `ACT-7`/#32 asked for the Browser's `Space` popup to render the focus panel.
+    `s5_snapshot.rs` asserts that popup reaches `github_url` at 60×10 — and that assertion
+    *is* issue #35's reason for existing, the popup being the only way to reach detail-only
+    fields when neither inline placement fits. The panel's `repo` rung gates at `(56, 28)`,
+    so a ten-row terminal cannot admit a url at any popup size: the swap breaks a protected
+    test **by construction**, not by a sizing mistake. Widening the gate breaks the plan
+    tests instead. The rejected third option — render the panel above a size threshold and
+    the fact sheet below it — is two detail layouts in one screen swapping on a size, the
+    least predictable of the three. #32 closed for what shipped; the re-point is its own
+    follow-up.
+11. **A time-bomb test is the failure a phase gate cannot see.** The plan's own start-gate
+    rule ("confirm `make check` is green at BASE before starting") was written because two
+    tests in a crate this job never touched began failing with no code change — they pinned
+    a literal timestamp against a live `Utc::now()` and a 30-day guard started dropping it
+    exactly thirty days later. The rule then had to be applied to this job's *own* tests: a
+    header test pinned `updated_at` to a literal and would have started failing the next
+    day, when the staleness banner claimed row 0. Injected clocks belong in the functions
+    that take one; `updated_at` belongs on the live clock.
+
+### One consequence to accept rather than discover
+
+`SPACE-3` and `SPACE-1` want the same spare rows, and the ordering between them was
+unstated — whichever code claimed first won, which is not a design. It is now `SPEC.md`
+§3.2's "surplus priority": cards take a bounded first claim, the feed takes the remainder.
+The bound is what makes it safe, and it is checked as a whole-plan comparison rather than a
+per-section gate, because RUNNING growing can push a *later* section off the screen
+entirely.
+
+**But on a tall terminal with several RUNNING projects, the feed can be squeezed to zero
+rows.** `FEED_MIN_ROWS` is a floor on drawing the block at all, not a reservation against
+the cards. That follows from the stated ordering and is written into the spec rather than
+left to be found later; if it turns out to read badly in practice, the fix is a reservation
+and it is a spec change, not a bug.
+
+---
+
 ## Retrospective
 
 Two predictions from the original brainstorm, worth checking against what actually
