@@ -405,7 +405,7 @@ fn a_single_real_candidate_runs_without_asking() {
 #[test]
 fn only_placeholder_arguments_are_substituted() {
     // Literal arguments must survive untouched — `ACT-3`'s real git fallback
-    // carries seven of them, including `core.pager=less -R`, and mangling any
+    // carries seven of them, including `core.pager=less -+F -R`, and mangling any
     // one would change what the user sees.
     let action = Action {
         id: "gitlog",
@@ -414,7 +414,7 @@ fn only_placeholder_arguments_are_substituted() {
         target: Target::Path,
         candidates: vec![Candidate::new(
             "git",
-            &["-c", "core.pager=less -R", "log", "--graph", "{path}"],
+            &["-c", "core.pager=less -+F -R", "log", "--graph", "{path}"],
             ExecMode::Terminal,
         )],
     };
@@ -425,7 +425,7 @@ fn only_placeholder_arguments_are_substituted() {
             program: "git".to_string(),
             args: vec![
                 "-c".to_string(),
-                "core.pager=less -R".to_string(),
+                "core.pager=less -+F -R".to_string(),
                 "log".to_string(),
                 "--graph".to_string(),
                 "/Users/x/repos/thing".to_string(),
@@ -545,6 +545,29 @@ fn git_history_is_bound_and_always_resolvable_thanks_to_its_fallback() {
         Resolution::Ready(launch) => assert_eq!(launch.program, "git"),
         other => panic!("a machine with only git installed must still resolve, got {other:?}"),
     }
+}
+
+#[test]
+fn git_history_fallback_disables_less_quit_if_one_screen() {
+    // Regression for #39: git sets LESS=FRX when LESS is otherwise unset, so
+    // merely pinning `core.pager=less -R` still inherits `-F` and exits
+    // immediately for short logs. The command line must cancel it explicitly.
+    let reg = tools::registry();
+    let gitlog = reg
+        .iter()
+        .find(|a| a.id == "gitlog")
+        .expect("registry must carry a gitlog action");
+    let fallback = gitlog
+        .candidates
+        .iter()
+        .find(|c| c.fallback)
+        .expect("gitlog must have a fallback");
+    assert_eq!(fallback.program, "git");
+    assert!(
+        fallback.args.iter().any(|arg| arg.contains("-+F")),
+        "git fallback pager must disable less -F so short logs stay open: {:?}",
+        fallback.args
+    );
 }
 
 #[test]
@@ -686,7 +709,7 @@ fn repick_lists_all_four_git_tuis_plus_their_fallback() {
                 "git",
                 &[
                     "-c",
-                    "core.pager=less -R",
+                    "core.pager=less -+F -R",
                     "log",
                     "--graph",
                     "--oneline",
