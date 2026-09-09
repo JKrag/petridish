@@ -618,7 +618,17 @@ If you do go the AFK route:
 
 1. `make check` exits 0 (workspace-wide, all four crates).
 2. `make check-all` exits 0 — run before the PR, per `CLAUDE.md`.
-3. PTY coverage added attended (§9).
+3. ~~PTY coverage added attended (§9).~~ **Done (2026-09-09)** — `s11_pty_focus.rs` (6
+   tests) and `s12_pty_mini.rs` (9). The `--mini` file is the one that mattered: nothing
+   graded `run_mini` → `mini_poll_loop` → `render_mini_frame`, so Phase D could have
+   scored a perfect 0 with no run loop at all. All fifteen were mutation-checked rather
+   than merely observed green — blanking `render_mini` fails the two rendering tests and
+   neither quit test, dropping `Esc` from the mini key match fails only the `Esc` test,
+   and reverting `Space` to `toggle_selected` fails four focus tests while correctly
+   leaving the header-toggle test passing. `pty_support/mod.rs` gained `spawn_with_args`
+   (additive; both existing entry points delegate to it with an empty slice) because
+   `Session` could otherwise only ever spawn `petri <state>`, and `--mini`'s whole
+   contract is about how a flag and that positional interact. `EXPECTED_BINARIES` 34 → 36.
 4. `SPEC.md` updated with the three decisions from §9, by a human.
 5. `IDEAS.md`'s `SURF-8` gets its `DONE` pointer and the narrative moves to `IDEAS_LOG.md`
    — that's `IDEAS.md`'s own stated convention, and the deferred-rung list stays behind.
