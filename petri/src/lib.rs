@@ -1320,8 +1320,13 @@ fn render_current(
         }
         Screen::Browser => {
             if let Some(s) = browser_state {
+                // Resolved per frame rather than once at startup: `nerd_font_installed`
+                // memoises the filesystem probe, so this is a match on an enum after the
+                // first call, and reading it here keeps the flag a function of `prefs`
+                // rather than a second piece of startup state to keep in sync.
+                let nerd = prefs.use_nerd_fonts(&crate::exec::nerd_font_installed);
                 let _ = terminal.draw(|frame| {
-                    crate::browser::render(frame, r, s);
+                    crate::browser::render(frame, r, s, nerd);
                     // The overlay is drawn last, after the screen beneath it —
                     // `Clear` only blanks what is already in the buffer, so
                     // ordering is the whole mechanism (MECH-1).

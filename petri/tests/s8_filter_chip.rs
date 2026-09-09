@@ -35,7 +35,7 @@ fn rendered_lines(radar: &Radar, state: &BrowserState, width: u16, height: u16) 
     let backend = TestBackend::new(width, height);
     let mut terminal = Terminal::new(backend).expect("TestBackend terminal must construct");
     terminal
-        .draw(|frame| petri::browser::render(frame, radar, state))
+        .draw(|frame| petri::browser::render(frame, radar, state, false))
         .expect("draw must not error");
     let buffer = terminal.backend().buffer();
     (0..height)

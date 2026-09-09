@@ -4,7 +4,7 @@
 
 use crate::theme;
 use petridish_core::present;
-use petridish_core::schema::{AgentActivity, Project, Radar, StatusBucket};
+use petridish_core::schema::{AgentActivity, GitState, Project, Radar, StatusBucket};
 use ratatui::{
     Frame,
     layout::{Constraint, Layout, Rect},
@@ -14,6 +14,23 @@ use ratatui::{
 };
 
 use std::time::{SystemTime, UNIX_EPOCH};
+
+/// Nerd Font glyphs for the git segment, drawn only when `nerd` is true.
+///
+/// **These are Private Use Area code points and will render as a tofu box for anyone
+/// without a Nerd Font**, which is exactly why they sit behind `prefs::NerdFonts` and why
+/// `glyph_portability.rs` carries them in a separate, opt-in allowlist rather than the main
+/// one. Every glyph below is still held to that gate's width rule — one narrow cell — since
+/// a two-cell glyph would corrupt the row's layout regardless of the font question.
+///
+/// Chosen for stability across Nerd Font versions: `U+E0A0` is the original Powerline
+/// branch symbol and `U+F09B` is Font Awesome's github mark, both of which have survived
+/// every renumbering the project has done (v3 moved large parts of the Octicons range,
+/// which is why the more obvious `nf-oct-mark_github` is not used here).
+const NERD_BRANCH: &str = "\u{e0a0}";
+const NERD_GITHUB: &str = "\u{f09b}";
+/// `nf-fa-folder_o` — a plain directory, for a project that is not a repository.
+const NERD_NOT_A_REPO: &str = "\u{f114}";
 
 /// Section order (petri/SPEC.md §3.1): "Grouped list, sections in the fixed
 /// order active, in_flight, stale, cold". The Browser DOES render headers
@@ -297,7 +314,7 @@ fn below_detail_height(main: Rect) -> u16 {
 ///   reflowed below the list instead of losing it outright.
 /// - Must not panic on an empty `state.visible` (renders a "nothing
 ///   selected" state per petri/SPEC.md §3.1) or a degenerate 0×0/1×1 area.
-pub fn render(frame: &mut Frame, radar: &Radar, state: &BrowserState) {
+pub fn render(frame: &mut Frame, radar: &Radar, state: &BrowserState, nerd: bool) {
     let area = frame.area();
     if area.width == 0 || area.height == 0 {
         return;
@@ -434,7 +451,7 @@ pub fn render(frame: &mut Frame, radar: &Radar, state: &BrowserState) {
     // `state.selected` regardless of scroll, kept showing those still
     // off-screen rows' details — before `compute_scroll_offset` finally
     // caught up and scrolled the list.
-    let (list_lines, selected_line) = render_list_lines(radar, state);
+    let (list_lines, selected_line) = render_list_lines(radar, state, nerd);
     let visible_rows = list_content_rows(list_area.height); // top + bottom border consumed
     let scroll_offset = compute_scroll_offset(selected_line, list_lines.len(), visible_rows);
 
@@ -647,7 +664,11 @@ fn truncate_query(query: &str, budget: usize, keep_tail: bool) -> String {
 /// nothing is selected) — the caller needs the real line position, not
 /// `state.selected` (which only counts project rows, not the headers/blank
 /// separators interleaved between them), to compute a correct scroll offset.
-fn render_list_lines(radar: &Radar, state: &BrowserState) -> (Vec<Line<'static>>, Option<usize>) {
+fn render_list_lines(
+    radar: &Radar,
+    state: &BrowserState,
+    nerd: bool,
+) -> (Vec<Line<'static>>, Option<usize>) {
     let mut lines = Vec::new();
     let mut selected_line: Option<usize> = None;
 
@@ -709,7 +730,7 @@ fn render_list_lines(radar: &Radar, state: &BrowserState) -> (Vec<Line<'static>>
             if is_selected {
                 selected_line = Some(lines.len());
             }
-            lines.push(render_project_row(radar, proj_idx, is_selected));
+            lines.push(render_project_row(radar, proj_idx, is_selected, nerd));
             idx_in_visible += 1;
         }
 
@@ -722,9 +743,88 @@ fn render_list_lines(radar: &Radar, state: &BrowserState) -> (Vec<Line<'static>>
     (lines, selected_line)
 }
 
+/// The git segment for one row (issue #38): is this a repository at all, and if so what is
+/// uncommitted in it.
+///
+/// **Deliberately carries no branch name.** A branch name is unbounded — `feature/JIRA-1234-
+/// rework-the-thing` is ordinary — and this list is often only ~25 columns wide with the
+/// detail pane beside it, so a branch would either dominate the row or need its own
+/// truncation ladder. The branch is one keypress away in the detail pane and the focus
+/// panel, both of which have the room for it.
+///
+/// `!N` modified, `?N` untracked — the vocabulary of `git status --short`, starship and
+/// lazygit, so it needs no legend for anyone who uses git. Zero counts are omitted rather
+/// than shown as `!0`: a clean repo has nothing to say.
+///
+/// `nerd` swaps the leading marker for a Nerd Font glyph. The counts are identical in both
+/// modes, so the information never depends on the font — only the decoration does.
+pub(crate) fn git_segment(git: &GitState, nerd: bool) -> String {
+    if !git.is_repo {
+        // The non-repo marker is the whole of #38's first ask, so it is a *positive* mark
+        // rather than an empty cell: "not a repo" and "clean repo" must not look alike.
+        return if nerd {
+            NERD_NOT_A_REPO.to_string()
+        } else {
+            "-".to_string()
+        };
+    }
+
+    let modified = git.uncommitted_files.saturating_sub(git.untracked_files);
+    let mut out = String::new();
+
+    if nerd {
+        // The host icon when we know the host, the generic branch glyph otherwise. Same
+        // shape as Kasper's screenshot on #38, which leads with the GitHub mark.
+        out.push_str(if is_github(git) {
+            NERD_GITHUB
+        } else {
+            NERD_BRANCH
+        });
+    }
+
+    if modified > 0 {
+        if !out.is_empty() {
+            out.push(' ');
+        }
+        out.push_str(&format!("!{modified}"));
+    }
+    if git.untracked_files > 0 {
+        if !out.is_empty() {
+            out.push(' ');
+        }
+        out.push_str(&format!("?{}", git.untracked_files));
+    }
+    out
+}
+
+/// Is the remote GitHub?
+///
+/// `swab::git::github_url` already normalises every remote it accepts to
+/// `https://github.com/OWNER/REPO` and returns `None` for anything else, so in practice
+/// `github_url.is_some()` would answer this. The host is checked anyway, and matched on the
+/// *host portion* rather than by searching the string: `petri` reads a state file it did
+/// not write, and this keeps a mirror at `git.example.com/github-backups/x` from borrowing
+/// the mark if that normalisation is ever relaxed. The SSH form is deliberately not handled
+/// — the writer rewrites `git@github.com:` to the https form before it is ever stored.
+fn is_github(git: &GitState) -> bool {
+    git.github_url.as_deref().is_some_and(|url| {
+        url.split_once("://")
+            .map(|(_, rest)| rest)
+            .unwrap_or(url)
+            .split('/')
+            .next()
+            == Some("github.com")
+    })
+}
+
 /// Render one project row: glyph (● working / ○ otherwise), name, dirty marker
-/// + uncommitted count, silence age. Selection highlight applied via `is_selected`.
-fn render_project_row(radar: &Radar, proj_idx: usize, is_selected: bool) -> Line<'static> {
+/// + the git segment, silence age. Selection highlight applied via `is_selected`.
+fn render_project_row(
+    radar: &Radar,
+    proj_idx: usize,
+    is_selected: bool,
+    nerd: bool,
+) -> Line<'static> {
     let project = &radar.projects[proj_idx];
 
     let glyph = match project.agent.state {
@@ -735,10 +835,11 @@ fn render_project_row(radar: &Radar, proj_idx: usize, is_selected: bool) -> Line
     let name = &project.name;
     let dirty_marker = present::dirty_marker(&project.git);
 
-    let uncommitted = if project.git.uncommitted_files > 0 {
-        format!("✎{}", project.git.uncommitted_files)
-    } else {
+    let git = git_segment(&project.git, nerd);
+    let git = if git.is_empty() {
         String::from(" ")
+    } else {
+        git
     };
 
     let silence = silence_display(project.last_activity_at);
@@ -767,7 +868,7 @@ fn render_project_row(radar: &Radar, proj_idx: usize, is_selected: bool) -> Line
     Line::from(vec![
         Span::styled(format!(" {} ", glyph), style),
         Span::styled(format!("{}{}", name, dirty_marker), style),
-        Span::styled(format!("  {}", uncommitted), meta_style),
+        Span::styled(format!("  {}", git), meta_style),
         Span::styled(format!(" {}", silence), meta_style),
     ])
 }
@@ -1037,6 +1138,94 @@ pub fn render_notice(frame: &mut Frame, text: &str) {
 
 #[cfg(test)]
 mod tests {
+
+    use super::{git_segment, is_github};
+
+    fn repo(uncommitted: u32, untracked: u32, url: Option<&str>) -> GitState {
+        GitState {
+            is_repo: true,
+            branch: Some("main".to_string()),
+            is_dirty: uncommitted > 0,
+            uncommitted_files: uncommitted,
+            untracked_files: untracked,
+            last_commit_at: None,
+            mine_last_commit_at: None,
+            github_url: url.map(str::to_string),
+            daily_commits: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn a_non_repo_is_marked_positively_not_by_an_empty_cell() {
+        // Issue #38's first ask. "Not a repo" and "clean repo" must not look alike, which
+        // rules out simply leaving the cell blank for one of them.
+        let plain = git_segment(&GitState::not_a_repo(), false);
+        let clean = git_segment(&repo(0, 0, None), false);
+        assert_eq!(plain, "-");
+        assert_ne!(plain, clean, "the two states must be distinguishable");
+    }
+
+    #[test]
+    fn a_clean_repo_says_nothing() {
+        assert_eq!(git_segment(&repo(0, 0, None), false), "");
+    }
+
+    #[test]
+    fn modified_and_untracked_are_counted_apart() {
+        // 3 total of which 2 untracked -> 1 modified. The subtraction is the whole reason
+        // `untracked_files` is stored as a subset rather than a second total.
+        assert_eq!(git_segment(&repo(3, 2, None), false), "!1 ?2");
+    }
+
+    #[test]
+    fn a_zero_count_is_omitted_rather_than_shown_as_zero() {
+        assert_eq!(git_segment(&repo(2, 0, None), false), "!2");
+        assert_eq!(git_segment(&repo(2, 2, None), false), "?2");
+    }
+
+    #[test]
+    fn the_counts_do_not_depend_on_the_font() {
+        // The decoration changes with `nerd`; the information must not.
+        let git = repo(3, 2, None);
+        let ascii = git_segment(&git, false);
+        let nerd = git_segment(&git, true);
+        assert!(nerd.contains("!1") && nerd.contains("?2"), "got {nerd:?}");
+        assert!(
+            ascii.contains("!1") && ascii.contains("?2"),
+            "got {ascii:?}"
+        );
+        assert!(!nerd.is_ascii(), "nerd mode should add a glyph: {nerd:?}");
+        assert!(ascii.is_ascii(), "ascii mode must stay ascii: {ascii:?}");
+    }
+
+    #[test]
+    fn the_host_mark_is_used_only_for_a_real_github_remote() {
+        let gh = git_segment(
+            &repo(1, 0, Some("https://github.com/JKrag/petridish")),
+            true,
+        );
+        let other = git_segment(&repo(1, 0, Some("https://gitlab.com/x/y")), true);
+        assert_ne!(gh, other, "a non-github remote must not borrow the mark");
+
+        assert!(is_github(&repo(0, 0, Some("https://github.com/a/b"))));
+        assert!(!is_github(&repo(0, 0, None)));
+        // The SSH form is not asserted as supported on purpose: `swab::git::github_url`
+        // rewrites `git@github.com:a/b.git` to the https form before storing it, so that
+        // shape never reaches `petri` and pretending to handle it would be untested code
+        // pinned by an untrue test.
+        assert!(
+            !is_github(&repo(
+                0,
+                0,
+                Some("https://git.example.com/github-backups/x")
+            )),
+            "matched on the host, not on the string containing `github` anywhere"
+        );
+        assert!(
+            !is_github(&repo(0, 0, Some("https://notgithub.com/a/b"))),
+            "a host that merely ends in the same letters is a different host"
+        );
+    }
     use super::*;
     use petridish_core::schema::{AgentState, GitState};
 
@@ -1085,7 +1274,7 @@ mod tests {
 
         // Line 0 is the "RUNNING [3]" header, so the first project row (the
         // default selection) must be line 1, not line 0.
-        let (_, selected_line) = render_list_lines(&radar, &state);
+        let (_, selected_line) = render_list_lines(&radar, &state, false);
         assert_eq!(
             selected_line,
             Some(1),
@@ -1093,7 +1282,7 @@ mod tests {
         );
 
         state.move_selection(1);
-        let (_, selected_line) = render_list_lines(&radar, &state);
+        let (_, selected_line) = render_list_lines(&radar, &state, false);
         assert_eq!(
             selected_line,
             Some(2),
@@ -1101,7 +1290,7 @@ mod tests {
         );
 
         state.move_selection(1);
-        let (_, selected_line) = render_list_lines(&radar, &state);
+        let (_, selected_line) = render_list_lines(&radar, &state, false);
         assert_eq!(selected_line, Some(3));
     }
 
@@ -1136,7 +1325,7 @@ mod tests {
             state.move_selection(1);
         }
 
-        let (list_lines, selected_line) = render_list_lines(&radar, &state);
+        let (list_lines, selected_line) = render_list_lines(&radar, &state, false);
         let visible_rows = 5usize;
         let scroll_offset = compute_scroll_offset(selected_line, list_lines.len(), visible_rows);
 
@@ -1193,7 +1382,7 @@ mod tests {
         let backend = TestBackend::new(width, height);
         let mut terminal = Terminal::new(backend).expect("TestBackend terminal must construct");
         terminal
-            .draw(|frame| render(frame, &radar, &state))
+            .draw(|frame| render(frame, &radar, &state, false))
             .expect("draw must not error");
         let buffer = terminal.backend().buffer();
         let whole: String = (0..height)
@@ -1281,7 +1470,7 @@ mod tests {
         // scrolling happened at all.
         for _ in 0..2 {
             state.move_selection(1);
-            let (list_lines, selected_line) = render_list_lines(&radar, &state);
+            let (list_lines, selected_line) = render_list_lines(&radar, &state, false);
             let scroll_offset =
                 compute_scroll_offset(selected_line, list_lines.len(), visible_rows);
             assert_eq!(
