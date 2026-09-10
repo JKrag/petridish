@@ -252,8 +252,33 @@ pub struct QuotaState {
     pub context_used_pct: Option<u8>,
 }
 
+/// The `schema_version` every `projects.json` this workspace writes carries (issue #54).
+///
+/// One definition, so that bumping it is a one-site edit. Before this const the value `1`
+/// was a literal at ~20 sites — one production writer (`swab::scan`), a dozen test helpers
+/// across three crates, and five fixture files — which made "bump the schema version"
+/// exactly the kind of change someone does partially.
+///
+/// **What a bump is for, and what it is not.** `schema.rs` sets `deny_unknown_fields`
+/// nowhere and gives every additive field `#[serde(default)]`, so *adding* a field is
+/// already safe in both directions (old reader/new writer and new reader/old writer) and
+/// must NOT bump this. Bump it only for a change that makes old and new genuinely
+/// incompatible: removing a field, renaming one, or reinterpreting what an existing field
+/// means.
+///
+/// **Nothing compares against this yet** — that is deliberately the rest of #54, which needs
+/// a decision (refuse to render, or render with a warning) that invariant 5's
+/// "degrade, never abort" and a moved field's meaning pull in opposite directions. What
+/// this const buys on its own is that the decision, when made, has one number to read and
+/// one number to change. The fixture JSON files cannot reference a const, so
+/// `petridish-core/tests/fixtures_test.rs` pins them against it instead: a bump fails there
+/// loudly, naming the fixtures that still need updating.
+pub const SCHEMA_VERSION: u32 = 1;
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Radar {
+    /// See [`SCHEMA_VERSION`] for what a bump does and does not mean. Written by
+    /// `swab scan` and, as of #54, not yet read by anything.
     pub schema_version: u32,
     #[serde(with = "iso_second")]
     pub updated_at: DateTime<Utc>,
@@ -360,7 +385,7 @@ mod tests {
 
     fn radar_at(updated_at: DateTime<Utc>) -> Radar {
         Radar {
-            schema_version: 1,
+            schema_version: SCHEMA_VERSION,
             updated_at,
             scan_duration_ms: 0,
             projects: vec![],
@@ -501,7 +526,7 @@ mod tests {
         assert!(!path.parent().unwrap().exists());
 
         let radar = Radar {
-            schema_version: 1,
+            schema_version: SCHEMA_VERSION,
             updated_at: chrono::Utc::now().trunc_subsecs(0),
             scan_duration_ms: 0,
             projects: vec![],
@@ -530,7 +555,7 @@ mod tests {
 
         let path = dir.join("projects.json");
         let radar_a = Radar {
-            schema_version: 1,
+            schema_version: SCHEMA_VERSION,
             updated_at: chrono::Utc::now().trunc_subsecs(0),
             scan_duration_ms: 0,
             projects: vec![],
@@ -557,7 +582,7 @@ mod tests {
     #[test]
     fn write_atomic_round_trip_minimal_radar() {
         let radar = Radar {
-            schema_version: 1,
+            schema_version: SCHEMA_VERSION,
             updated_at: chrono::Utc::now().trunc_subsecs(0),
             scan_duration_ms: 0,
             projects: vec![],

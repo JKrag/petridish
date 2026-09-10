@@ -23,7 +23,7 @@
 //! itself, all 12 passing). Runs as an ordinary part of `cargo test --workspace`
 //! from here on.
 
-use petridish_core::schema::{Radar, StatusBucket};
+use petridish_core::schema::{Radar, SCHEMA_VERSION, StatusBucket};
 use std::path::PathBuf;
 
 fn fixture_path(name: &str) -> PathBuf {
@@ -102,8 +102,9 @@ fn loaded_has_roughly_seventy_projects_every_bucket_and_a_worktree() {
 fn hostile_deserializes_and_has_a_far_future_schema_version() {
     let radar = load("hostile.json");
     assert!(
-        radar.schema_version > 1,
-        "hostile.json's schema_version must be from the future (> the current known version 1), got {}",
+        radar.schema_version > SCHEMA_VERSION,
+        "hostile.json's schema_version must be from the future (> the current {SCHEMA_VERSION}), \
+         got {}",
         radar.schema_version
     );
 }
@@ -246,8 +247,31 @@ fn the_golden_fixture_round_trips_value_identically() {
     assert_eq!(reserialized, original);
 }
 
+/// Every committed fixture carries the current [`SCHEMA_VERSION`] (issue #54).
+///
+/// This is the pin the const cannot provide for itself: a JSON file cannot reference a Rust
+/// const, so these five fixtures are the one place the literal still has to be written out.
+/// Asserting them against the const means bumping `SCHEMA_VERSION` fails **here**, by name,
+/// listing the fixtures that still say the old number — rather than leaving them silently
+/// describing a schema that no longer exists. That was the concrete failure mode #54
+/// describes: "bump the schema version" as a multi-site edit someone does partially.
+///
+/// `hostile.json` is the deliberate exception — it is *supposed* to be from the future, and
+/// `hostile_deserializes_and_has_a_far_future_schema_version` pins it against the const from
+/// the other side.
 #[test]
-fn schema_version_is_one() {
-    let radar = load("minimal.json");
-    assert_eq!(radar.schema_version, 1);
+fn every_fixture_carries_the_current_schema_version() {
+    for name in [
+        "minimal.json",
+        "normal.json",
+        "loaded.json",
+        "projects.golden.json",
+    ] {
+        assert_eq!(
+            load(name).schema_version,
+            SCHEMA_VERSION,
+            "{name} must carry the current schema_version; if SCHEMA_VERSION was just \
+             bumped, update the fixture"
+        );
+    }
 }

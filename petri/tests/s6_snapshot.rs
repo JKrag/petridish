@@ -19,7 +19,7 @@
 //! colliding with the banner check.
 
 use petri::dashboard::DashboardState;
-use petridish_core::schema::{AgentState, GitState, Project, Radar, StatusBucket};
+use petridish_core::schema::{AgentState, GitState, Project, Radar, SCHEMA_VERSION, StatusBucket};
 use ratatui::{Terminal, backend::TestBackend};
 use std::path::PathBuf;
 
@@ -55,7 +55,7 @@ fn project(id: &str, name: &str, bucket: StatusBucket) -> Project {
 
 fn radar_of(projects: Vec<Project>) -> Radar {
     Radar {
-        schema_version: 1,
+        schema_version: SCHEMA_VERSION,
         updated_at: chrono::Utc::now(),
         scan_duration_ms: 0,
         projects,

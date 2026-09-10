@@ -17,7 +17,7 @@
 //! below failed on that basis, confirmed before delegating S4); stripped now
 //! that S4 landed and all five pass.
 
-use petridish_core::schema::Radar;
+use petridish_core::schema::{Radar, SCHEMA_VERSION};
 use ratatui::{Terminal, backend::TestBackend};
 use std::path::PathBuf;
 
@@ -95,7 +95,7 @@ fn every_project_name_is_reachable_on_screen_normal_at_tall_geometry() {
 #[test]
 fn empty_project_list_does_not_panic() {
     let radar = Radar {
-        schema_version: 1,
+        schema_version: SCHEMA_VERSION,
         updated_at: chrono::Utc::now(),
         scan_duration_ms: 0,
         projects: vec![],

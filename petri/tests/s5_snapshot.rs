@@ -8,7 +8,7 @@
 //! rather than errors — confirmed before delegating S5.
 
 use petri::browser::BrowserState;
-use petridish_core::schema::Radar;
+use petridish_core::schema::{Radar, SCHEMA_VERSION};
 use ratatui::{Terminal, backend::TestBackend};
 use std::path::PathBuf;
 
@@ -198,7 +198,7 @@ fn detail_popup_reaches_detail_fields_when_neither_placement_fits() {
 #[test]
 fn does_not_panic_on_empty_visible_list() {
     let radar = Radar {
-        schema_version: 1,
+        schema_version: SCHEMA_VERSION,
         updated_at: chrono::Utc::now(),
         scan_duration_ms: 0,
         projects: vec![],

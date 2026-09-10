@@ -1582,7 +1582,7 @@ mod tests {
         );
     }
     use super::*;
-    use petridish_core::schema::{AgentState, GitState};
+    use petridish_core::schema::{AgentState, GitState, SCHEMA_VERSION};
 
     fn project(id: &str, name: &str, bucket: StatusBucket) -> Project {
         Project {
@@ -1602,7 +1602,7 @@ mod tests {
 
     fn radar_of(projects: Vec<Project>) -> Radar {
         Radar {
-            schema_version: 1,
+            schema_version: SCHEMA_VERSION,
             updated_at: chrono::Utc::now(),
             scan_duration_ms: 0,
             projects,

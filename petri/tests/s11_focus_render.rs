@@ -30,7 +30,7 @@ use petri::dashboard::SECTION_LABELS;
 use petri::feed::FeedState;
 use petri::focus::{FocusCtx, FocusTarget, Rung, focus_lines, plan_rungs};
 use petri::prefs::Prefs;
-use petridish_core::schema::{AgentState, GitState, Project, Radar, StatusBucket};
+use petridish_core::schema::{AgentState, GitState, Project, Radar, SCHEMA_VERSION, StatusBucket};
 use ratatui::layout::Rect;
 use ratatui::text::Line;
 use std::path::PathBuf;
@@ -215,7 +215,7 @@ fn project(name: &str, bucket: StatusBucket) -> Project {
 
 fn radar_of(projects: Vec<Project>) -> Radar {
     Radar {
-        schema_version: 1,
+        schema_version: SCHEMA_VERSION,
         updated_at: pinned_now(),
         scan_duration_ms: 0,
         projects,

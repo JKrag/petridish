@@ -157,7 +157,7 @@ pub fn render_unavailable(state_path: &str) -> String {
 mod tests {
     use super::*;
     use chrono::{DateTime, Utc};
-    use petridish_core::schema::{AgentState, GitState};
+    use petridish_core::schema::{AgentState, GitState, SCHEMA_VERSION};
 
     fn ts(s: &str) -> Option<DateTime<Utc>> {
         Some(DateTime::parse_from_rfc3339(s).unwrap().with_timezone(&Utc))
@@ -196,7 +196,7 @@ mod tests {
 
     fn radar(projects: Vec<Project>) -> Radar {
         Radar {
-            schema_version: 1,
+            schema_version: SCHEMA_VERSION,
             updated_at: ts("2026-09-04T12:00:00Z").unwrap(),
             scan_duration_ms: 12,
             projects,

@@ -657,7 +657,7 @@ pub fn main() {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::schema::{Project as SchemaProject, Radar, StatusBucket};
+    use crate::schema::{Project as SchemaProject, Radar, SCHEMA_VERSION, StatusBucket};
     use chrono::Utc;
     use std::path::Path;
 
@@ -700,7 +700,7 @@ mod tests {
     /// don't have to repeat `schema_version`, `updated_at`, etc.
     fn test_radar(projects: Vec<SchemaProject>) -> Radar {
         Radar {
-            schema_version: 1,
+            schema_version: SCHEMA_VERSION,
             updated_at: Utc::now(),
             scan_duration_ms: 0,
             projects,

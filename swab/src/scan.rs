@@ -12,7 +12,7 @@
 
 use crate::config::Config;
 use crate::discovery::{self};
-use crate::schema::{self, AgentActivity, AgentState, Radar, StatusBucket};
+use crate::schema::{self, AgentActivity, AgentState, Radar, SCHEMA_VERSION, StatusBucket};
 use chrono::SubsecRound;
 use std::collections::HashMap;
 use std::panic::AssertUnwindSafe;
@@ -602,7 +602,7 @@ pub fn run_scan(config: &Config, paths: &ScanPaths, previous: Option<&Radar>) ->
     let scan_duration_ms = tick_start.elapsed().as_millis() as u64;
 
     Radar {
-        schema_version: 1,
+        schema_version: SCHEMA_VERSION,
         updated_at: now,
         scan_duration_ms,
         projects,
@@ -1578,7 +1578,7 @@ mod tests {
         );
         seeded_project.agent_activity = full_ring;
         let previous = Radar {
-            schema_version: 1,
+            schema_version: SCHEMA_VERSION,
             updated_at: chrono::Utc::now(),
             scan_duration_ms: 0,
             projects: vec![seeded_project],
