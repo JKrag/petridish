@@ -60,19 +60,30 @@ fn q_quits_cleanly_and_restores_the_terminal() {
     // Raw, not a grid: the assertion further down is about a control SEQUENCE
     // (`\x1b[?1049l`), which a reconstructed grid deliberately throws away. But the wait
     // still has to state its condition rather than trust a quiet window.
+    //
+    // The condition is the ALTERNATE-SCREEN ENTRY, not any text. `settle_until_raw`'s own
+    // doc comment forbids content assertions over the raw stream, and `"petri"` was one —
+    // a bad one, at that: `prefs::load` warns `petri S7: preferences file ... missing` and
+    // lib.rs's "Step 1.5" emits it deliberately BEFORE `enable_raw_mode`, so that predicate
+    // was satisfiable by a stderr line printed while the terminal was still in canonical
+    // mode. A `q` written there is buffered by the line discipline and discarded when raw
+    // mode comes on — the swallowed-keystroke bug, which surfaces seconds later as "child
+    // did not exit". Raw mode is enabled immediately before `EnterAlternateScreen`, so the
+    // entry is the exact, non-textual proof that the `q` below can be delivered.
     let mut first_frame = String::new();
-    session.settle_until_raw(
+    let ready = session.settle_until_raw(
         Duration::from_secs(5),
         Duration::from_millis(300),
         6,
         |stream| {
             first_frame = stream.to_string();
-            stream.contains("petri")
+            Session::alt_screen_entries(stream) >= 1
         },
     );
     assert!(
-        first_frame.contains("petri"),
-        "first frame must render before we send any keystroke, got: {first_frame:?}"
+        ready,
+        "petri never entered the alternate screen, so raw mode was never on and the 'q' \
+         below could not be delivered, got: {first_frame:?}"
     );
 
     session
@@ -99,7 +110,25 @@ fn survives_a_resize_to_a_degenerate_geometry() {
     // than resizing after the fact, since portable-pty's own openpty already
     // exercises the same code path petri must not panic on.
     let mut session = Session::spawn(&fixture_path("minimal.json"), 1, 1);
-    let output = session.settle(Duration::from_secs(5), Duration::from_millis(300));
+    // Same readiness condition as the quit test above, and for the same reason. The
+    // unconditional `settle` that used to be here returned as soon as the stream went
+    // quiet, which can be before petri has taken the terminal at all — and at 1x1 there is
+    // barely any output to keep it un-quiet. The `q` below was then written in canonical
+    // mode, buffered by the line discipline and discarded when raw mode came on, and the
+    // test failed as "child did not exit" five seconds later and nowhere near the cause.
+    // Measured during a full `make flake-hunt`: 8 failures in 24 runs at eight-way
+    // concurrency, while the same binary run on its own was clean 24 times — a reminder
+    // that this whole class only shows up under the concurrency `cargo test` actually has.
+    let mut output = String::new();
+    let entered = session.settle_until_raw(
+        Duration::from_secs(5),
+        Duration::from_millis(300),
+        6,
+        |stream| {
+            output = stream.to_string();
+            Session::alt_screen_entries(stream) >= 1
+        },
+    );
     // Either it rendered *something* (a "resize terminal" message counts) or
     // it's still alive waiting — what it must NOT do is have already crashed.
     let alive = session.child.try_wait().ok().flatten().is_none();
@@ -107,6 +136,15 @@ fn survives_a_resize_to_a_degenerate_geometry() {
         alive,
         "petri must not crash on a degenerate 1x1 geometry, output so far: {output:?}"
     );
+    assert!(
+        entered,
+        "petri must still take the terminal at 1x1 — it is alive, so it is stuck before \
+         raw mode rather than crashed, output so far: {output:?}"
+    );
     session.writer.write_all(b"q").ok();
-    let _ = session.wait_with_timeout(Duration::from_secs(5));
+    // A HANG DETECTOR, not a performance assertion — the same call this budget is made for
+    // in `s5_pty.rs`'s `EXIT_BUDGET`. Five seconds is tight enough to trip on a loaded
+    // machine, which teaches people to re-run rather than to look; the swallowed keystroke
+    // above is the reason this ever tripped, and it is fixed at the cause, not here.
+    let _ = session.wait_with_timeout(Duration::from_secs(20));
 }

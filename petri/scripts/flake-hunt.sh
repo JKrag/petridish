@@ -32,6 +32,25 @@ RUNS=${1:-24}
 CONCURRENCY=${2:-8}
 FILTER=${3:-pty}
 
+# Validate before doing minutes of work, because both numbers fail SILENTLY rather than
+# loudly. `CONCURRENCY=0` makes the inner batch loop launch nothing, so `i` never advances
+# and the outer loop spins forever. `RUNS=0` divides by zero in the percentage, and any
+# non-numeric value makes `[ "$i" -lt "$RUNS" ]` an arithmetic error on every iteration.
+for pair in "RUNS:$RUNS" "CONCURRENCY:$CONCURRENCY"; do
+  name=${pair%%:*}
+  value=${pair#*:}
+  case "$value" in
+    *[!0-9]* | "")
+      echo "FAIL: $name must be a positive integer, got '$value'."
+      exit 2
+      ;;
+  esac
+  if [ "$value" -lt 1 ]; then
+    echo "FAIL: $name must be at least 1, got '$value'."
+    exit 2
+  fi
+done
+
 cd "$(dirname "$0")/../.." || exit 1
 
 echo "building test binaries…"
@@ -42,20 +61,21 @@ fi
 
 # Ask cargo where the binaries are rather than globbing target/debug/deps, which
 # accumulates stale copies from previous builds and would happily measure one.
+#
+# Extracted with sed rather than python3/jq: CLAUDE.md's one-toolchain rule means a
+# contributor with the documented Rust toolchain and nothing else must be able to run
+# `make flake-hunt`, and a `python3` in the pipeline quietly made this the one command that
+# needed a second one. Only `"executable"` is pulled out — cargo emits it as `null` (no
+# quotes) on the artifact lines that are not test binaries, so the quoted-value pattern
+# skips those without needing to parse the JSON. The target name is then the basename minus
+# cargo's `-<hash>` suffix, which is the same string the JSON's `target.name` carried.
 BINS=$(cargo test -p petri --no-run --message-format=json 2>/dev/null \
-  | python3 -c '
-import json, sys
-for line in sys.stdin:
-    try:
-        m = json.loads(line)
-    except ValueError:
-        continue
-    exe = m.get("executable")
-    if not exe:
-        continue
-    name = m.get("target", {}).get("name", "")
-    print(f"{name}\t{exe}")
-' | sort -u)
+  | sed -n 's/.*"executable":"\([^"]*\)".*/\1/p' \
+  | while IFS= read -r exe; do
+      base=$(basename "$exe")
+      printf '%s\t%s\n' "$(echo "$base" | sed 's/-[0-9a-f]\{7,\}$//')" "$exe"
+    done \
+  | sort -u)
 
 if [ -z "$BINS" ]; then
   echo "FAIL: could not locate any test binaries."
@@ -75,6 +95,11 @@ while IFS=$'\t' read -r name exe; do
     *) continue ;;
   esac
 
+  # A directory per binary rather than a `code_${name}_*` glob in one flat dir: that glob
+  # also matches a longer binary name having this one as a prefix, which would silently
+  # attribute one binary's failures to another the day such a pair is added.
+  mkdir -p "$tmp/$name"
+
   fails=0
   i=0
   while [ "$i" -lt "$RUNS" ]; do
@@ -82,12 +107,12 @@ while IFS=$'\t' read -r name exe; do
     while [ "$batch" -lt "$CONCURRENCY" ] && [ "$i" -lt "$RUNS" ]; do
       i=$((i + 1))
       batch=$((batch + 1))
-      ( "$exe" --test-threads=1 >"$tmp/out_${name}_$i" 2>&1; echo $? >"$tmp/code_${name}_$i" ) &
+      ( "$exe" --test-threads=1 >"$tmp/$name/out_$i" 2>&1; echo $? >"$tmp/$name/code_$i" ) &
     done
     wait
   done
 
-  for f in "$tmp"/code_"${name}"_*; do
+  for f in "$tmp/$name"/code_*; do
     [ "$(cat "$f")" = "0" ] || fails=$((fails + 1))
   done
 
@@ -100,7 +125,7 @@ while IFS=$'\t' read -r name exe; do
     flaky_names="$flaky_names $name"
     # The first failing run's output, so a hunt is a diagnosis and not just a
     # number — most of the cost here is getting the failure to happen at all.
-    for f in "$tmp"/code_"${name}"_*; do
+    for f in "$tmp/$name"/code_*; do
       if [ "$(cat "$f")" != "0" ]; then
         echo "    first failure:"
         grep -E "panicked at|assertion|hang, not a slow pass" "${f/code_/out_}" \
@@ -114,6 +139,15 @@ while IFS=$'\t' read -r name exe; do
 done <<< "$BINS"
 
 echo
+# Before the clean/flaky branch, because zero runs is neither. A mistyped FILTER matches no
+# binary, every loop above is skipped, and `total_fail -eq 0` would then print
+# "clean: 0 failures in 0 runs" and exit 0 — a gate reporting success for having measured
+# nothing at all, which is worse than no gate.
+if [ "$total_runs" -eq 0 ]; then
+  echo "FAIL: no test binary matched FILTER '$FILTER' — nothing was measured."
+  exit 2
+fi
+
 if [ "$total_fail" -eq 0 ]; then
   echo "clean: 0 failures in $total_runs runs at concurrency $CONCURRENCY"
   exit 0

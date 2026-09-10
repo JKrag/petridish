@@ -34,9 +34,16 @@ test:           ## Run the Rust workspace tests.
 # Deliberately NOT a prerequisite of `check` or `check-all`: it takes minutes,
 # and a gate that slow gets skipped — which is how a suite stops being trusted.
 # Run it before a release, or when a PTY test fails once and you want to know
-# whether that meant anything. Args: RUNS, CONCURRENCY, FILTER.
-flake-hunt:     ## Measure PTY test flakiness (slow; RUNS=24 CONC=8 by default).
-	petri/scripts/flake-hunt.sh $(RUNS) $(CONC)
+# whether that meant anything.
+#
+# Args: RUNS, CONC, FILTER — e.g. `make flake-hunt RUNS=48 FILTER=s8_pty`. All three are
+# passed explicitly, defaults included, because the script's arguments are POSITIONAL: a
+# bare `$(RUNS) $(CONC)` expands to nothing at all when unset, so `make flake-hunt CONC=4`
+# would hand the script a single argument and it would read that 4 as RUNS. `$(or ...)`
+# keeps each position filled whatever the caller sets. FILTER was documented here before it
+# was ever forwarded; it is now.
+flake-hunt:     ## Measure PTY test flakiness (slow; RUNS=24 CONC=8 FILTER=pty by default).
+	petri/scripts/flake-hunt.sh "$(or $(RUNS),24)" "$(or $(CONC),8)" "$(or $(FILTER),pty)"
 
 deny:           ## Licence + advisory audit (needs `cargo install cargo-deny`).
 	cargo deny check licenses advisories

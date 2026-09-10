@@ -106,6 +106,15 @@ fn navigation_and_filter_keystrokes_do_not_crash_the_binary() {
 /// `s8_pty_handoff` lose its `q`, but at startup rather than after a hand-off. It surfaces
 /// the same way too: not as a wrong frame, but as "child did not exit", seconds later.
 /// Measured at 8 failures in 24 runs at eight-way concurrency on an idle machine.
+///
+/// The predicate is the header BADGE, `"petri \u{b7} "`, not a bare `"petri"`. The bare form
+/// does not state the condition above at all: `prefs::load` warns `petri S7: preferences
+/// file ... missing or unreadable` and lib.rs's "Step 1.5" emits it deliberately before
+/// `enable_raw_mode`, so that text is on the reconstructed grid while the terminal is still
+/// in canonical mode — exactly the window this function exists to wait past. The badge is
+/// painted, so it cannot appear until after the alternate-screen entry that follows raw
+/// mode. Either screen's badge will do (`" petri \u{b7} dashboard "` / `" petri \u{b7} browser "`),
+/// since this only has to know that petri owns the terminal, not which screen it is on.
 fn wait_until_ready(session: &mut Session, cols: u16, rows: u16) {
     session.screen_until(
         cols,
@@ -113,7 +122,7 @@ fn wait_until_ready(session: &mut Session, cols: u16, rows: u16) {
         Duration::from_secs(5),
         Duration::from_millis(300),
         10,
-        |grid| grid.iter().any(|r| r.contains("petri")),
+        |grid| grid.iter().any(|r| r.contains("petri \u{b7} ")),
     );
 }
 
@@ -122,25 +131,17 @@ fn wait_until_ready(session: &mut Session, cols: u16, rows: u16) {
 /// teaches people to re-run rather than to look.
 const EXIT_BUDGET: Duration = Duration::from_secs(20);
 
-fn settle_grid(session: &mut Session, cols: u16, rows: u16) -> Vec<String> {
-    session.screen_retry(
-        cols,
-        rows,
-        Duration::from_secs(5),
-        Duration::from_millis(300),
-        5,
-    )
-}
-
-/// Like `settle_grid`, but for a check that must observe the RESULT of a
-/// keystroke just sent, not just the eventual first non-blank frame.
-/// `screen_retry` (behind `settle_grid`) only retries on a blank grid; a
-/// still-painted PREVIOUS frame (the redraw for this keystroke hasn't
-/// happened yet) is not blank and would be returned as-is, failing the
-/// assertion below even though the binary is about to do the right thing —
-/// confirmed as the actual CI failure mode (see `screen_until`'s doc
-/// comment in pty_support). Retries until `predicate` holds or the attempt
-/// budget is spent, so a genuine regression still fails loudly.
+/// Settle until the grid actually shows what the caller is about to assert on.
+///
+/// The unconditional `settle_grid` this file used to carry alongside is GONE, not kept for
+/// convenience, because its contract was itself the bug — the same verdict `pty_support`'s
+/// module doc records for `spawn_and_settle_nonempty`. It wrapped `screen_retry`, which
+/// retries only on a BLANK grid: a still-painted previous frame (the redraw for the
+/// keystroke just sent hasn't happened yet) is not blank and came back as-is, and neither
+/// is the pre-alt-screen grid holding only the "preferences file ... missing" warning. Both
+/// failed the following assertion on a frame petri was about to paint correctly. Retries
+/// until `predicate` holds or the attempt budget is spent, so a genuine regression still
+/// fails loudly.
 fn settle_grid_until(
     session: &mut Session,
     cols: u16,
@@ -198,7 +199,18 @@ fn space_toggles_the_detail_popup_at_a_hidden_geometry() {
     std::fs::create_dir_all(&home).expect("scratch home dir must be creatable");
     let mut session = Session::spawn_with_home(&fixture_path("normal.json"), cols, rows, &home);
 
-    let initial_screen = settle_grid(&mut session, cols, rows).join("\n");
+    // `settle_grid_until`, not bare `settle_grid`, for the same reason `wait_until_ready`
+    // exists: `screen_retry` retries only an all-*blank* grid, and the grid before petri
+    // takes the terminal is not blank — the scratch HOME has no `petri.toml`, so
+    // `prefs::load`'s "preferences file ... missing" warning is on it, printed to a normal
+    // stderr before `enable_raw_mode` (lib.rs's "Step 1.5"). `settle_grid` happily returned
+    // that, and the assertion below then failed on a frame petri had not painted yet.
+    // Measured after the rest of this PR's conversion: 1 failure in 24 runs at eight-way
+    // concurrency, the last one left in the suite.
+    let initial_screen = settle_grid_until(&mut session, cols, rows, |grid| {
+        grid.iter().any(|r| r.contains("dashboard"))
+    })
+    .join("\n");
     assert!(
         initial_screen.contains("dashboard"),
         "petri must start on the Dashboard (S6 default) with a scratch HOME, got:\n{initial_screen}"

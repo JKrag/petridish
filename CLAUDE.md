@@ -151,6 +151,18 @@ wrong first:
   alternate-screen entry. Sending a key before that point does not just race: the byte is
   swallowed by the line discipline in canonical mode and never delivered, which surfaces
   ten seconds later as "the child did not exit".
+- **Startup is the same trap, and `"petri"` is not the marker for it.** petri prints
+  `prefs::load`'s "preferences file ... missing" warning to a normal stderr *before*
+  `enable_raw_mode` — deliberately, so it cannot corrupt the first draw (`lib.rs`, "Step
+  1.5"). So the stream is non-empty and the grid is non-blank while the terminal is still in
+  canonical mode, where the first keystroke is swallowed exactly as above. Wait for a header
+  BADGE (`pty_support`'s `DASHBOARD_HEADER` / `BROWSER_HEADER`), which cannot be painted
+  until after the alt-screen entry that follows raw mode — or, when a raw wait is what you
+  have, for `alt_screen_entries(...) >= 1` directly.
+- **Name the screen, not a word that happens to be on it.** `"browser"` is in the
+  *Dashboard's* footer (`Enter open/browser`), so waiting for it after `Tab` accepts the
+  pre-`Tab` frame and hides a lost keystroke behind a passing wait. `" petri · browser "` is
+  on one screen only. Before believing any needle, grep the other screen for it.
 
 **`make flake-hunt` measures this rather than guessing at it** (`petri/scripts/flake-hunt.sh`;
 runs each PTY binary N times at concurrency, reports a per-test failure rate). Concurrency is

@@ -11,7 +11,7 @@
 //! No launching, no side effects: only `/`, letters, `Enter` and `q`.
 
 mod pty_support;
-use pty_support::{Session, fixture_path};
+use pty_support::{BROWSER_HEADER, DASHBOARD_HEADER, Session, fixture_path};
 use std::io::Write;
 use std::time::Duration;
 
@@ -22,24 +22,15 @@ fn scratch_home(name: &str) -> std::path::PathBuf {
     home
 }
 
-fn settle(session: &mut Session) -> Vec<String> {
-    session.screen_retry(
-        90,
-        40,
-        Duration::from_secs(5),
-        Duration::from_millis(300),
-        5,
-    )
-}
-
 /// The filter input's block cursor (`browser.rs`'s `filter_input` branch). It is on screen
 /// exactly while the input has focus, which makes it the one marker that distinguishes an
 /// open filter from a closed one carrying the same query — see `enter_closes` below.
 const INPUT_CURSOR: &str = "\u{2588}";
 
-/// Settle until the grid shows `needle`. Every post-keystroke assertion goes through this
-/// or `settle_until_gone`, never bare `settle`: `screen_retry` retries only an all-blank
-/// grid, so what it returns after a keystroke may be a well-formed pre-keystroke frame.
+/// Settle until the grid shows `needle`. Every post-keystroke assertion goes through this or
+/// `settle_until_gone`, never an unconditional settle: `screen_retry` retries only an
+/// all-blank grid, so what it returns after a keystroke may be a well-formed pre-keystroke
+/// frame.
 /// This file measured 10 failures in 24 runs at eight-way concurrency before the
 /// conversion — see `petri/scripts/flake-hunt.sh`.
 fn settle_until(session: &mut Session, needle: &'static str) -> Vec<String> {
@@ -72,13 +63,20 @@ fn send(session: &mut Session, bytes: &[u8]) {
     session.writer.flush().expect("flush must succeed");
 }
 
+/// Spawn on the Dashboard, wait until petri is genuinely there, then `Tab` to the Browser.
+///
+/// Neither wait is the obvious substring, and `pty_support`'s two header constants carry
+/// the reason. An unconditional settle here returns before raw mode is on — the grid is not
+/// blank, the pre-alt-screen preferences warning is in it, so `screen_retry` has nothing to
+/// retry — and `"browser"` after the `Tab` is already true of the Dashboard's own footer.
+/// Either one lets a `Tab` that the line discipline swallowed pass for a successful switch.
 fn to_browser(home: &std::path::Path) -> Session {
     let mut session = Session::spawn_with_home(&fixture_path("loaded.json"), 90, 40, home);
-    settle(&mut session);
+    settle_until(&mut session, DASHBOARD_HEADER);
     send(&mut session, b"\t");
-    let screen = settle_until(&mut session, "browser");
+    let screen = settle_until(&mut session, BROWSER_HEADER);
     assert!(
-        screen.iter().any(|r| r.contains("browser")),
+        screen.iter().any(|r| r.contains(BROWSER_HEADER)),
         "expected to be on the Browser after Tab, got:\n{}",
         screen.join("\n")
     );

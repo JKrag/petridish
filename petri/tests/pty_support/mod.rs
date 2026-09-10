@@ -43,6 +43,27 @@ use std::path::PathBuf;
 use std::sync::mpsc;
 use std::time::{Duration, Instant};
 
+/// The Dashboard's header badge — `dashboard.rs`'s `HEADER_TITLE`, verbatim.
+///
+/// This is the marker for "petri has taken the terminal and painted a frame", and the
+/// reason it is a header badge rather than the obvious `"petri"` is the same trap this
+/// module's doc comment describes for `spawn_and_settle_nonempty`: `prefs::load` warns
+/// `petri S7: preferences file ... missing or unreadable` on a scratch home, and lib.rs's
+/// "Step 1.5" emits it deliberately BEFORE `enable_raw_mode` so it cannot corrupt the first
+/// draw. So `"petri"` is on screen while the terminal is still in canonical mode, where a
+/// keystroke is buffered by the line discipline and then discarded when raw mode comes on.
+/// A badge cannot appear until after the alternate-screen entry that follows raw mode, so
+/// waiting for one is waiting for the thing that actually makes a keystroke deliverable.
+pub const DASHBOARD_HEADER: &str = " petri \u{b7} dashboard ";
+
+/// The Browser's header badge — `browser.rs`'s title span, verbatim.
+///
+/// The marker for "a `Tab` was actually processed". `"browser"` is not: the *Dashboard's*
+/// footer reads `Enter open/browser` (`dashboard.rs`'s `footer_line`), so a wait on that
+/// needle is already satisfied by the pre-Tab frame and returns without the Tab having been
+/// handled at all — which then hides a lost keystroke behind a passing wait.
+pub const BROWSER_HEADER: &str = " petri \u{b7} browser ";
+
 pub fn fixture_path(name: &str) -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join("..")
