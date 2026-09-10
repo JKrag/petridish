@@ -131,17 +131,31 @@ fn the_pane_survives_its_floor_geometry() {
 // screen. `?1049h` (alt-screen entry) is asserted absent for exactly that reason.
 // ---------------------------------------------------------------------------
 
-fn raw(session: &mut Session) -> String {
-    session.settle(Duration::from_secs(5), Duration::from_millis(300))
+/// Wait for a one-shot invocation to EXIT, then drain everything it wrote.
+///
+/// These tests are about a process that reports something and terminates by itself, so
+/// there is no frame to wait for and no guess to make: exit is the condition. The previous
+/// shape — settle for a 300ms quiet window, then check the exit status — had two ways to
+/// fail under load, and both were observed at 8 failures in 24 runs at eight-way
+/// concurrency. A message written in two chunks more than 300ms apart ended the settle
+/// early and the assertion saw half of it; and a 5s exit budget is a hang detector, not a
+/// performance assertion, so it should not be tight enough to trip on a busy machine.
+///
+/// Draining after exit is safe rather than lossy: the reader thread owns its own handle and
+/// keeps going to EOF, and `settle` stops on the resulting disconnect, so this collects
+/// everything the child ever wrote.
+fn run_to_completion(session: &mut Session) -> (String, u32) {
+    let status = session.wait_with_timeout(Duration::from_secs(20));
+    let out = session.settle(Duration::from_secs(5), Duration::from_millis(300));
+    (out, status.exit_code())
 }
 
 #[test]
 fn an_unknown_pinned_name_reports_before_entering_the_alternate_screen() {
     let mut session = mini("unknown", COLS, ROWS, &["--mini", "no-such-project"]);
-    let out = raw(&mut session);
-    let status = session.wait_with_timeout(Duration::from_secs(5));
+    let (out, exit_code) = run_to_completion(&mut session);
 
-    assert_eq!(status.exit_code(), 1, "an unresolvable pin exits 1");
+    assert_eq!(exit_code, 1, "an unresolvable pin exits 1");
     assert!(
         out.contains("no-such-project") && out.contains("projects.json"),
         "the message must name the pin and the problem, got: {out:?}"
@@ -159,10 +173,9 @@ fn a_cwd_outside_the_fleet_reports_not_a_project() {
     // package root as the working directory, and no fixture project lives there — which
     // makes this deterministic without the test caring what the path actually is.
     let mut session = mini("cwd", COLS, ROWS, &["--mini"]);
-    let out = raw(&mut session);
-    let status = session.wait_with_timeout(Duration::from_secs(5));
+    let (out, exit_code) = run_to_completion(&mut session);
 
-    assert_eq!(status.exit_code(), 1);
+    assert_eq!(exit_code, 1);
     assert!(
         out.contains("not in projects.json"),
         "must name the problem, got: {out:?}"
@@ -184,10 +197,9 @@ fn a_missing_state_file_still_wins_over_a_mini_target() {
     let missing = std::env::temp_dir().join("petri_s12_pty_definitely_absent.json");
     let _ = std::fs::remove_file(&missing);
     let mut session = Session::spawn_with_args(&missing, COLS, ROWS, None, &["--mini", "alpha-01"]);
-    let out = raw(&mut session);
-    let status = session.wait_with_timeout(Duration::from_secs(5));
+    let (out, exit_code) = run_to_completion(&mut session);
 
-    assert_eq!(status.exit_code(), 1);
+    assert_eq!(exit_code, 1);
     assert!(
         out.contains("no state file at") && out.contains("swab scan"),
         "the shared swab message shape, got: {out:?}"
@@ -214,10 +226,9 @@ fn version_still_works_after_the_arg_parsing_rewrite() {
         None,
         &["--version"],
     );
-    let out = raw(&mut session);
-    let status = session.wait_with_timeout(Duration::from_secs(5));
+    let (out, exit_code) = run_to_completion(&mut session);
 
-    assert_eq!(status.exit_code(), 0);
+    assert_eq!(exit_code, 0);
     assert!(
         out.contains("petri ") && out.contains(env!("CARGO_PKG_VERSION")),
         "--version must print the version even in a non-first position, got: {out:?}"
@@ -234,10 +245,9 @@ fn an_unrecognised_flag_exits_two_with_a_usage_line() {
     // ready", which is the difference between a fix in the shell and a fix in the daemon.
     let mut session =
         Session::spawn_with_args(&fixture_path("loaded.json"), COLS, ROWS, None, &["--focus"]);
-    let out = raw(&mut session);
-    let status = session.wait_with_timeout(Duration::from_secs(5));
+    let (out, exit_code) = run_to_completion(&mut session);
 
-    assert_eq!(status.exit_code(), 2, "a usage error exits 2, not 1");
+    assert_eq!(exit_code, 2, "a usage error exits 2, not 1");
     assert!(
         out.contains("--focus") && out.contains("usage:"),
         "must name the rejected argument and how to spell it right, got: {out:?}"

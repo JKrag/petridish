@@ -85,12 +85,13 @@ fn suspending_for_a_child_process_and_coming_back_leaves_a_usable_screen() {
     // `true` is resolvable inside the child without any extra plumbing.
     let mut session = Session::spawn_with_home(&state_path, 90, 40, &home);
 
-    let before = session.screen_retry(
+    let before = session.screen_until(
         90,
         40,
         Duration::from_secs(5),
         Duration::from_millis(300),
         5,
+        |grid| grid.iter().any(|r| r.contains("handoff-project")),
     );
     let before_body = before.join("\n");
     assert!(
@@ -106,12 +107,50 @@ fn suspending_for_a_child_process_and_coming_back_leaves_a_usable_screen() {
     session.writer.write_all(b"g").expect("write g");
     session.writer.flush().expect("flush");
 
-    let after = session.screen_retry(
+    // ORDER MATTERS: wait for the second alternate-screen entry FIRST, then for the frame.
+    //
+    // The mode transition has to come first because it is the only unambiguous signal here.
+    // `g` leaves the alternate screen, runs the child, re-enters and repaints the very same
+    // screen it left — so every predicate over the grid, "browser" and the project name
+    // alike, is already true of the pre-`g` frame. Waiting for one of those can return
+    // without the hand-off having started, which is how this test could pass with the
+    // repaint deleted: nothing after that point re-checked the list. The `1049h` count
+    // cannot be satisfied early; the grid can.
+    //
+    // It is also the precondition for the `q` below, and that is the failure this test
+    // actually had. It did not look like a race: it surfaced as "child did not exit within
+    // 10s", ten seconds after the real damage. While the hand-off's child holds the
+    // terminal, raw mode is off, so a byte written here is buffered by the line discipline
+    // in canonical mode and discarded when petri restores raw mode. The `q` was never
+    // delivered.
+    let restored = session.settle_until_raw(
+        Duration::from_secs(10),
+        Duration::from_millis(400),
+        8,
+        |stream| Session::alt_screen_entries(stream) >= 2,
+    );
+    assert!(
+        restored,
+        "petri never re-entered the alternate screen after the hand-off — it did not take \
+         the terminal back, so no keystroke after this point could be delivered"
+    );
+
+    // Only now is the grid a meaningful question, and `screen_until` can ask it as a real
+    // one: the second `1049h` CLEARS the reconstructed grid (see `screen`'s doc comment),
+    // so the project name is absent again until petri repaints. Waiting for it therefore
+    // proves the repaint happened, rather than re-reading the pre-`g` frame.
+    //
+    // `screen_until`, not `screen_retry`: `screen_retry` only retries an all-blank grid, and
+    // the grid this race produces is not blank — a settle window landing mid-repaint
+    // catches a *partially* painted frame. Measured under load before this changed: 6
+    // failures in 20 runs, the worst flake in the suite.
+    let after = session.screen_until(
         90,
         40,
         Duration::from_secs(10),
         Duration::from_millis(400),
         6,
+        |grid| grid.iter().any(|r| r.contains("handoff-project")),
     );
     let after_body = after.join("\n");
     assert!(

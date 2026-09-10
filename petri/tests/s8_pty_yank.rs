@@ -8,7 +8,7 @@
 //! outcomes (a success notice, or a "could not copy" notice) are valid.
 
 mod pty_support;
-use pty_support::{Session, fixture_path};
+use pty_support::{BROWSER_HEADER, DASHBOARD_HEADER, Session, fixture_path};
 use std::io::Write;
 use std::time::Duration;
 
@@ -19,13 +19,38 @@ fn scratch_home(name: &str) -> std::path::PathBuf {
     home
 }
 
-fn settle(session: &mut Session) -> Vec<String> {
-    session.screen_retry(
+/// Settle, but keep waiting until the grid actually shows what the caller is about to
+/// assert on.
+///
+/// `screen_retry` only retries a *blank* grid, which is the wrong race for a
+/// post-keystroke assertion: the frame that comes back is fully painted and perfectly
+/// well-formed — it is just the frame from *before* the key was processed. See
+/// `screen_until`'s own doc comment, which exists for precisely this.
+///
+/// It matters more here than anywhere else in the suite, because `y` is the one binding
+/// that shells out before it can produce anything to draw: `yank_selected_path` spawns
+/// `pbcopy` and blocks on `child.wait()`, so the redraw waits on a whole process lifecycle.
+///
+/// The attempt count is the budget, and it is set generously because a process spawn is
+/// the slowest thing in any key path here. `screen_until` returns as soon as the predicate
+/// holds, so the extra attempts cost nothing on the common path.
+///
+/// **A correction worth keeping, because the wrong version of it was briefly committed.**
+/// This budget was once raised to 30 on the strength of a measurement showing `pbcopy`
+/// taking 1.8-2.2s. That measurement was invalid: it was taken on a machine with 126
+/// runaway busy-loops left behind by the flake-hunt tooling's own load generation. On an
+/// idle machine `echo hello | pbcopy` takes 10-20ms, which is what anyone would expect.
+/// The lesson is not about pbcopy — it is that a measurement is only as good as the state
+/// of the machine it was taken on, and "surprisingly slow" is a reason to check the
+/// machine before believing the number.
+fn settle_until(session: &mut Session, needle: &'static str) -> Vec<String> {
+    session.screen_until(
         90,
         40,
         Duration::from_secs(5),
         Duration::from_millis(300),
-        5,
+        10,
+        |grid| grid.iter().any(|r| r.contains(needle)),
     )
 }
 
@@ -34,13 +59,20 @@ fn send(session: &mut Session, bytes: &[u8]) {
     session.writer.flush().expect("flush must succeed");
 }
 
+/// Spawn on the Dashboard, wait until petri is genuinely there, then `Tab` to the Browser.
+///
+/// Neither wait is the obvious substring, and `pty_support`'s two header constants carry
+/// the reason. An unconditional settle here returns before raw mode is on — the grid is not
+/// blank, the pre-alt-screen preferences warning is in it, so `screen_retry` has nothing to
+/// retry — and `"browser"` after the `Tab` is already true of the Dashboard's own footer.
+/// Either one lets a `Tab` that the line discipline swallowed pass for a successful switch.
 fn to_browser(home: &std::path::Path) -> Session {
     let mut session = Session::spawn_with_home(&fixture_path("loaded.json"), 90, 40, home);
-    settle(&mut session);
+    settle_until(&mut session, DASHBOARD_HEADER);
     send(&mut session, b"\t");
-    let screen = settle(&mut session);
+    let screen = settle_until(&mut session, BROWSER_HEADER);
     assert!(
-        screen.iter().any(|r| r.contains("browser")),
+        screen.iter().any(|r| r.contains(BROWSER_HEADER)),
         "expected to be on the Browser after Tab, got:\n{}",
         screen.join("\n")
     );
@@ -56,7 +88,7 @@ fn yank_produces_a_notice_on_every_platform() {
     let home = scratch_home("yank");
     let mut session = to_browser(&home);
     send(&mut session, b"y");
-    let screen = settle(&mut session);
+    let screen = settle_until(&mut session, "clipboard");
     assert!(
         screen.iter().any(|r| r.contains("clipboard")),
         "expected a clipboard-related notice after pressing y, got:\n{}",

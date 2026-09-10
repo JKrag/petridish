@@ -53,12 +53,13 @@ fn tab_switches_dashboard_to_browser_and_back() {
     std::fs::create_dir_all(&home).expect("scratch home dir must be creatable");
     let mut session = Session::spawn_with_home(&fixture_path("loaded.json"), 80, 40, &home);
 
-    let initial_screen = session.screen_retry(
+    let initial_screen = session.screen_until(
         80,
         40,
         Duration::from_secs(5),
         Duration::from_millis(300),
-        5,
+        6,
+        |grid| grid.iter().any(|r| r.contains("petri · dashboard")),
     );
     assert!(
         initial_screen[0].contains("petri") && initial_screen[0].contains("dashboard"),
@@ -70,12 +71,16 @@ fn tab_switches_dashboard_to_browser_and_back() {
         .writer
         .write_all(b"\t")
         .expect("write Tab must succeed");
-    let after_first_tab = session.screen_retry(
+    // The Browser's list-pane title is the marker: it exists only after the switch, whereas
+    // "petri" and even "browser" appear in the Dashboard's own footer hint ("Tab Browser"),
+    // so waiting for those would be satisfied by the frame Tab has not touched yet.
+    let after_first_tab = session.screen_until(
         80,
         40,
-        Duration::from_secs(2),
+        Duration::from_secs(5),
         Duration::from_millis(300),
-        5,
+        6,
+        |grid| grid.iter().any(|r| r.contains("Projects")),
     );
     assert!(
         after_first_tab[0].contains("petri") && after_first_tab[0].contains("browser"),
@@ -92,12 +97,13 @@ fn tab_switches_dashboard_to_browser_and_back() {
         .writer
         .write_all(b"\t")
         .expect("write second Tab must succeed");
-    let after_second_tab = session.screen_retry(
+    let after_second_tab = session.screen_until(
         80,
         40,
-        Duration::from_secs(2),
+        Duration::from_secs(5),
         Duration::from_millis(300),
-        5,
+        6,
+        |grid| grid.iter().any(|r| r.contains("petri · dashboard")),
     );
     assert!(
         after_second_tab[0].contains("petri") && after_second_tab[0].contains("dashboard"),
@@ -141,12 +147,15 @@ fn valid_petri_toml_is_applied_on_startup() {
     .expect("write valid petri.toml must succeed");
 
     let mut session = Session::spawn_with_home(&fixture_path("normal.json"), 80, 24, &home);
-    let screen = session.screen_retry(
+    // Not `screen_retry`: it retries only an all-blank grid, and petri's prefs warning on
+    // stderr makes the output non-blank before any frame exists.
+    let screen = session.screen_until(
         80,
         24,
         Duration::from_secs(5),
         Duration::from_millis(300),
-        5,
+        6,
+        |grid| grid.iter().any(|r| r.contains("petri · browser")),
     );
     assert!(
         screen[0].contains("petri") && screen[0].contains("browser"),
@@ -185,12 +194,15 @@ fn corrupt_petri_toml_does_not_prevent_startup() {
     .expect("write corrupt petri.toml must succeed");
 
     let mut session = Session::spawn_with_home(&fixture_path("normal.json"), 80, 24, &home);
-    let screen = session.screen_retry(
+    // A corrupt prefs file means defaults, so the Dashboard is what must appear — and the
+    // warning it also prints is exactly what makes a blank-only retry useless here.
+    let screen = session.screen_until(
         80,
         24,
         Duration::from_secs(5),
         Duration::from_millis(300),
-        5,
+        6,
+        |grid| grid.iter().any(|r| r.contains("petri · dashboard")),
     );
     let whole = screen.join("\n");
     assert!(

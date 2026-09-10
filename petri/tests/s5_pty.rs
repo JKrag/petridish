@@ -37,24 +37,33 @@ fn initial_frame_shows_section_labels() {
     // unattended context, so rather than accept a nonzero flake rate, retry
     // the whole spawn+settle cycle up to 3 times and only fail if it's
     // consistently empty — which would mean a real regression, not this race.
-    let mut first_frame = String::new();
-    for attempt in 1..=3 {
-        let mut session = Session::spawn(&fixture_path("normal.json"), 80, 40);
-        first_frame = session.settle(Duration::from_secs(5), Duration::from_millis(300));
-        session.writer.write_all(b"q").ok();
-        let _ = session.wait_with_timeout(Duration::from_secs(5));
-        if !first_frame.is_empty() {
-            break;
-        }
-        eprintln!("attempt {attempt}/3: empty output (suspected PTY race), retrying");
-    }
-    // normal.json populates every bucket (5 active / 4 in_flight / 4 stale /
-    // 3 cold) — see s5_snapshot.rs's identical assertion for why this is the
-    // one check that actually discriminates S5 from S4's stub.
+    // Waits for the FRAME, on the grid, rather than spawning up to three times and hoping
+    // one of them has painted by the time the quiet window elapses. The old shape retried
+    // only when the output was completely empty — but petri's first bytes need not be a
+    // frame at all (a prefs warning on stderr is enough to make it non-empty), and a
+    // partially painted frame is not empty either. Measured at 1 failure in 24 runs at
+    // eight-way concurrency; see `petri/scripts/flake-hunt.sh`.
+    //
+    // Asserting on the reconstructed grid rather than the raw stream is the other half:
+    // `SPEC.md` §8 names raw substring matching as the root cause of the Python TUI's worst
+    // CI flakiness, and a diffed redraw need not emit a label contiguously.
+    //
+    // normal.json populates every bucket (5 active / 4 in_flight / 4 stale / 3 cold) — see
+    // s5_snapshot.rs's identical assertion for why this is the one check that actually
+    // discriminates S5 from S4's stub. COLD is last on screen, so waiting for it means all
+    // four have been painted.
+    let mut session = Session::spawn(&fixture_path("normal.json"), 80, 40);
+    let first_frame = settle_grid_until(&mut session, 80, 40, |grid| {
+        grid.iter().any(|r| r.contains("COLD"))
+    });
+    session.writer.write_all(b"q").ok();
+    let _ = session.wait_with_timeout(EXIT_BUDGET);
+
+    let body = first_frame.join("\n");
     for label in ["RUNNING", "IN FLIGHT", "STALE", "COLD"] {
         assert!(
-            first_frame.contains(label),
-            "initial frame must show section label {label:?} after 3 attempts, got: {first_frame:?}"
+            first_frame.iter().any(|r| r.contains(label)),
+            "initial frame must show section label {label:?}, got:\n{body}"
         );
     }
 }
@@ -65,7 +74,7 @@ fn navigation_and_filter_keystrokes_do_not_crash_the_binary() {
     // j/k/arrows move selection, / opens the filter, Esc clears it — none of
     // this should crash or hang the real binary end-to-end.
     let mut session = Session::spawn(&fixture_path("normal.json"), 80, 24);
-    let _ = session.settle(Duration::from_secs(5), Duration::from_millis(300));
+    wait_until_ready(&mut session, 80, 24);
 
     for keys in [&b"j"[..], b"j", b"k", b"/", b"ab", &[0x1b]] {
         session
@@ -81,7 +90,7 @@ fn navigation_and_filter_keystrokes_do_not_crash_the_binary() {
         .writer
         .write_all(b"q")
         .expect("write 'q' must succeed");
-    let status = session.wait_with_timeout(Duration::from_secs(5));
+    let status = session.wait_with_timeout(EXIT_BUDGET);
     assert_eq!(
         status.exit_code(),
         0,
@@ -89,25 +98,50 @@ fn navigation_and_filter_keystrokes_do_not_crash_the_binary() {
     );
 }
 
-fn settle_grid(session: &mut Session, cols: u16, rows: u16) -> Vec<String> {
-    session.screen_retry(
+/// Wait until petri has actually taken the terminal and painted, before sending it a key.
+///
+/// A bare `settle` returns as soon as the stream is quiet for 300ms, which can be *before*
+/// the binary has entered raw mode. A key written then is buffered by the line discipline
+/// in canonical mode and discarded when raw mode is enabled — the same mechanism that made
+/// `s8_pty_handoff` lose its `q`, but at startup rather than after a hand-off. It surfaces
+/// the same way too: not as a wrong frame, but as "child did not exit", seconds later.
+/// Measured at 8 failures in 24 runs at eight-way concurrency on an idle machine.
+///
+/// The predicate is the header BADGE, `"petri \u{b7} "`, not a bare `"petri"`. The bare form
+/// does not state the condition above at all: `prefs::load` warns `petri S7: preferences
+/// file ... missing or unreadable` and lib.rs's "Step 1.5" emits it deliberately before
+/// `enable_raw_mode`, so that text is on the reconstructed grid while the terminal is still
+/// in canonical mode — exactly the window this function exists to wait past. The badge is
+/// painted, so it cannot appear until after the alternate-screen entry that follows raw
+/// mode. Either screen's badge will do (`" petri \u{b7} dashboard "` / `" petri \u{b7} browser "`),
+/// since this only has to know that petri owns the terminal, not which screen it is on.
+fn wait_until_ready(session: &mut Session, cols: u16, rows: u16) {
+    session.screen_until(
         cols,
         rows,
         Duration::from_secs(5),
         Duration::from_millis(300),
-        5,
-    )
+        10,
+        |grid| grid.iter().any(|r| r.contains("petri \u{b7} ")),
+    );
 }
 
-/// Like `settle_grid`, but for a check that must observe the RESULT of a
-/// keystroke just sent, not just the eventual first non-blank frame.
-/// `screen_retry` (behind `settle_grid`) only retries on a blank grid; a
-/// still-painted PREVIOUS frame (the redraw for this keystroke hasn't
-/// happened yet) is not blank and would be returned as-is, failing the
-/// assertion below even though the binary is about to do the right thing —
-/// confirmed as the actual CI failure mode (see `screen_until`'s doc
-/// comment in pty_support). Retries until `predicate` holds or the attempt
-/// budget is spent, so a genuine regression still fails loudly.
+/// The exit budget is a HANG DETECTOR, not a performance assertion. Five seconds is tight
+/// enough to trip on a busy machine, and a test that fails because the box was loaded
+/// teaches people to re-run rather than to look.
+const EXIT_BUDGET: Duration = Duration::from_secs(20);
+
+/// Settle until the grid actually shows what the caller is about to assert on.
+///
+/// The unconditional `settle_grid` this file used to carry alongside is GONE, not kept for
+/// convenience, because its contract was itself the bug — the same verdict `pty_support`'s
+/// module doc records for `spawn_and_settle_nonempty`. It wrapped `screen_retry`, which
+/// retries only on a BLANK grid: a still-painted previous frame (the redraw for the
+/// keystroke just sent hasn't happened yet) is not blank and came back as-is, and neither
+/// is the pre-alt-screen grid holding only the "preferences file ... missing" warning. Both
+/// failed the following assertion on a frame petri was about to paint correctly. Retries
+/// until `predicate` holds or the attempt budget is spent, so a genuine regression still
+/// fails loudly.
 fn settle_grid_until(
     session: &mut Session,
     cols: u16,
@@ -165,7 +199,18 @@ fn space_toggles_the_detail_popup_at_a_hidden_geometry() {
     std::fs::create_dir_all(&home).expect("scratch home dir must be creatable");
     let mut session = Session::spawn_with_home(&fixture_path("normal.json"), cols, rows, &home);
 
-    let initial_screen = settle_grid(&mut session, cols, rows).join("\n");
+    // `settle_grid_until`, not bare `settle_grid`, for the same reason `wait_until_ready`
+    // exists: `screen_retry` retries only an all-*blank* grid, and the grid before petri
+    // takes the terminal is not blank — the scratch HOME has no `petri.toml`, so
+    // `prefs::load`'s "preferences file ... missing" warning is on it, printed to a normal
+    // stderr before `enable_raw_mode` (lib.rs's "Step 1.5"). `settle_grid` happily returned
+    // that, and the assertion below then failed on a frame petri had not painted yet.
+    // Measured after the rest of this PR's conversion: 1 failure in 24 runs at eight-way
+    // concurrency, the last one left in the suite.
+    let initial_screen = settle_grid_until(&mut session, cols, rows, |grid| {
+        grid.iter().any(|r| r.contains("dashboard"))
+    })
+    .join("\n");
     assert!(
         initial_screen.contains("dashboard"),
         "petri must start on the Dashboard (S6 default) with a scratch HOME, got:\n{initial_screen}"
@@ -243,7 +288,7 @@ fn space_toggles_the_detail_popup_at_a_hidden_geometry() {
         .writer
         .write_all(b"q")
         .expect("write 'q' must succeed");
-    let status = session.wait_with_timeout(Duration::from_secs(5));
+    let status = session.wait_with_timeout(EXIT_BUDGET);
     assert_eq!(
         status.exit_code(),
         0,
@@ -256,12 +301,12 @@ fn q_still_quits_cleanly_with_browser_active() {
     // Regression guard: S5 must not break S4's basic "q quits" contract while
     // wiring BrowserState into the event loop.
     let mut session = Session::spawn(&fixture_path("normal.json"), 80, 24);
-    let _ = session.settle(Duration::from_secs(5), Duration::from_millis(300));
+    wait_until_ready(&mut session, 80, 24);
     session
         .writer
         .write_all(b"q")
         .expect("write 'q' must succeed");
-    let status = session.wait_with_timeout(Duration::from_secs(5));
+    let status = session.wait_with_timeout(EXIT_BUDGET);
     assert_eq!(
         status.exit_code(),
         0,

@@ -22,7 +22,7 @@
 //! binary can prove `lib.rs` actually honours it before touching the file.
 
 mod pty_support;
-use pty_support::{Session, fixture_path};
+use pty_support::{BROWSER_HEADER, DASHBOARD_HEADER, Session, fixture_path};
 use std::io::Write;
 use std::time::Duration;
 
@@ -42,13 +42,35 @@ fn seeded_home(name: &str) -> (std::path::PathBuf, std::path::PathBuf) {
     (home, prefs_path)
 }
 
-fn settle(session: &mut Session) -> Vec<String> {
-    session.screen_retry(
+/// Settle until the grid actually shows `needle`, then return it.
+///
+/// The predicate must be something the POST-keystroke frame has and the pre-keystroke one
+/// does not, or it cannot tell "arrived" from "not started" — that distinction is what this
+/// exists for.
+fn settle_until(session: &mut Session, needle: &'static str) -> Vec<String> {
+    session.screen_until(
         90,
         40,
         Duration::from_secs(5),
         Duration::from_millis(300),
-        5,
+        6,
+        |grid| grid.iter().any(|r| r.contains(needle)),
+    )
+}
+
+/// Settle until `needle` is GONE from the grid.
+///
+/// The counterpart for asserting something closed. Waiting for a positive marker cannot
+/// express "the popup is no longer there", and asserting absence against a frame that may
+/// simply not have repainted yet is how a test passes for the wrong reason.
+fn settle_until_gone(session: &mut Session, needle: &'static str) -> Vec<String> {
+    session.screen_until(
+        90,
+        40,
+        Duration::from_secs(5),
+        Duration::from_millis(300),
+        6,
+        |grid| !grid.iter().any(|r| r.contains(needle)),
     )
 }
 
@@ -57,13 +79,20 @@ fn send(session: &mut Session, bytes: &[u8]) {
     session.writer.flush().expect("flush must succeed");
 }
 
+/// Spawn on the Dashboard, wait until petri is genuinely there, then `Tab` to the Browser.
+///
+/// Neither wait is the obvious substring, and `pty_support`'s two header constants carry
+/// the reason. An unconditional settle here returns before raw mode is on — the grid is not
+/// blank, the pre-alt-screen preferences warning is in it, so `screen_retry` has nothing to
+/// retry — and `"browser"` after the `Tab` is already true of the Dashboard's own footer.
+/// Either one lets a `Tab` that the line discipline swallowed pass for a successful switch.
 fn to_browser(home: &std::path::Path) -> Session {
     let mut session = Session::spawn_with_home(&fixture_path("loaded.json"), 90, 40, home);
-    settle(&mut session);
+    settle_until(&mut session, DASHBOARD_HEADER);
     send(&mut session, b"\t");
-    let screen = settle(&mut session);
+    let screen = settle_until(&mut session, BROWSER_HEADER);
     assert!(
-        screen.iter().any(|r| r.contains("browser")),
+        screen.iter().any(|r| r.contains(BROWSER_HEADER)),
         "expected to be on the Browser after Tab, got:\n{}",
         screen.join("\n")
     );
@@ -80,8 +109,11 @@ fn shift_g_opens_the_repick_popup_even_when_the_choice_already_resolves() {
     // someone else's write. The baseline has to be "immediately before G".
     let before = std::fs::read(&prefs_path).expect("prefs must exist before G");
 
+    // "D set default" is popup-only chrome, so it distinguishes the opened frame from the
+    // Browser underneath it. "git history" would not: it is the action's own label and
+    // appears in the footer's key hints too.
     send(&mut session, b"G");
-    let screen = settle(&mut session);
+    let screen = settle_until(&mut session, "D set default");
     let body = screen.join("\n");
 
     assert!(
@@ -103,7 +135,7 @@ fn shift_g_opens_the_repick_popup_even_when_the_choice_already_resolves() {
     );
 
     send(&mut session, b"\x1b");
-    let after = settle(&mut session);
+    let after = settle_until_gone(&mut session, "D set default");
     let after_body = after.join("\n");
     assert!(
         !after_body.contains("D set default"),
@@ -139,10 +171,13 @@ fn shift_g_does_not_fire_while_the_filter_has_focus() {
     let mut session = to_browser(&home);
 
     send(&mut session, b"/");
-    settle(&mut session);
+    settle_until(&mut session, "/");
 
+    // The positive signal is the `G` landing in the filter chip. Waiting for the popup NOT
+    // to be there would be satisfied by a frame that has not repainted yet, which is the
+    // whole failure mode — the assertion below would then pass without testing anything.
     send(&mut session, b"G");
-    let screen = settle(&mut session);
+    let screen = settle_until(&mut session, "/G");
     let body = screen.join("\n");
 
     assert!(
@@ -167,13 +202,16 @@ fn a_shifted_key_on_an_action_with_no_target_reports_it_instead_of_popping() {
     let mut session = to_browser(&home);
 
     // alpha-02 is the fixture's first project with `github_url: null`.
+    // Wait for the filter to have actually applied before pressing Enter: selecting a row
+    // out of a list that has not refiltered yet picks a different project, and every
+    // assertion below is about *which* project is selected.
     send(&mut session, b"/alpha-02");
-    settle(&mut session);
+    settle_until(&mut session, "/alpha-02");
     send(&mut session, b"\r");
-    settle(&mut session);
+    settle_until(&mut session, "alpha-02");
 
     send(&mut session, b"O");
-    let screen = settle(&mut session);
+    let screen = settle_until(&mut session, "no remote");
     let body = screen.join("\n");
     assert!(
         body.contains("no remote"),
@@ -186,7 +224,7 @@ fn a_shifted_key_on_an_action_with_no_target_reports_it_instead_of_popping() {
 
     // Same row, Target::Path action: the popup does open.
     send(&mut session, b"G");
-    let screen = settle(&mut session);
+    let screen = settle_until(&mut session, "D set default");
     let body = screen.join("\n");
     assert!(
         body.contains("D set default"),
@@ -194,7 +232,7 @@ fn a_shifted_key_on_an_action_with_no_target_reports_it_instead_of_popping() {
     );
 
     send(&mut session, b"\x1b");
-    settle(&mut session);
+    settle_until_gone(&mut session, "D set default");
     send(&mut session, b"q");
     session.wait_with_timeout(Duration::from_secs(10));
 }

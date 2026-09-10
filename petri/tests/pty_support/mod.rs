@@ -12,11 +12,14 @@
 //! to call it. Without this, a green `-D warnings` build would demand deleting
 //! helpers that are demonstrably in use.
 //!
-//! The one genuinely uncalled item today is `spawn_and_settle_nonempty` (the
-//! ambient-`$HOME` variant). It is kept as the documented counterpart to
-//! `spawn_and_settle_nonempty_with_home`, which `s6_pty.rs`'s module docs
-//! explicitly contrast against when explaining why they use the scratch-`HOME`
-//! form.
+//! `spawn_and_settle_nonempty` and its `_with_home` variant used to live here and are
+//! deliberately GONE rather than deprecated. Their contract was "re-spawn while the output
+//! is empty", and that contract is itself the bug: petri's first write need not be a frame
+//! — S7's "preferences file missing, using defaults" warning goes to stderr before the
+//! alternate screen is entered — so the output goes non-empty, the retry loop declares
+//! success, and the caller asserts against a warning line. Every test that used them was
+//! flaky for exactly that reason. Use `screen_until` and name the frame you are waiting
+//! for; there is no case left where "any bytes at all" is the right condition.
 #![allow(dead_code)]
 
 //! Extracted from S4's `s4_pty.rs` once S5 needed the identical harness — see
@@ -40,6 +43,27 @@ use std::path::PathBuf;
 use std::sync::mpsc;
 use std::time::{Duration, Instant};
 
+/// The Dashboard's header badge — `dashboard.rs`'s `HEADER_TITLE`, verbatim.
+///
+/// This is the marker for "petri has taken the terminal and painted a frame", and the
+/// reason it is a header badge rather than the obvious `"petri"` is the same trap this
+/// module's doc comment describes for `spawn_and_settle_nonempty`: `prefs::load` warns
+/// `petri S7: preferences file ... missing or unreadable` on a scratch home, and lib.rs's
+/// "Step 1.5" emits it deliberately BEFORE `enable_raw_mode` so it cannot corrupt the first
+/// draw. So `"petri"` is on screen while the terminal is still in canonical mode, where a
+/// keystroke is buffered by the line discipline and then discarded when raw mode comes on.
+/// A badge cannot appear until after the alternate-screen entry that follows raw mode, so
+/// waiting for one is waiting for the thing that actually makes a keystroke deliverable.
+pub const DASHBOARD_HEADER: &str = " petri \u{b7} dashboard ";
+
+/// The Browser's header badge — `browser.rs`'s title span, verbatim.
+///
+/// The marker for "a `Tab` was actually processed". `"browser"` is not: the *Dashboard's*
+/// footer reads `Enter open/browser` (`dashboard.rs`'s `footer_line`), so a wait on that
+/// needle is already satisfied by the pre-Tab frame and returns without the Tab having been
+/// handled at all — which then hides a lost keystroke behind a passing wait.
+pub const BROWSER_HEADER: &str = " petri \u{b7} browser ";
+
 pub fn fixture_path(name: &str) -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join("..")
@@ -52,65 +76,6 @@ pub fn petri_bin() -> PathBuf {
     // alongside the test binary; CARGO_BIN_EXE_<name> is cargo's own supported
     // way to locate a sibling binary from an integration test.
     PathBuf::from(env!("CARGO_BIN_EXE_petri"))
-}
-
-/// Repeatedly (re)spawn+settle up to `attempts` times, returning the first
-/// non-empty settled output (and the `Session` that produced it, still
-/// alive, for further interaction). Mitigates the empty-first-settle PTY
-/// race documented in this module's doc comment (bug 2's fix narrows it but
-/// doesn't fully close it) — S4's and S5's PTY tests each independently
-/// reinvented this same bounded-retry loop before it was pulled up here for
-/// S6 to reuse. Returns the LAST (possibly still empty) output if every
-/// attempt comes back empty, so a genuine regression fails loudly rather
-/// than silently passing.
-pub fn spawn_and_settle_nonempty(
-    state_path: &std::path::Path,
-    cols: u16,
-    rows: u16,
-    timeout: Duration,
-    quiet_for: Duration,
-    attempts: u32,
-) -> (Session, String) {
-    let mut session = Session::spawn(state_path, cols, rows);
-    let mut output = session.settle(timeout, quiet_for);
-    let mut attempt = 1;
-    while output.is_empty() && attempt < attempts {
-        attempt += 1;
-        eprintln!("attempt {attempt}/{attempts}: empty output (suspected PTY race), retrying");
-        session = Session::spawn(state_path, cols, rows);
-        output = session.settle(timeout, quiet_for);
-    }
-    (session, output)
-}
-
-/// Like `spawn_and_settle_nonempty`, but overrides `HOME` for the child
-/// process (via `Session::spawn_with_home`) — needed for any test whose
-/// assertions depend on `petri`'s startup behavior being independent of
-/// whatever real `~/.petridish/petri.toml` happens to exist on the machine
-/// running the tests (petri/SPEC.md §6, S7). Bare `spawn_and_settle_nonempty`
-/// inherits the ambient `$HOME`, which silently broke the S6 PTY gate's
-/// "Dashboard is the default landing screen" assumption once S7 added real
-/// prefs persistence and a stray `last_screen = "browser"` ended up in a
-/// developer's real prefs file from unrelated manual testing.
-pub fn spawn_and_settle_nonempty_with_home(
-    state_path: &std::path::Path,
-    cols: u16,
-    rows: u16,
-    home: &std::path::Path,
-    timeout: Duration,
-    quiet_for: Duration,
-    attempts: u32,
-) -> (Session, String) {
-    let mut session = Session::spawn_with_home(state_path, cols, rows, home);
-    let mut output = session.settle(timeout, quiet_for);
-    let mut attempt = 1;
-    while output.is_empty() && attempt < attempts {
-        attempt += 1;
-        eprintln!("attempt {attempt}/{attempts}: empty output (suspected PTY race), retrying");
-        session = Session::spawn_with_home(state_path, cols, rows, home);
-        output = session.settle(timeout, quiet_for);
-    }
-    (session, output)
 }
 
 pub struct Session {
@@ -462,6 +427,53 @@ impl Session {
             grid = self.screen(cols, rows, timeout, quiet_for);
         }
         grid
+    }
+
+    /// Settle repeatedly until `predicate` accepts the RAW accumulated stream, or
+    /// `attempts` is exhausted. Returns whether the predicate was ever satisfied.
+    ///
+    /// The grid-based `screen_until` is the right tool for "has the screen reached this
+    /// state". This one exists for the case it cannot express: **an event whose completion
+    /// leaves the screen looking exactly as it did before.** A terminal hand-off is that
+    /// case — petri leaves the alternate screen, runs the child, re-enters and repaints the
+    /// same content — so no predicate over the reconstructed grid can distinguish "the
+    /// hand-off finished" from "the hand-off has not started". The control sequences can:
+    /// they carry the transition the grid throws away.
+    ///
+    /// Deliberately NOT for content assertions. `SPEC.md` §8 names raw byte-stream
+    /// substring matching as the root cause of the Python TUI's worst CI flakiness, and
+    /// that verdict stands — a *frame* must be asserted against the grid. This is for
+    /// waiting on a terminal-mode transition, which is not content at all.
+    pub fn settle_until_raw(
+        &mut self,
+        timeout: Duration,
+        quiet_for: Duration,
+        attempts: u32,
+        mut predicate: impl FnMut(&str) -> bool,
+    ) -> bool {
+        for attempt in 1..=attempts {
+            let stream = self.settle(timeout, quiet_for);
+            if predicate(&stream) {
+                return true;
+            }
+            if attempt < attempts {
+                eprintln!(
+                    "settle_until_raw attempt {attempt}/{attempts}: not satisfied yet, retrying"
+                );
+            }
+        }
+        false
+    }
+
+    /// How many times the child has entered the alternate screen so far.
+    ///
+    /// One at startup; a second one only after a terminal hand-off has run its child and
+    /// come back. That makes `>= 2` the precise, non-timing-based answer to "is petri in
+    /// charge of the terminal again", which is what a test must know before it can send
+    /// another keystroke — a key written while the child still owns the terminal is queued
+    /// by the line discipline in canonical mode and lost when raw mode is restored.
+    pub fn alt_screen_entries(stream: &str) -> usize {
+        stream.matches("\x1b[?1049h").count()
     }
 
     /// Wait for the child to exit, with a hard timeout so a genuine hang fails

@@ -11,7 +11,7 @@
 //! No launching, no side effects: only `/`, letters, `Enter` and `q`.
 
 mod pty_support;
-use pty_support::{Session, fixture_path};
+use pty_support::{BROWSER_HEADER, DASHBOARD_HEADER, Session, fixture_path};
 use std::io::Write;
 use std::time::Duration;
 
@@ -22,13 +22,39 @@ fn scratch_home(name: &str) -> std::path::PathBuf {
     home
 }
 
-fn settle(session: &mut Session) -> Vec<String> {
-    session.screen_retry(
+/// The filter input's block cursor (`browser.rs`'s `filter_input` branch). It is on screen
+/// exactly while the input has focus, which makes it the one marker that distinguishes an
+/// open filter from a closed one carrying the same query — see `enter_closes` below.
+const INPUT_CURSOR: &str = "\u{2588}";
+
+/// Settle until the grid shows `needle`. Every post-keystroke assertion goes through this or
+/// `settle_until_gone`, never an unconditional settle: `screen_retry` retries only an
+/// all-blank grid, so what it returns after a keystroke may be a well-formed pre-keystroke
+/// frame.
+/// This file measured 10 failures in 24 runs at eight-way concurrency before the
+/// conversion — see `petri/scripts/flake-hunt.sh`.
+fn settle_until(session: &mut Session, needle: &'static str) -> Vec<String> {
+    session.screen_until(
         90,
         40,
         Duration::from_secs(5),
         Duration::from_millis(300),
-        5,
+        6,
+        |grid| grid.iter().any(|r| r.contains(needle)),
+    )
+}
+
+/// Settle until `needle` is gone. Needed more often here than anywhere else: half of this
+/// file's assertions are about something disappearing, and an absence is satisfied by a
+/// frame that simply has not repainted.
+fn settle_until_gone(session: &mut Session, needle: &'static str) -> Vec<String> {
+    session.screen_until(
+        90,
+        40,
+        Duration::from_secs(5),
+        Duration::from_millis(300),
+        6,
+        |grid| !grid.iter().any(|r| r.contains(needle)),
     )
 }
 
@@ -37,13 +63,20 @@ fn send(session: &mut Session, bytes: &[u8]) {
     session.writer.flush().expect("flush must succeed");
 }
 
+/// Spawn on the Dashboard, wait until petri is genuinely there, then `Tab` to the Browser.
+///
+/// Neither wait is the obvious substring, and `pty_support`'s two header constants carry
+/// the reason. An unconditional settle here returns before raw mode is on — the grid is not
+/// blank, the pre-alt-screen preferences warning is in it, so `screen_retry` has nothing to
+/// retry — and `"browser"` after the `Tab` is already true of the Dashboard's own footer.
+/// Either one lets a `Tab` that the line discipline swallowed pass for a successful switch.
 fn to_browser(home: &std::path::Path) -> Session {
     let mut session = Session::spawn_with_home(&fixture_path("loaded.json"), 90, 40, home);
-    settle(&mut session);
+    settle_until(&mut session, DASHBOARD_HEADER);
     send(&mut session, b"\t");
-    let screen = settle(&mut session);
+    let screen = settle_until(&mut session, BROWSER_HEADER);
     assert!(
-        screen.iter().any(|r| r.contains("browser")),
+        screen.iter().any(|r| r.contains(BROWSER_HEADER)),
         "expected to be on the Browser after Tab, got:\n{}",
         screen.join("\n")
     );
@@ -56,9 +89,9 @@ fn the_typed_query_appears_on_screen_and_survives_enter() {
     let mut session = to_browser(&home);
 
     send(&mut session, b"/");
-    settle(&mut session);
+    settle_until(&mut session, INPUT_CURSOR);
     send(&mut session, b"beta");
-    let typing = settle(&mut session).join("\n");
+    let typing = settle_until(&mut session, "/beta").join("\n");
     assert!(
         typing.contains("/beta"),
         "the query typed into the `/` filter must be visible, got:\n{typing}"
@@ -66,8 +99,11 @@ fn the_typed_query_appears_on_screen_and_survives_enter() {
 
     // `Enter` closes the input but keeps the query (SPEC.md §3.1). The whole
     // point of ACT-10 is that this state is still legible.
+    // Waiting for "/beta" would prove nothing — it is already on screen, so the wait would
+    // be satisfied by the pre-Enter frame and the assertion would pass without Enter having
+    // been processed at all. The block cursor is what Enter actually removes.
     send(&mut session, b"\r");
-    let kept = settle(&mut session).join("\n");
+    let kept = settle_until_gone(&mut session, INPUT_CURSOR).join("\n");
     assert!(
         kept.contains("/beta"),
         "the query must remain visible after Enter closes the input, got:\n{kept}"
@@ -76,9 +112,9 @@ fn the_typed_query_appears_on_screen_and_survives_enter() {
     // `Esc` in normal mode is a no-op, so re-open the filter and clear it
     // there — the chip must then disappear entirely.
     send(&mut session, b"/");
-    settle(&mut session);
+    settle_until(&mut session, INPUT_CURSOR);
     send(&mut session, &[0x1b]);
-    let cleared = settle(&mut session).join("\n");
+    let cleared = settle_until_gone(&mut session, "/beta").join("\n");
     assert!(
         !cleared.contains("/beta"),
         "Esc must clear the query and take the chip with it, got:\n{cleared}"
@@ -104,9 +140,9 @@ fn backspace_deletes_the_last_character_and_refilters() {
     let mut session = to_browser(&home);
 
     send(&mut session, b"/");
-    settle(&mut session);
+    settle_until(&mut session, INPUT_CURSOR);
     send(&mut session, b"bravoX");
-    let typo = settle(&mut session).join("\n");
+    let typo = settle_until(&mut session, "/bravoX").join("\n");
     assert!(
         typo.contains("/bravoX"),
         "setup: the typo must be on screen before we delete it, got:\n{typo}"
@@ -116,8 +152,10 @@ fn backspace_deletes_the_last_character_and_refilters() {
         "setup: \"bravoX\" must match nothing, or the delete proves nothing, got:\n{typo}"
     );
 
+    // Gone, not present: "/bravo" is a prefix of "/bravoX", so waiting for it would be
+    // satisfied before the Backspace was ever processed.
     send(&mut session, &[0x7f]);
-    let fixed = settle(&mut session).join("\n");
+    let fixed = settle_until_gone(&mut session, "/bravoX").join("\n");
     assert!(
         fixed.contains("/bravo") && !fixed.contains("/bravoX"),
         "Backspace must drop exactly the last character, got:\n{fixed}"
@@ -131,7 +169,7 @@ fn backspace_deletes_the_last_character_and_refilters() {
     for _ in 0..8 {
         send(&mut session, &[0x7f]);
     }
-    let emptied = settle(&mut session).join("\n");
+    let emptied = settle_until_gone(&mut session, "/b").join("\n");
     assert!(
         emptied.contains("browser"),
         "petri must survive Backspace on an empty query, got:\n{emptied}"
