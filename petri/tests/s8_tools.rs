@@ -48,11 +48,21 @@ fn browse_fixture() -> Action {
 const PROJECT: Facts<'static> = Facts {
     path: "/Users/x/repos/thing",
     url: Some("https://github.com/x/thing"),
+    is_repo: true,
 };
 
 const NO_REMOTE: Facts<'static> = Facts {
     path: "/Users/x/repos/thing",
     url: None,
+    is_repo: true,
+};
+
+/// A project discovery admitted on a manifest file rather than a `.git` — issue #38's
+/// case. Legitimate fleet member, nothing for `g` to show.
+const NOT_A_REPO: Facts<'static> = Facts {
+    path: "/Users/x/repos/notes",
+    url: None,
+    is_repo: false,
 };
 
 // ---------------------------------------------------------------- rule 1 --
@@ -590,12 +600,15 @@ fn reveal_in_finder_is_bound_and_uses_open() {
 }
 
 #[test]
-fn browse_is_the_only_url_targeted_action() {
+fn each_action_declares_the_target_it_needs() {
+    // Spelled as an explicit table rather than "browse is the odd one out", which is what
+    // this test used to say: issue #38 gave `gitlog` a target of its own, and a rule phrased
+    // as one exception silently mis-states the registry the moment there are two.
     for action in tools::registry() {
-        let expected = if action.id == "browse" {
-            Target::Url
-        } else {
-            Target::Path
+        let expected = match action.id {
+            "browse" => Target::Url,
+            "gitlog" => Target::GitRepo,
+            _ => Target::Path,
         };
         assert_eq!(
             action.target, expected,
@@ -603,6 +616,125 @@ fn browse_is_the_only_url_targeted_action() {
             action.id
         );
     }
+}
+
+// ---------------------------------------------------- issue #38: `g` ---------
+
+#[test]
+fn git_history_has_no_target_in_a_project_that_is_not_a_repo() {
+    // #38: `g` on a non-repo used to resolve `Ready`, launch, and have git exit at once —
+    // the screen flashed and came straight back. `SPEC.md` §5 forbids advertising a key
+    // that does nothing, so this must be `NoTarget`, the same answer `o` gives a project
+    // with no remote.
+    let reg = tools::registry();
+    let gitlog = reg.iter().find(|a| a.id == "gitlog").expect("gitlog");
+
+    // Every git tool in the world installed makes no difference — this is a per-project
+    // fact, and rule 1 is checked before any machine question.
+    let got = tools::resolve(gitlog, &NOT_A_REPO, None, &|_| true);
+    assert_eq!(got, Resolution::NoTarget);
+
+    // ... and the same project still resolves the actions that only need a path.
+    let reveal = reg.iter().find(|a| a.id == "reveal").expect("reveal");
+    assert!(
+        matches!(
+            tools::resolve(reveal, &NOT_A_REPO, None, &only(&["open"])),
+            Resolution::Ready(_)
+        ),
+        "a non-repo is a legitimate project, not a disabled one"
+    );
+}
+
+#[test]
+fn git_history_offers_no_repick_in_a_project_that_is_not_a_repo() {
+    // `repick_candidates` carries its own copy of rule 1; if the two drift, `R` opens a
+    // picker for an action that cannot run.
+    let reg = tools::registry();
+    let gitlog = reg.iter().find(|a| a.id == "gitlog").expect("gitlog");
+    assert_eq!(
+        tools::repick_candidates(gitlog, &NOT_A_REPO, &|_| true),
+        None
+    );
+}
+
+/// A project as the scanner would report it, with only the git facts this test cares about.
+fn project_with(name: &str, is_repo: bool, url: Option<&str>) -> petridish_core::schema::Project {
+    petridish_core::schema::Project {
+        id: "id".to_string(),
+        name: name.to_string(),
+        path: format!("/repos/{name}"),
+        category: "default".to_string(),
+        parent_path: None,
+        is_foreign: false,
+        git: petridish_core::schema::GitState {
+            is_repo,
+            branch: None,
+            is_dirty: false,
+            uncommitted_files: 0,
+            untracked_files: 0,
+            last_commit_at: None,
+            mine_last_commit_at: None,
+            github_url: url.map(str::to_string),
+            daily_commits: Vec::new(),
+        },
+        agent: petridish_core::schema::AgentState::idle_unknown(),
+        last_activity_at: None,
+        status_bucket: petridish_core::schema::StatusBucket::Cold,
+        agent_activity: Vec::new(),
+    }
+}
+
+#[test]
+fn the_launch_path_re_checks_the_target_the_picker_did_not() {
+    // `launch_for` knows nothing about targets, so the picker's choice would otherwise skip
+    // rule 1 entirely. The gap is reachable: the poll loop reloads state while the picker is
+    // open as a modal, so the selection can stop being a repo between the keypress that
+    // opened it and the choice that closes it — and `g` would then launch into a non-repo,
+    // reinstating the very flash #38 fixes.
+    let reg = tools::registry();
+    let gitlog = reg.iter().find(|a| a.id == "gitlog").expect("gitlog");
+    let reveal = reg.iter().find(|a| a.id == "reveal").expect("reveal");
+    let browse = reg.iter().find(|a| a.id == "browse").expect("browse");
+
+    let not_a_repo = project_with("notes", false, None);
+    let notice = petri::launch_blocked_notice(gitlog, &not_a_repo)
+        .expect("g must be refused on a non-repo, not launched");
+    assert!(
+        notice.contains("notes") && notice.contains("not a git repository"),
+        "the notice must name the project and the reason, got: {notice:?}"
+    );
+
+    // Same project, an action that only needs a path: not blocked.
+    assert_eq!(
+        petri::launch_blocked_notice(reveal, &not_a_repo),
+        None,
+        "a non-repo is a legitimate project, not a disabled one"
+    );
+
+    // And the URL axis goes through the same guard.
+    assert!(petri::launch_blocked_notice(browse, &not_a_repo).is_some());
+    let with_remote = project_with("thing", true, Some("https://github.com/x/thing"));
+    assert_eq!(petri::launch_blocked_notice(browse, &with_remote), None);
+    assert_eq!(petri::launch_blocked_notice(gitlog, &with_remote), None);
+}
+
+#[test]
+fn each_target_states_its_own_reason() {
+    // The notice and the panel's dimmed entry both come from the target, so `o` and `g`
+    // cannot end up telling the user the same wrong thing. Regression for the hardcoded
+    // "has no remote" that used to serve both.
+    assert_eq!(Target::Url.notice(), "has no remote");
+    assert_eq!(Target::GitRepo.notice(), "is not a git repository");
+    assert_ne!(Target::Url.short_reason(), Target::GitRepo.short_reason());
+
+    assert!(Target::Url.missing(&NO_REMOTE));
+    assert!(!Target::Url.missing(&PROJECT));
+    assert!(Target::GitRepo.missing(&NOT_A_REPO));
+    assert!(!Target::GitRepo.missing(&PROJECT));
+    assert!(
+        !Target::Path.missing(&NOT_A_REPO),
+        "every project has a path"
+    );
 }
 
 // ------------------------------------------------------- launch_for ----------

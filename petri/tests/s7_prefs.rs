@@ -66,6 +66,7 @@ fn roundtrip_save_then_load_preserves_non_default_values() {
     let written = Prefs {
         last_screen: LastScreen::Browser,
         collapsed: [true, true, false, false],
+        nerd_fonts: petri::prefs::NerdFonts::default(),
         tools: std::collections::BTreeMap::new(),
     };
     prefs::save(&path, &written).expect("save must succeed");
@@ -112,6 +113,7 @@ fn save_overwrite_second_call_replaces_the_first() {
         &Prefs {
             last_screen: LastScreen::Dashboard,
             collapsed: [false, false, true, true],
+            nerd_fonts: petri::prefs::NerdFonts::default(),
             tools: std::collections::BTreeMap::new(),
         },
     )
@@ -121,6 +123,7 @@ fn save_overwrite_second_call_replaces_the_first() {
         &Prefs {
             last_screen: LastScreen::Browser,
             collapsed: [true, false, true, false],
+            nerd_fonts: petri::prefs::NerdFonts::default(),
             tools: std::collections::BTreeMap::new(),
         },
     )
@@ -152,6 +155,7 @@ fn collapsed_state_type_matches_dashboard_state() {
     let p = Prefs {
         last_screen: LastScreen::Dashboard,
         collapsed: c,
+        nerd_fonts: petri::prefs::NerdFonts::default(),
         tools: std::collections::BTreeMap::new(),
     };
     assert_eq!(p.collapsed, c);

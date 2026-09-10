@@ -1320,8 +1320,13 @@ fn render_current(
         }
         Screen::Browser => {
             if let Some(s) = browser_state {
+                // Resolved per frame rather than once at startup: `nerd_font_installed`
+                // memoises the filesystem probe, so this is a match on an enum after the
+                // first call, and reading it here keeps the flag a function of `prefs`
+                // rather than a second piece of startup state to keep in sync.
+                let nerd = prefs.use_nerd_fonts(&crate::exec::nerd_font_installed);
                 let _ = terminal.draw(|frame| {
-                    crate::browser::render(frame, r, s);
+                    crate::browser::render(frame, r, s, nerd);
                     // The overlay is drawn last, after the screen beneath it —
                     // `Clear` only blanks what is already in the buffer, so
                     // ordering is the whole mechanism (MECH-1).
@@ -1373,6 +1378,7 @@ fn begin_action(
     let facts = crate::tools::Facts {
         path: &project.path,
         url: project.git.github_url.as_deref(),
+        is_repo: project.git.is_repo,
     };
     // `ACT-4`'s resolution order for the editor: the stored answer first, then
     // `$VISUAL`, then `$EDITOR`, then the registry probe. Reading the environment here
@@ -1428,7 +1434,12 @@ fn begin_action(
         // `ACT-9`'s per-project axis, phrased in terms of the project rather
         // than the tooling: this is the half the user can see on the row in
         // front of them.
-        crate::tools::Resolution::NoTarget => Some(format!("{} has no remote", project.name)),
+        // `ACT-9`'s per-project axis. The reason comes from the target rather
+        // than being spelled here, so `o` on a project with no remote and `g` on
+        // a directory that is not a repository each say their own true thing.
+        crate::tools::Resolution::NoTarget => {
+            Some(format!("{} {}", project.name, action.target.notice()))
+        }
     }
 }
 
@@ -1452,11 +1463,12 @@ fn begin_repick(
     let facts = crate::tools::Facts {
         path: &project.path,
         url: project.git.github_url.as_deref(),
+        is_repo: project.git.is_repo,
     };
     match crate::tools::repick_candidates(action, &facts, &|p| crate::exec::is_installed_probe(p)) {
         // `ACT-9`'s per-project axis, phrased the same way `begin_action`
         // phrases it, so the two paths never disagree on screen.
-        None => Some(format!("{} has no remote", project.name)),
+        None => Some(format!("{} {}", project.name, action.target.notice())),
         // An empty list still opens the popup: `Other — specify path…` is
         // always a row, so a machine with nothing installed is still usable.
         Some(installed) => {
@@ -1483,6 +1495,35 @@ fn begin_repick(
 /// which is a stronger guarantee than a test that a later refactor could
 /// silently stop exercising. The event loop's half — persist only when the
 /// picker says so — is covered by `s8_pty_repick.rs`.
+/// The notice to show *instead of* launching, when this project cannot supply what the
+/// action needs. `None` means go ahead.
+///
+/// **Rule 1 has to be re-checked on the launch path, not only where the picker opened.**
+/// `tools::launch_for` maps a program name to a `Launch` and deliberately knows nothing
+/// about targets, so without this the picker's choice bypasses the check entirely — and the
+/// gap is reachable rather than theoretical: the poll loop keeps reloading `projects.json`
+/// while the picker sits open as a modal, so the selected project can lose its `.git` (or
+/// its remote) between the keypress that opened the picker and the choice that closes it.
+/// `g` would then launch into a non-repo and git would exit at once, which is the exact
+/// flash issue #38 exists to fix, reintroduced through the back door.
+///
+/// Public so an integration test can reach it: `lib.rs` has no unit-test module, and a
+/// one-line guard nobody can call is a one-line guard nobody can prove.
+pub fn launch_blocked_notice(
+    action: &crate::tools::Action,
+    project: &petridish_core::schema::Project,
+) -> Option<String> {
+    let facts = crate::tools::Facts {
+        path: &project.path,
+        url: project.git.github_url.as_deref(),
+        is_repo: project.git.is_repo,
+    };
+    action
+        .target
+        .missing(&facts)
+        .then(|| format!("{} {}", project.name, action.target.notice()))
+}
+
 fn run_action(
     terminal: &mut ratatui::Terminal<ratatui::backend::CrosstermBackend<std::io::Stdout>>,
     action: &crate::tools::Action,
@@ -1496,7 +1537,11 @@ fn run_action(
     let facts = crate::tools::Facts {
         path: &project.path,
         url: project.git.github_url.as_deref(),
+        is_repo: project.git.is_repo,
     };
+    if let Some(notice) = launch_blocked_notice(action, project) {
+        return Some(notice);
+    }
     let launch = crate::tools::launch_for(action, &facts, program);
     launch_now(terminal, &launch, std::path::Path::new(&project.path))
 }

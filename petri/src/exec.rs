@@ -266,8 +266,160 @@ fn app_bundle_exists_in(app_name: &str, dirs: &[&Path]) -> bool {
         .any(|dir| dir.join(format!("{app_name}.app")).exists())
 }
 
+/// Does this machine appear to have a Nerd Font installed?
+///
+/// The impure half of `Prefs::use_nerd_fonts`, on this side of the same seam
+/// `is_installed_probe` sits on: a filesystem question, kept out of the pure
+/// decision so that decision stays testable.
+///
+/// **This is a heuristic and cannot be anything else** — see `prefs::NerdFonts` for why the
+/// terminal cannot be asked directly. It works because both CoreText and fontconfig fall
+/// back to any installed font that has the glyph, so an installed Nerd Font is usually
+/// enough even when the terminal's configured font is not one.
+///
+/// Matched on the filename rather than by parsing the font for `U+E0A0` coverage: the
+/// Nerd Font project's own patcher names every output file with the "Nerd Font" suffix,
+/// and reading `cmap` tables would mean a font-parsing dependency for a guess the user can
+/// override in one line of `petri.toml` (ARCHITECTURE.md D3 — keep the tree small).
+///
+/// Cached: this walks up to five directories, the answer cannot change without restarting
+/// the terminal anyway, and the Browser re-renders on every poll tick.
+pub fn nerd_font_installed() -> bool {
+    static CACHED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *CACHED.get_or_init(|| {
+        let home = std::env::var("HOME").unwrap_or_default();
+        let dirs = [
+            format!("{home}/Library/Fonts"),
+            "/Library/Fonts".to_string(),
+            format!("{home}/.local/share/fonts"),
+            format!("{home}/.fonts"),
+            "/usr/share/fonts".to_string(),
+        ];
+        dirs.iter().any(|dir| dir_holds_a_nerd_font(Path::new(dir)))
+    })
+}
+
+/// One directory's worth of the question above, to a bounded depth.
+///
+/// **Two levels, not one**, because `/usr/share/fonts/truetype/<family>/Font.ttf` — the
+/// ordinary Linux layout — puts the file exactly that far down, and a one-level check finds
+/// only the family directory. macOS is flat (`~/Library/Fonts/Font.ttf`) and costs nothing
+/// either way. The depth is bounded rather than recursive on purpose: this runs at startup
+/// on a path that can hold thousands of files, and it is answering a yes/no heuristic, not
+/// building an inventory.
+fn dir_holds_a_nerd_font(dir: &Path) -> bool {
+    holds_a_nerd_font_within(dir, 2)
+}
+
+/// `depth` counts how many more levels of directory may be descended into.
+fn holds_a_nerd_font_within(dir: &Path, depth: u8) -> bool {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return false; // A missing font directory is the normal case, not an error.
+    };
+    for entry in entries.flatten() {
+        let Ok(file_type) = entry.file_type() else {
+            continue;
+        };
+        // **A matching DIRECTORY is not a font.** The name check used to run first, so a
+        // folder called `Nerd Fonts/` answered the whole question — and that is exactly what
+        // unzipping a Nerd Font release produces, so an empty or half-extracted one would
+        // switch the glyphs on for someone with no font actually installed, and they would
+        // see tofu. A directory is something to look *inside*, never an answer.
+        if file_type.is_dir() {
+            if depth > 0 && holds_a_nerd_font_within(&entry.path(), depth - 1) {
+                return true;
+            }
+            continue;
+        }
+        if looks_like_a_nerd_font(&entry.file_name().to_string_lossy()) {
+            return true;
+        }
+    }
+    false
+}
+
+/// Both spellings the patcher produces: `JetBrainsMonoNerdFont-Regular.ttf` and
+/// `Hack Nerd Font Complete.ttf`.
+fn looks_like_a_nerd_font(file_name: &str) -> bool {
+    let lower = file_name.to_ascii_lowercase();
+    lower.contains("nerd font") || lower.contains("nerdfont")
+}
+
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn both_nerd_font_filename_spellings_are_recognised() {
+        // The patcher emits both, depending on version and options.
+        assert!(super::looks_like_a_nerd_font(
+            "JetBrainsMonoNerdFont-Regular.ttf"
+        ));
+        assert!(super::looks_like_a_nerd_font("Hack Nerd Font Complete.ttf"));
+        assert!(super::looks_like_a_nerd_font("symbols nerd font mono.ttf"));
+        assert!(!super::looks_like_a_nerd_font("Menlo.ttc"));
+        assert!(!super::looks_like_a_nerd_font("SF-Pro.otf"));
+    }
+
+    #[test]
+    fn a_nerd_font_is_found_one_directory_down() {
+        // Linux installs nest (`/usr/share/fonts/truetype/<family>/`), which is the whole
+        // reason `dir_holds_a_nerd_font` descends a level.
+        let root = scratch_dir("nerd_nested");
+        let nested = root.join("truetype").join("jetbrains");
+        std::fs::create_dir_all(&nested).expect("nested font dir must be creatable");
+        std::fs::write(nested.join("JetBrainsMonoNerdFont-Regular.ttf"), "x").expect("write");
+        assert!(super::dir_holds_a_nerd_font(&root));
+    }
+
+    #[test]
+    fn a_directory_named_like_a_font_is_not_a_font() {
+        // Unzipping a Nerd Font release produces a folder called exactly this. Treating the
+        // name as the answer meant an empty or half-extracted one switched the glyphs on for
+        // someone with no font installed at all — who then sees tofu. A directory is
+        // something to look inside, never an answer.
+        let root = scratch_dir("nerd_dir_named");
+        std::fs::create_dir_all(root.join("Hack Nerd Font Complete")).expect("dir");
+        assert!(
+            !super::dir_holds_a_nerd_font(&root),
+            "an empty directory with a font-like name must not count as an installed font"
+        );
+
+        // ...but its CONTENTS still do, which is the case the descent exists for.
+        std::fs::write(
+            root.join("Hack Nerd Font Complete")
+                .join("HackNerdFont-Regular.ttf"),
+            "x",
+        )
+        .expect("write");
+        assert!(super::dir_holds_a_nerd_font(&root));
+    }
+
+    #[test]
+    fn the_font_search_does_not_descend_without_limit() {
+        // The depth bound is deliberate — this runs at startup against paths that can hold
+        // thousands of files. Three levels down must NOT be found.
+        let root = scratch_dir("nerd_too_deep");
+        let deep = root.join("a").join("b").join("c");
+        std::fs::create_dir_all(&deep).expect("deep dir must be creatable");
+        std::fs::write(deep.join("Hack Nerd Font Complete.ttf"), "x").expect("write");
+        assert!(!super::dir_holds_a_nerd_font(&root));
+    }
+
+    #[test]
+    fn a_missing_font_directory_is_not_an_error() {
+        // The normal case on a machine with no user fonts at all.
+        assert!(!super::dir_holds_a_nerd_font(Path::new(
+            "/definitely/not/a/font/dir"
+        )));
+    }
+
+    #[test]
+    fn an_ordinary_font_directory_does_not_claim_a_nerd_font() {
+        let root = scratch_dir("nerd_plain");
+        std::fs::create_dir_all(&root).expect("dir");
+        std::fs::write(root.join("Menlo.ttc"), "x").expect("write");
+        assert!(!super::dir_holds_a_nerd_font(&root));
+    }
+
     use super::*;
 
     #[test]

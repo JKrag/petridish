@@ -127,19 +127,87 @@ const ALLOWED: &[(char, &str)] = &[
     ('\u{270E}', "uncommitted-files marker"),
 ];
 
+/// Glyphs that are only ever drawn when the user has opted in via `prefs::NerdFonts`
+/// (issue #38).
+///
+/// **These are held to a deliberately weaker standard than `ALLOWED`, and the difference is
+/// the point.** A glyph in `ALLOWED` must render for everyone; these are Private Use Area
+/// code points with no meaning outside a patched font, and for a user without one they will
+/// render as a tofu box. That is acceptable *only* because nothing draws them unless the
+/// user asked for them, and because the information they decorate — the `!N ?N` counts and
+/// the row itself — is identical in both modes. A glyph that carried meaning found nowhere
+/// else on screen would not belong here.
+///
+/// The width rule still applies in full, and is enforced below: a two-cell glyph would
+/// misalign every column after it whatever the font situation.
+const ALLOWED_OPT_IN: &[(char, &str)] = &[
+    (
+        '\u{E0A0}',
+        "Powerline branch symbol — the git segment's marker for a repo with no known host",
+    ),
+    (
+        '\u{F09B}',
+        "Font Awesome github mark — the git segment's marker for a github.com remote",
+    ),
+    (
+        '\u{F114}',
+        "Font Awesome open folder — the git segment's marker for a non-repo project",
+    ),
+];
+
 fn production_code(path: &Path) -> String {
     let text = fs::read_to_string(path).expect("render module must be readable");
     let text = match text.find("#[cfg(test)]") {
         Some(idx) => &text[..idx],
         None => &text[..],
     };
-    text.lines()
+    let stripped = text
+        .lines()
         .map(|line| match line.find("//") {
             Some(idx) => &line[..idx],
             None => line,
         })
         .collect::<Vec<_>>()
-        .join("\n")
+        .join("\n");
+    decode_unicode_escapes(&stripped)
+}
+
+/// Rewrite every `\u{XXXX}` escape as the character it denotes, so the scan sees what
+/// reaches the *screen* rather than what appears in the file.
+///
+/// Without this the gate is trivially — and silently — bypassable: `"\u{e0a0}"` is pure
+/// ASCII as far as `char::is_ascii` is concerned, so a module could put any glyph on screen
+/// and pass. That was not hypothetical; `focus.rs` has always written its `\u{270E}` this
+/// way (harmlessly, since that character is allowlisted), so the hole was both real and
+/// already in use when this was added. The escaped spelling is also the *more* likely one
+/// for exactly the glyphs that need review hardest — a PUA code point has no readable
+/// literal form to paste.
+fn decode_unicode_escapes(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    let mut rest = text;
+    while let Some(idx) = rest.find("\\u{") {
+        out.push_str(&rest[..idx]);
+        let after = &rest[idx + 3..];
+        match after.find('}') {
+            Some(end) => {
+                match u32::from_str_radix(&after[..end], 16)
+                    .ok()
+                    .and_then(char::from_u32)
+                {
+                    Some(ch) => out.push(ch),
+                    // Not a valid escape after all — keep the text so nothing is hidden.
+                    None => out.push_str(&rest[idx..idx + 3 + end + 1]),
+                }
+                rest = &after[end + 1..];
+            }
+            None => {
+                out.push_str(&rest[idx..]);
+                return out;
+            }
+        }
+    }
+    out.push_str(rest);
+    out
 }
 
 #[test]
@@ -152,7 +220,10 @@ fn render_modules_use_only_allowlisted_characters() {
         let code = production_code(&path);
         for (lineno, line) in code.lines().enumerate() {
             for ch in line.chars() {
-                if !ch.is_ascii() && !ALLOWED.iter().any(|(c, _)| *c == ch) {
+                if !ch.is_ascii()
+                    && !ALLOWED.iter().any(|(c, _)| *c == ch)
+                    && !ALLOWED_OPT_IN.iter().any(|(c, _)| *c == ch)
+                {
                     offenders.push(format!("{name}:{} U+{:04X} {ch:?}", lineno + 1, ch as u32));
                 }
             }
@@ -168,6 +239,41 @@ fn render_modules_use_only_allowlisted_characters() {
          it), add it to ALLOWED with a reason. Otherwise pick an \
          already-allowed equivalent.",
         offenders.join("\n  ")
+    );
+}
+
+#[test]
+fn opt_in_entries_are_private_use_and_single_narrow_cells() {
+    for (ch, why) in ALLOWED_OPT_IN {
+        assert_eq!(
+            ch.width(),
+            Some(1),
+            "{ch:?} ({why}) must be a single narrow cell — the opt-in list relaxes the \
+             *portability* rule, never the width one",
+        );
+        let cp = *ch as u32;
+        assert!(
+            (0xE000..=0xF8FF).contains(&cp),
+            "{ch:?} ({why}) is U+{cp:04X}, outside the Private Use Area. A glyph with a \
+             real Unicode identity does not belong on the opt-in list — if everyone's \
+             terminal can draw it, it belongs in ALLOWED where it renders for everyone."
+        );
+    }
+}
+
+#[test]
+fn the_scan_sees_through_unicode_escapes() {
+    // The gate reads source text, so a glyph written as `\u{...}` is ASCII in the file.
+    // Without decoding, any character at all could be drawn from a render module.
+    let decoded = decode_unicode_escapes(r#"let x = "\u{2500}"; let y = "plain";"#);
+    assert!(decoded.contains('\u{2500}'), "got {decoded:?}");
+    assert!(
+        decode_unicode_escapes(r#"no escapes here"#).contains("no escapes"),
+        "text without escapes must survive unchanged"
+    );
+    assert!(
+        decode_unicode_escapes(r#"unterminated \u{25"#).contains(r#"\u{25"#),
+        "a malformed escape must be kept verbatim rather than swallowed"
     );
 }
 

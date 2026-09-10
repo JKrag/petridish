@@ -4,7 +4,7 @@
 
 use crate::theme;
 use petridish_core::present;
-use petridish_core::schema::{AgentActivity, Project, Radar, StatusBucket};
+use petridish_core::schema::{AgentActivity, GitState, Project, Radar, StatusBucket};
 use ratatui::{
     Frame,
     layout::{Constraint, Layout, Rect},
@@ -14,6 +14,23 @@ use ratatui::{
 };
 
 use std::time::{SystemTime, UNIX_EPOCH};
+
+/// Nerd Font glyphs for the git segment, drawn only when `nerd` is true.
+///
+/// **These are Private Use Area code points and will render as a tofu box for anyone
+/// without a Nerd Font**, which is exactly why they sit behind `prefs::NerdFonts` and why
+/// `glyph_portability.rs` carries them in a separate, opt-in allowlist rather than the main
+/// one. Every glyph below is still held to that gate's width rule — one narrow cell — since
+/// a two-cell glyph would corrupt the row's layout regardless of the font question.
+///
+/// Chosen for stability across Nerd Font versions: `U+E0A0` is the original Powerline
+/// branch symbol and `U+F09B` is Font Awesome's github mark, both of which have survived
+/// every renumbering the project has done (v3 moved large parts of the Octicons range,
+/// which is why the more obvious `nf-oct-mark_github` is not used here).
+const NERD_BRANCH: &str = "\u{e0a0}";
+const NERD_GITHUB: &str = "\u{f09b}";
+/// `nf-fa-folder_o` — a plain directory, for a project that is not a repository.
+const NERD_NOT_A_REPO: &str = "\u{f114}";
 
 /// Section order (petri/SPEC.md §3.1): "Grouped list, sections in the fixed
 /// order active, in_flight, stale, cold". The Browser DOES render headers
@@ -297,7 +314,7 @@ fn below_detail_height(main: Rect) -> u16 {
 ///   reflowed below the list instead of losing it outright.
 /// - Must not panic on an empty `state.visible` (renders a "nothing
 ///   selected" state per petri/SPEC.md §3.1) or a degenerate 0×0/1×1 area.
-pub fn render(frame: &mut Frame, radar: &Radar, state: &BrowserState) {
+pub fn render(frame: &mut Frame, radar: &Radar, state: &BrowserState, nerd: bool) {
     let area = frame.area();
     if area.width == 0 || area.height == 0 {
         return;
@@ -434,7 +451,10 @@ pub fn render(frame: &mut Frame, radar: &Radar, state: &BrowserState) {
     // `state.selected` regardless of scroll, kept showing those still
     // off-screen rows' details — before `compute_scroll_offset` finally
     // caught up and scrolled the list.
-    let (list_lines, selected_line) = render_list_lines(radar, state);
+    // The INNER width: the bordered block spends one column on each side, and a row laid
+    // out to the outer width would wrap.
+    let inner_width = list_area.width.saturating_sub(2) as usize;
+    let (list_lines, selected_line) = render_list_lines(radar, state, nerd, inner_width);
     let visible_rows = list_content_rows(list_area.height); // top + bottom border consumed
     let scroll_offset = compute_scroll_offset(selected_line, list_lines.len(), visible_rows);
 
@@ -647,7 +667,12 @@ fn truncate_query(query: &str, budget: usize, keep_tail: bool) -> String {
 /// nothing is selected) — the caller needs the real line position, not
 /// `state.selected` (which only counts project rows, not the headers/blank
 /// separators interleaved between them), to compute a correct scroll offset.
-fn render_list_lines(radar: &Radar, state: &BrowserState) -> (Vec<Line<'static>>, Option<usize>) {
+fn render_list_lines(
+    radar: &Radar,
+    state: &BrowserState,
+    nerd: bool,
+    avail: usize,
+) -> (Vec<Line<'static>>, Option<usize>) {
     let mut lines = Vec::new();
     let mut selected_line: Option<usize> = None;
 
@@ -660,6 +685,26 @@ fn render_list_lines(radar: &Radar, state: &BrowserState) -> (Vec<Line<'static>>
         )));
         return (lines, None);
     }
+
+    // Measured across every VISIBLE row, not the whole radar: a filtered list should lay
+    // itself out for what it shows, and a project hidden by the filter must not reserve
+    // width for a name nobody can see.
+    let cols = {
+        let mut widest_name = 0usize;
+        let mut widest_git = 0usize;
+        let mut widest_silence = 0usize;
+        for &idx in &state.visible {
+            let Some(p) = radar.projects.get(idx) else {
+                continue;
+            };
+            let name = format!("{}{}", p.name, present::dirty_marker(&p.git).trim_end());
+            widest_name = widest_name.max(crate::width::width(&name));
+            widest_git = widest_git.max(crate::width::width(&git_segment(&p.git, nerd)));
+            widest_silence =
+                widest_silence.max(crate::width::width(&silence_display(p.last_activity_at)));
+        }
+        column_widths(widest_name, widest_git, widest_silence, avail)
+    };
 
     let mut idx_in_visible = 0usize;
 
@@ -709,7 +754,7 @@ fn render_list_lines(radar: &Radar, state: &BrowserState) -> (Vec<Line<'static>>
             if is_selected {
                 selected_line = Some(lines.len());
             }
-            lines.push(render_project_row(radar, proj_idx, is_selected));
+            lines.push(render_project_row(radar, proj_idx, is_selected, nerd, cols));
             idx_in_visible += 1;
         }
 
@@ -722,9 +767,235 @@ fn render_list_lines(radar: &Radar, state: &BrowserState) -> (Vec<Line<'static>>
     (lines, selected_line)
 }
 
-/// Render one project row: glyph (● working / ○ otherwise), name, dirty marker
-/// + uncommitted count, silence age. Selection highlight applied via `is_selected`.
-fn render_project_row(radar: &Radar, proj_idx: usize, is_selected: bool) -> Line<'static> {
+/// The git segment for one row (issue #38): is this a repository at all, and if so what is
+/// uncommitted in it.
+///
+/// **Deliberately carries no branch name.** A branch name is unbounded — `feature/JIRA-1234-
+/// rework-the-thing` is ordinary — and this list is often only ~25 columns wide with the
+/// detail pane beside it, so a branch would either dominate the row or need its own
+/// truncation ladder. The branch is one keypress away in the detail pane and the focus
+/// panel, both of which have the room for it.
+///
+/// `!N` modified, `?N` untracked — the vocabulary of `git status --short`, starship and
+/// lazygit, so it needs no legend for anyone who uses git. Zero counts are omitted rather
+/// than shown as `!0`: a clean repo has nothing to say.
+///
+/// `nerd` swaps the leading marker for a Nerd Font glyph. The counts are identical in both
+/// modes, so the information never depends on the font — only the decoration does.
+pub(crate) fn git_segment(git: &GitState, nerd: bool) -> String {
+    if !git.is_repo {
+        // The non-repo marker is the whole of #38's first ask, so it is a *positive* mark
+        // rather than an empty cell: "not a repo" and "clean repo" must not look alike.
+        return if nerd {
+            NERD_NOT_A_REPO.to_string()
+        } else {
+            "-".to_string()
+        };
+    }
+
+    let modified = git.uncommitted_files.saturating_sub(git.untracked_files);
+    let mut out = String::new();
+
+    if nerd {
+        // The host icon when we know the host, the generic branch glyph otherwise. Same
+        // shape as Kasper's screenshot on #38, which leads with the GitHub mark.
+        out.push_str(if is_github(git) {
+            NERD_GITHUB
+        } else {
+            NERD_BRANCH
+        });
+    }
+
+    if modified > 0 {
+        if !out.is_empty() {
+            out.push(' ');
+        }
+        out.push_str(&format!("!{modified}"));
+    }
+    if git.untracked_files > 0 {
+        if !out.is_empty() {
+            out.push(' ');
+        }
+        out.push_str(&format!("?{}", git.untracked_files));
+    }
+    out
+}
+
+/// Is the remote GitHub?
+///
+/// `swab::git::github_url` already normalises every remote it accepts to
+/// `https://github.com/OWNER/REPO` and returns `None` for anything else, so in practice
+/// `github_url.is_some()` would answer this. The host is checked anyway, and matched on the
+/// *host portion* rather than by searching the string: `petri` reads a state file it did
+/// not write, and this keeps a mirror at `git.example.com/github-backups/x` from borrowing
+/// the mark if that normalisation is ever relaxed. The SSH form is deliberately not handled
+/// — the writer rewrites `git@github.com:` to the https form before it is ever stored.
+fn is_github(git: &GitState) -> bool {
+    git.github_url.as_deref().is_some_and(|url| {
+        url.split_once("://")
+            .map(|(_, rest)| rest)
+            .unwrap_or(url)
+            .split('/')
+            .next()
+            == Some("github.com")
+    })
+}
+
+/// Columns spent before the name: the leading glyph and the spaces around it.
+const ROW_LEADER_COLS: usize = 3;
+/// Blank columns between two adjacent cells.
+const COLUMN_GAP: usize = 2;
+/// The narrowest the name column may be squeezed to before the columns to its right start
+/// giving up width instead. Below this a name is mostly ellipsis and identifies nothing.
+const NAME_COLUMN_MIN: usize = 6;
+
+/// The widest the name column may grow, however long the longest name is.
+///
+/// Without a cap, one outlier name pads *every* row out to its length — and it does not
+/// even have to be on screen, since the column is measured across the whole visible list
+/// while only a screenful is drawn. Observed on real data: a list of `alpha-NN` rows sat
+/// with eleven dead columns before the git cell because of a longer name in a section
+/// further down. 28 columns clears every project name in the author's own fleet
+/// (`devops-academy-handins` is 22), so the cap costs nothing in the common case and
+/// bounds the damage in the uncommon one; anything longer is ellipsised by `fit_exact` and
+/// still readable in the detail pane.
+const NAME_COLUMN_MAX: usize = 28;
+
+/// One render pass's column widths, in display columns — the three data cells plus the
+/// chrome around them.
+///
+/// The chrome is part of this rather than a constant because it has to be able to give way
+/// too: `ROW_LEADER_COLS + COLUMN_GAP * 2` is 7 columns, so a pane narrower than that
+/// cannot be satisfied by zeroing the data cells alone, and `render` really can pass such a
+/// width (`list_area.width.saturating_sub(2)` on a degenerate geometry).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct RowColumns {
+    pub(crate) name: usize,
+    pub(crate) git: usize,
+    pub(crate) silence: usize,
+    /// Columns before the name: the activity glyph and the spaces around it.
+    pub(crate) leader: usize,
+    /// Blank columns between two adjacent cells, twice over.
+    pub(crate) gap: usize,
+}
+
+impl RowColumns {
+    /// Total columns a row built to these widths occupies.
+    pub(crate) fn total(&self) -> usize {
+        self.leader + self.name + self.gap * 2 + self.git + self.silence
+    }
+}
+
+/// Fit the three columns into the pane, shrinking under pressure.
+///
+/// **Every row is laid out to exactly the same total width**, which is what makes the git
+/// and age cells line up down the list instead of floating after names of differing length.
+/// That total must never exceed the pane: the list is drawn by a `Paragraph` with
+/// `Wrap { trim: false }`, so a row one column too wide does not clip — it *wraps*, and a
+/// wrapped row pushes every row below it out of step with the scroll maths, which counts
+/// lines. Hence a shrink ladder rather than a plain max.
+///
+/// The order is deliberate. The name gives way first, because it is the only cell that
+/// degrades gracefully — `petridish-cl…` still identifies a project — down to
+/// `NAME_COLUMN_MIN`. The git segment goes next. The age gives way last: it is the shortest
+/// cell and the one truncation destroys rather than degrades, since the unit is the final
+/// character and `20d ago` cut to `20d` is a different claim.
+pub(crate) fn column_widths(
+    widest_name: usize,
+    widest_git: usize,
+    widest_silence: usize,
+    avail: usize,
+) -> RowColumns {
+    let mut cols = RowColumns {
+        name: widest_name.min(NAME_COLUMN_MAX),
+        git: widest_git,
+        silence: widest_silence,
+        leader: ROW_LEADER_COLS,
+        gap: COLUMN_GAP,
+    };
+    let over = |c: &RowColumns| c.total().saturating_sub(avail);
+
+    // 1. The name, down to the floor — but the floor may never make a column BIGGER. A
+    //    one-character name asked to give up a column must not become six, which is what a
+    //    bare `.max(NAME_COLUMN_MIN)` did: it grew the name and then took the width back
+    //    out of the git and age cells, inverting the whole ladder.
+    let excess = over(&cols);
+    if excess > 0 {
+        let floor = cols.name.min(NAME_COLUMN_MIN);
+        cols.name = cols.name.saturating_sub(excess).max(floor);
+    }
+    // 2. The git cell. Truncation here is honest: `fit_exact` elides with `…`, so a
+    //    shortened `!12 ?3` reads as shortened rather than as a smaller number.
+    let excess = over(&cols);
+    if excess > 0 {
+        cols.git = cols.git.saturating_sub(excess);
+    }
+    // 3. The age, ALL OR NOTHING. This is the one cell truncation makes dishonest rather
+    //    than merely terse: the unit is the final character, so `20d ago` clipped to `20d`
+    //    or `20` is a different claim, not a shorter one. Dropping the cell says "not shown"
+    //    and hands its columns to the name, which is the honest trade.
+    let excess = over(&cols);
+    if excess > 0 {
+        cols.silence = 0;
+    }
+    // 4. The name again, now to zero.
+    let excess = over(&cols);
+    if excess > 0 {
+        cols.name = cols.name.saturating_sub(excess);
+    }
+    // 5. The chrome, last: the gaps and then the leader. A pane this narrow is unusable and
+    //    nothing here improves that — the only remaining requirement is that the row must
+    //    not be WIDER than the pane, because the list wraps rather than clips and a wrapped
+    //    row puts every row below it out of step with the line-counting scroll offset.
+    let excess = over(&cols);
+    if excess > 0 {
+        cols.gap = cols.gap.saturating_sub(excess.div_ceil(2));
+    }
+    let excess = over(&cols);
+    if excess > 0 {
+        cols.leader = cols.leader.saturating_sub(excess);
+    }
+    debug_assert!(
+        cols.total() <= avail,
+        "columns {cols:?} total {} exceed the pane's {avail} — the row will wrap",
+        cols.total()
+    );
+    cols
+}
+
+/// Right-aligned cell, for the age column: the unit is the last character, and a ragged
+/// right edge is what makes a column of ages hard to compare at a glance.
+///
+/// **Never truncates: it shows the whole value or nothing.** `column_widths` sizes this
+/// column all-or-nothing so the common path always fits, and the fallback here is a blank
+/// cell rather than a clipped one, because clipping is the one thing this cell must not do
+/// — `20d ago` cut to `20d` is a different claim, not a shorter one.
+///
+/// The fallback is reachable despite `column_widths`' guarantee, which is why it exists: the
+/// width is measured from `silence_display` and then the cell is rendered from a second call
+/// to it, so a clock tick in between can lengthen the string (`9m ago` -> `10m ago`). A
+/// column one short of its content must still not produce a row one wider than the pane.
+fn cell_right(text: &str, w: usize) -> String {
+    if w == 0 {
+        return String::new();
+    }
+    if crate::width::width(text) > w {
+        return " ".repeat(w);
+    }
+    let pad = w - crate::width::width(text);
+    format!("{}{}", " ".repeat(pad), text)
+}
+
+/// Render one project row: glyph (● working / ○ otherwise), name with its dirty marker,
+/// the git segment, and the silence age — each in the column width `cols` allots it, so the
+/// cells line up down the list. Selection highlight applied via `is_selected`.
+fn render_project_row(
+    radar: &Radar,
+    proj_idx: usize,
+    is_selected: bool,
+    nerd: bool,
+    cols: RowColumns,
+) -> Line<'static> {
     let project = &radar.projects[proj_idx];
 
     let glyph = match project.agent.state {
@@ -732,14 +1003,16 @@ fn render_project_row(radar: &Radar, proj_idx: usize, is_selected: bool) -> Line
         _ => "○",
     };
 
-    let name = &project.name;
-    let dirty_marker = present::dirty_marker(&project.git);
+    // The dirty marker is a suffix on the name, not a column of its own — it is one
+    // character and belongs against the thing it qualifies. `dirty_marker` pads to a space
+    // for a clean repo, which would otherwise widen every name cell by one.
+    let name = format!(
+        "{}{}",
+        project.name,
+        present::dirty_marker(&project.git).trim_end()
+    );
 
-    let uncommitted = if project.git.uncommitted_files > 0 {
-        format!("✎{}", project.git.uncommitted_files)
-    } else {
-        String::from(" ")
-    };
+    let git = git_segment(&project.git, nerd);
 
     let silence = silence_display(project.last_activity_at);
 
@@ -764,11 +1037,22 @@ fn render_project_row(radar: &Radar, proj_idx: usize, is_selected: bool) -> Line
         Style::default().fg(theme::DIM)
     };
 
+    // The leader collapses from the outside in — the glyph is the last thing worth keeping,
+    // so the trailing space goes before the leading one and the glyph before neither.
+    let leader = match cols.leader {
+        0 => String::new(),
+        1 => glyph.to_string(),
+        2 => format!("{glyph} "),
+        n => format!(" {glyph}{}", " ".repeat(n - 2)),
+    };
+    let gap = " ".repeat(cols.gap);
     Line::from(vec![
-        Span::styled(format!(" {} ", glyph), style),
-        Span::styled(format!("{}{}", name, dirty_marker), style),
-        Span::styled(format!("  {}", uncommitted), meta_style),
-        Span::styled(format!(" {}", silence), meta_style),
+        Span::styled(leader, style),
+        Span::styled(crate::width::fit_exact(&name, cols.name), style),
+        Span::styled(gap.clone(), meta_style),
+        Span::styled(crate::width::fit_exact(&git, cols.git), meta_style),
+        Span::styled(gap, meta_style),
+        Span::styled(cell_right(&silence, cols.silence), meta_style),
     ])
 }
 
@@ -1037,6 +1321,266 @@ pub fn render_notice(frame: &mut Frame, text: &str) {
 
 #[cfg(test)]
 mod tests {
+
+    use super::{git_segment, is_github};
+
+    fn repo(uncommitted: u32, untracked: u32, url: Option<&str>) -> GitState {
+        GitState {
+            is_repo: true,
+            branch: Some("main".to_string()),
+            is_dirty: uncommitted > 0,
+            uncommitted_files: uncommitted,
+            untracked_files: untracked,
+            last_commit_at: None,
+            mine_last_commit_at: None,
+            github_url: url.map(str::to_string),
+            daily_commits: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn no_pane_width_can_make_a_row_wrap() {
+        // Sweeps from ZERO, which is the point. The previous version started at 8 — an
+        // unexamined lower bound that happened to sit one column above the failure. The
+        // chrome alone is 7 columns, so below that no amount of zeroing the data cells
+        // could fit, and `render` can pass such a width via `saturating_sub(2)` on a
+        // degenerate geometry. Wrapping is not cosmetic: the list clips nothing and the
+        // scroll offset counts lines, so one wrapped row misaligns every row beneath it.
+        for avail in 0..90 {
+            for (n, g, sil) in [(30, 6, 7), (1, 0, 0), (28, 12, 8), (0, 0, 0)] {
+                let cols = super::column_widths(n, g, sil, avail);
+                assert!(
+                    cols.total() <= avail,
+                    "avail={avail} widest=({n},{g},{sil}) -> {cols:?} totals {}",
+                    cols.total()
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn shrinking_never_makes_a_column_bigger() {
+        // The floor is a floor, not a target. `saturating_sub(excess).max(NAME_COLUMN_MIN)`
+        // grew a one-character name to six and then took the width back out of the git and
+        // age cells — inverting the ladder it was meant to implement.
+        for avail in 0..40 {
+            for widest_name in 0..10 {
+                let cols = super::column_widths(widest_name, 6, 7, avail);
+                assert!(
+                    cols.name <= widest_name,
+                    "avail={avail}: name column grew from {widest_name} to {}",
+                    cols.name
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn the_age_is_shown_whole_or_not_at_all() {
+        // Truncation makes this cell dishonest rather than terse: the unit is the last
+        // character, so `20d ago` clipped to `20d` is a different claim. The column is
+        // all-or-nothing, and `cell_right` blanks rather than clips even when a clock tick
+        // lengthens the value after the width was measured.
+        let widest = crate::width::width("20d ago");
+        for avail in 0..40 {
+            let cols = super::column_widths(10, 2, widest, avail);
+            assert!(
+                cols.silence == 0 || cols.silence >= widest,
+                "avail={avail}: age column {} would clip a {widest}-column value",
+                cols.silence
+            );
+        }
+        assert_eq!(
+            super::cell_right("20d ago", 4),
+            "    ",
+            "blank, never clipped"
+        );
+        assert_eq!(super::cell_right("20d ago", 0), "");
+        assert_eq!(
+            super::cell_right("3m ago", 7),
+            " 3m ago",
+            "right-aligned when it fits"
+        );
+    }
+
+    #[test]
+    fn every_row_is_laid_out_to_the_same_width() {
+        // The alignment property itself, and the safety property behind it: the list is
+        // drawn with `Wrap { trim: false }`, so a row wider than the pane wraps rather than
+        // clips and takes the scroll maths with it.
+        for avail in 8..80 {
+            let cols = super::column_widths(30, 6, 7, avail);
+            let total = super::ROW_LEADER_COLS
+                + cols.name
+                + super::COLUMN_GAP * 2
+                + cols.git
+                + cols.silence;
+            assert!(
+                total <= avail,
+                "columns {cols:?} total {total} exceed the pane's {avail}"
+            );
+        }
+    }
+
+    #[test]
+    fn one_outlier_name_does_not_pad_every_row() {
+        // The cap exists because the column is measured across the whole visible list while
+        // only a screenful is drawn, so an off-screen name could widen every row on screen.
+        let cols = super::column_widths(120, 6, 7, 200);
+        assert_eq!(cols.name, super::NAME_COLUMN_MAX);
+    }
+
+    #[test]
+    fn a_roomy_pane_gives_every_column_what_it_asked_for() {
+        let cols = super::column_widths(20, 6, 7, 100);
+        assert_eq!(
+            cols,
+            super::RowColumns {
+                name: 20,
+                git: 6,
+                silence: 7,
+                leader: super::ROW_LEADER_COLS,
+                gap: super::COLUMN_GAP,
+            }
+        );
+    }
+
+    #[test]
+    fn the_name_gives_up_width_before_the_other_columns_do() {
+        // Order matters: the name is the only cell that degrades gracefully, and the age is
+        // the one truncation destroys outright ("20d ago" -> "20d" is a different claim).
+        let cols = super::column_widths(28, 6, 7, 40);
+        assert!(cols.name < 28, "the name must have been squeezed");
+        assert_eq!(
+            cols.git, 6,
+            "git keeps its width while the name can still give"
+        );
+        assert_eq!(cols.silence, 7, "and the age is untouched");
+    }
+
+    #[test]
+    fn a_pane_too_narrow_for_the_floor_still_fits() {
+        // Below `NAME_COLUMN_MIN` everything gives way in turn rather than overflowing.
+        let cols = super::column_widths(30, 6, 7, 12);
+        assert!(
+            cols.total() <= 12,
+            "got {cols:?} totalling {}",
+            cols.total()
+        );
+    }
+
+    #[test]
+    fn the_git_and_age_cells_start_at_the_same_column_on_every_row() {
+        // The end-to-end version of the property: render real rows whose names differ in
+        // length and assert the columns line up in the buffer.
+        let mut short = project("s", "short", StatusBucket::Active);
+        short.git = repo(1, 0, None);
+        let mut long = project("l", "a-much-longer-project-name", StatusBucket::Active);
+        long.git = repo(2, 0, None);
+        let radar = radar_of(vec![short, long]);
+        let state = BrowserState::new(&radar);
+        let (lines, _) = super::render_list_lines(&radar, &state, false, 60);
+
+        let rows: Vec<String> = lines
+            .iter()
+            .map(|l| {
+                l.spans
+                    .iter()
+                    .map(|s| s.content.as_ref())
+                    .collect::<String>()
+            })
+            .filter(|t| t.contains("short") || t.contains("a-much-longer-project-name"))
+            .collect();
+        assert_eq!(rows.len(), 2, "expected both project rows, got {rows:?}");
+
+        let marker_col = |row: &str, needle: &str| -> usize {
+            crate::width::width(&row[..row.find(needle).expect("cell must be present")])
+        };
+        assert_eq!(
+            marker_col(&rows[0], "!1"),
+            marker_col(&rows[1], "!2"),
+            "git cells must start at the same column:\n{}\n{}",
+            rows[0],
+            rows[1]
+        );
+        assert_eq!(
+            crate::width::width(&rows[0]),
+            crate::width::width(&rows[1]),
+            "rows must be equally wide"
+        );
+    }
+
+    #[test]
+    fn a_non_repo_is_marked_positively_not_by_an_empty_cell() {
+        // Issue #38's first ask. "Not a repo" and "clean repo" must not look alike, which
+        // rules out simply leaving the cell blank for one of them.
+        let plain = git_segment(&GitState::not_a_repo(), false);
+        let clean = git_segment(&repo(0, 0, None), false);
+        assert_eq!(plain, "-");
+        assert_ne!(plain, clean, "the two states must be distinguishable");
+    }
+
+    #[test]
+    fn a_clean_repo_says_nothing() {
+        assert_eq!(git_segment(&repo(0, 0, None), false), "");
+    }
+
+    #[test]
+    fn modified_and_untracked_are_counted_apart() {
+        // 3 total of which 2 untracked -> 1 modified. The subtraction is the whole reason
+        // `untracked_files` is stored as a subset rather than a second total.
+        assert_eq!(git_segment(&repo(3, 2, None), false), "!1 ?2");
+    }
+
+    #[test]
+    fn a_zero_count_is_omitted_rather_than_shown_as_zero() {
+        assert_eq!(git_segment(&repo(2, 0, None), false), "!2");
+        assert_eq!(git_segment(&repo(2, 2, None), false), "?2");
+    }
+
+    #[test]
+    fn the_counts_do_not_depend_on_the_font() {
+        // The decoration changes with `nerd`; the information must not.
+        let git = repo(3, 2, None);
+        let ascii = git_segment(&git, false);
+        let nerd = git_segment(&git, true);
+        assert!(nerd.contains("!1") && nerd.contains("?2"), "got {nerd:?}");
+        assert!(
+            ascii.contains("!1") && ascii.contains("?2"),
+            "got {ascii:?}"
+        );
+        assert!(!nerd.is_ascii(), "nerd mode should add a glyph: {nerd:?}");
+        assert!(ascii.is_ascii(), "ascii mode must stay ascii: {ascii:?}");
+    }
+
+    #[test]
+    fn the_host_mark_is_used_only_for_a_real_github_remote() {
+        let gh = git_segment(
+            &repo(1, 0, Some("https://github.com/JKrag/petridish")),
+            true,
+        );
+        let other = git_segment(&repo(1, 0, Some("https://gitlab.com/x/y")), true);
+        assert_ne!(gh, other, "a non-github remote must not borrow the mark");
+
+        assert!(is_github(&repo(0, 0, Some("https://github.com/a/b"))));
+        assert!(!is_github(&repo(0, 0, None)));
+        // The SSH form is not asserted as supported on purpose: `swab::git::github_url`
+        // rewrites `git@github.com:a/b.git` to the https form before storing it, so that
+        // shape never reaches `petri` and pretending to handle it would be untested code
+        // pinned by an untrue test.
+        assert!(
+            !is_github(&repo(
+                0,
+                0,
+                Some("https://git.example.com/github-backups/x")
+            )),
+            "matched on the host, not on the string containing `github` anywhere"
+        );
+        assert!(
+            !is_github(&repo(0, 0, Some("https://notgithub.com/a/b"))),
+            "a host that merely ends in the same letters is a different host"
+        );
+    }
     use super::*;
     use petridish_core::schema::{AgentState, GitState};
 
@@ -1085,7 +1629,7 @@ mod tests {
 
         // Line 0 is the "RUNNING [3]" header, so the first project row (the
         // default selection) must be line 1, not line 0.
-        let (_, selected_line) = render_list_lines(&radar, &state);
+        let (_, selected_line) = render_list_lines(&radar, &state, false, 60);
         assert_eq!(
             selected_line,
             Some(1),
@@ -1093,7 +1637,7 @@ mod tests {
         );
 
         state.move_selection(1);
-        let (_, selected_line) = render_list_lines(&radar, &state);
+        let (_, selected_line) = render_list_lines(&radar, &state, false, 60);
         assert_eq!(
             selected_line,
             Some(2),
@@ -1101,7 +1645,7 @@ mod tests {
         );
 
         state.move_selection(1);
-        let (_, selected_line) = render_list_lines(&radar, &state);
+        let (_, selected_line) = render_list_lines(&radar, &state, false, 60);
         assert_eq!(selected_line, Some(3));
     }
 
@@ -1136,7 +1680,7 @@ mod tests {
             state.move_selection(1);
         }
 
-        let (list_lines, selected_line) = render_list_lines(&radar, &state);
+        let (list_lines, selected_line) = render_list_lines(&radar, &state, false, 60);
         let visible_rows = 5usize;
         let scroll_offset = compute_scroll_offset(selected_line, list_lines.len(), visible_rows);
 
@@ -1193,7 +1737,7 @@ mod tests {
         let backend = TestBackend::new(width, height);
         let mut terminal = Terminal::new(backend).expect("TestBackend terminal must construct");
         terminal
-            .draw(|frame| render(frame, &radar, &state))
+            .draw(|frame| render(frame, &radar, &state, false))
             .expect("draw must not error");
         let buffer = terminal.backend().buffer();
         let whole: String = (0..height)
@@ -1281,7 +1825,7 @@ mod tests {
         // scrolling happened at all.
         for _ in 0..2 {
             state.move_selection(1);
-            let (list_lines, selected_line) = render_list_lines(&radar, &state);
+            let (list_lines, selected_line) = render_list_lines(&radar, &state, false, 60);
             let scroll_offset =
                 compute_scroll_offset(selected_line, list_lines.len(), visible_rows);
             assert_eq!(

@@ -851,9 +851,15 @@ fn actions_lines(
         let Some(tool) = tool_status(&action, configured) else {
             continue; // Resolution::NoTool — omitted entirely.
         };
-        let affordance = if action.target == crate::tools::Target::Url && p.git.github_url.is_none()
-        {
-            Affordance::NoTarget { why: "no url" }
+        let facts = crate::tools::Facts {
+            path: &p.path,
+            url: p.git.github_url.as_deref(),
+            is_repo: p.git.is_repo,
+        };
+        let affordance = if action.target.missing(&facts) {
+            Affordance::NoTarget {
+                why: action.target.short_reason(),
+            }
         } else {
             match tool {
                 ToolStatus::Ready(program) => Affordance::Live { tool: program },
@@ -1016,6 +1022,7 @@ fn tool_status(action: &crate::tools::Action, configured: Option<&str>) -> Optio
     let facts = crate::tools::Facts {
         path: "/",
         url: Some("https://example.invalid"),
+        is_repo: true,
     };
     let status = match crate::tools::resolve(action, &facts, configured, &|probe| {
         crate::exec::is_installed_probe(probe)

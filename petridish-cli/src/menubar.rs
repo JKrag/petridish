@@ -176,6 +176,7 @@ mod tests {
                 branch: Some("main".into()),
                 is_dirty: false,
                 uncommitted_files: 0,
+                untracked_files: 0,
                 last_commit_at: ts("2026-09-01T10:00:00Z"),
                 mine_last_commit_at: ts("2026-09-01T10:00:00Z"),
                 github_url: None,

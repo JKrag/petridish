@@ -135,7 +135,18 @@ pub struct GitState {
     pub is_repo: bool,
     pub branch: Option<String>,
     pub is_dirty: bool,
+    /// Every entry `git status --porcelain` would print: modified, staged, renamed *and*
+    /// untracked. Unchanged in meaning since before `untracked_files` existed.
     pub uncommitted_files: u32,
+    /// How many of `uncommitted_files` are files git has never seen (`??`). The modified
+    /// count is the difference between the two, which is why this is stored as the subset
+    /// rather than as a second independent total — the two can never disagree about
+    /// `is_dirty`.
+    ///
+    /// `#[serde(default)]` so a `projects.json` written before the field existed still
+    /// deserializes, same as `daily_commits`.
+    #[serde(default)]
+    pub untracked_files: u32,
     #[serde(with = "iso_second_opt")]
     pub last_commit_at: Option<DateTime<Utc>>,
     #[serde(with = "iso_second_opt")]
@@ -157,6 +168,7 @@ impl GitState {
             branch: None,
             is_dirty: false,
             uncommitted_files: 0,
+            untracked_files: 0,
             last_commit_at: None,
             mine_last_commit_at: None,
             github_url: None,

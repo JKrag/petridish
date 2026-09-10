@@ -29,6 +29,7 @@ fn project(id: &str, bucket: StatusBucket) -> Project {
             is_repo: true,
             branch: Some("master".to_string()),
             uncommitted_files: 3,
+            untracked_files: 0,
             last_commit_at: Some(chrono::Utc::now() - chrono::Duration::hours(2)),
             mine_last_commit_at: Some(chrono::Utc::now() - chrono::Duration::days(4)),
             github_url: Some("https://github.com/JKrag/petridish".to_string()),

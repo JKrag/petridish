@@ -43,6 +43,53 @@ pub enum Target {
     Path,
     /// Needs the project's `github_url`; unavailable when that is `None`.
     Url,
+    /// Needs the project to actually be a git repository (issue #38). Discovery
+    /// admits a directory on a manifest file alone (`discovery::is_project`
+    /// checks `.git` *or* e.g. `package.json`), so a non-repo project is a
+    /// first-class, legitimate member of the fleet — not an error state — and
+    /// `g` has nothing to show for one. Before this existed the action resolved
+    /// `Ready`, launched, and git exited immediately: the screen flashed and
+    /// came straight back, which is what #38 reported.
+    GitRepo,
+}
+
+impl Target {
+    /// Does this project lack what the action needs (`ACT-9`'s per-project axis)?
+    ///
+    /// One predicate, because three callers ask the same question and must not
+    /// drift apart: [`resolve`]'s rule 1, [`repick_candidates`]' identical guard,
+    /// and the focus panel's ACTIONS rung, which asks the target half per frame
+    /// while caching the machine half.
+    pub fn missing(self, facts: &Facts) -> bool {
+        match self {
+            Target::Path => false,
+            Target::Url => facts.url.is_none(),
+            Target::GitRepo => !facts.is_repo,
+        }
+    }
+
+    /// Two words for the panel's dimmed entry, e.g. `o remote ─ no url`.
+    ///
+    /// `Path` can never be missing, so its text is unreachable rather than
+    /// meaningful; it is spelled as a neutral fallback instead of a panic
+    /// because this is called from a render path.
+    pub fn short_reason(self) -> &'static str {
+        match self {
+            Target::Path => "unavailable",
+            Target::Url => "no url",
+            Target::GitRepo => "not a repo",
+        }
+    }
+
+    /// The sentence fragment that follows the project's name in the status
+    /// notice, e.g. `thing has no remote`.
+    pub fn notice(self) -> &'static str {
+        match self {
+            Target::Path => "has nothing to act on",
+            Target::Url => "has no remote",
+            Target::GitRepo => "is not a git repository",
+        }
+    }
 }
 
 /// One concrete program that can satisfy an action.
@@ -134,6 +181,9 @@ pub struct Action {
 pub struct Facts<'a> {
     pub path: &'a str,
     pub url: Option<&'a str>,
+    /// Whether the project is a git repository — `Project::git.is_repo`, which
+    /// the scanner already answers for every project. Gates [`Target::GitRepo`].
+    pub is_repo: bool,
 }
 
 /// A fully-resolved, ready-to-run invocation. Placeholders are already
@@ -249,7 +299,7 @@ pub fn registry() -> Vec<Action> {
             id: "gitlog",
             key: 'g',
             label: "git history",
-            target: Target::Path,
+            target: Target::GitRepo,
             candidates: vec![
                 // serie and tig take the repo from the working directory,
                 // which the launcher sets to the project path.
@@ -365,10 +415,11 @@ pub fn resolve(
     configured: Option<&str>,
     installed: &dyn Fn(&str) -> bool,
 ) -> Resolution {
-    // Rule 1: a URL action with no remote has nothing to act on. This is a
-    // per-project fact and beats every per-machine question, so it is checked
-    // before tools and before the stored answer.
-    if action.target == Target::Url && facts.url.is_none() {
+    // Rule 1: an action whose target this project cannot supply has nothing to
+    // act on — no remote for `o`, no repository for `g`. This is a per-project
+    // fact and beats every per-machine question, so it is checked before tools
+    // and before the stored answer.
+    if action.target.missing(facts) {
         return Resolution::NoTarget;
     }
 
@@ -440,13 +491,17 @@ fn build_launch(candidate: &Candidate, facts: &Facts) -> Launch {
 }
 
 /// The single argument handed to an unknown program in rule 2: the project's
-/// path for a [`Target::Path`] action, its remote URL for a [`Target::Url`]
-/// one. Rule 1 has already ruled out a URL action with no remote, so the URL
-/// branch is always reachable here.
+/// path for a [`Target::Path`] or [`Target::GitRepo`] action, its remote URL
+/// for a [`Target::Url`] one. Rule 1 has already ruled out a URL action with no
+/// remote, so the URL branch is always reachable here.
+///
+/// `GitRepo` hands over the path, not something git-shaped: what distinguishes
+/// it from `Path` is the *precondition* (rule 1 rejects a non-repo), not the
+/// argument. Every git TUI in the registry takes a directory.
 fn action_target<'a>(target: Target, facts: &'a Facts<'a>) -> &'a str {
     match target {
         Target::Url => facts.url.unwrap_or(""),
-        Target::Path => facts.path,
+        Target::Path | Target::GitRepo => facts.path,
     }
 }
 
@@ -501,10 +556,10 @@ pub fn repick_candidates(
     facts: &Facts,
     installed: &dyn Fn(&str) -> bool,
 ) -> Option<Vec<Candidate>> {
-    // Same per-project guard as `resolve`'s rule 1: a URL action with no remote
-    // has nothing to open, so there is no re-pick to offer. The caller turns
-    // that `None` into the existing "has no remote" notice.
-    if action.target == Target::Url && facts.url.is_none() {
+    // Same per-project guard as `resolve`'s rule 1: an action this project has no
+    // target for has no re-pick to offer either. The caller turns that `None`
+    // into the notice `Target::notice` spells.
+    if action.target.missing(facts) {
         return None;
     }
 

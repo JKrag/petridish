@@ -30,6 +30,33 @@ pub enum LastScreen {
     Browser,
 }
 
+/// Whether to draw the Browser's git segment with Nerd Font glyphs (issue #38).
+///
+/// **There is no way to ask a terminal what font it is using.** No escape sequence reports
+/// it, and the obvious probe — print a glyph, query the cursor column — cannot tell success
+/// from failure either: a missing Private-Use-Area glyph renders as a tofu box that still
+/// occupies exactly one cell, so the measurement comes back identical either way. That is
+/// why starship, lazygit and k9s all make this explicit configuration.
+///
+/// `Auto` is therefore a *heuristic*, and an honest one only because of font fallback: both
+/// macOS (CoreText) and Linux (fontconfig) will render a glyph from some other installed
+/// font when the terminal's own font lacks it. So "is a Nerd Font installed anywhere on this
+/// machine" predicts "will this glyph appear" well enough to default to, and is overridable
+/// in both directions for the cases where it guesses wrong — a remote tmux session being the
+/// obvious one, where the fonts that matter are on the *other* machine.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "lowercase")]
+#[derive(Default)]
+pub enum NerdFonts {
+    /// Use them if a Nerd Font appears to be installed. The default.
+    #[default]
+    Auto,
+    /// Always use them, whatever the probe says.
+    Always,
+    /// Never use them; the ASCII segment at every width.
+    Never,
+}
+
 /// The persisted preferences shape. `#[serde(default)]` on every field so a
 /// prefs file written by an older `petri` (schema drift) still parses.
 ///
@@ -47,10 +74,29 @@ pub struct Prefs {
     pub last_screen: LastScreen,
     #[serde(default = "default_collapsed")]
     pub collapsed: CollapsedState,
+    /// Nerd Font glyphs in the Browser's git segment. See [`NerdFonts`] for why this
+    /// cannot simply be detected.
+    #[serde(default)]
+    pub nerd_fonts: NerdFonts,
     /// The external program chosen for each action id (e.g. `"gitlog"` ->
     /// `"serie"`). Absent from an older prefs file, so `#[serde(default)]`.
     #[serde(default)]
     pub tools: std::collections::BTreeMap<String, String>,
+}
+
+impl Prefs {
+    /// Resolve [`NerdFonts`] against the machine.
+    ///
+    /// `probe` is injected rather than called directly so this stays pure and the two
+    /// non-`Auto` arms can be tested without touching a filesystem — and so a test can pin
+    /// either answer for `Auto`. `exec::nerd_font_installed` is the production probe.
+    pub fn use_nerd_fonts(&self, probe: &dyn Fn() -> bool) -> bool {
+        match self.nerd_fonts {
+            NerdFonts::Always => true,
+            NerdFonts::Never => false,
+            NerdFonts::Auto => probe(),
+        }
+    }
 }
 
 fn default_collapsed() -> CollapsedState {
@@ -62,6 +108,7 @@ impl Default for Prefs {
         Prefs {
             last_screen: LastScreen::default(),
             collapsed: default_collapsed(),
+            nerd_fonts: NerdFonts::default(),
             tools: std::collections::BTreeMap::new(),
         }
     }
@@ -151,6 +198,61 @@ pub fn save(path: &Path, prefs: &Prefs) -> std::io::Result<()> {
 
 #[cfg(test)]
 mod tests {
+    use super::{LastScreen, NerdFonts, Prefs};
+
+    #[test]
+    fn nerd_fonts_always_and_never_ignore_the_probe() {
+        // The override has to beat the heuristic in BOTH directions — a remote tmux session
+        // is the case that motivates it, where the fonts that matter are on another machine
+        // entirely and the local probe is answering the wrong question.
+        let always = Prefs {
+            nerd_fonts: NerdFonts::Always,
+            ..Prefs::default()
+        };
+        assert!(
+            always.use_nerd_fonts(&|| false),
+            "Always beats a false probe"
+        );
+
+        let never = Prefs {
+            nerd_fonts: NerdFonts::Never,
+            ..Prefs::default()
+        };
+        assert!(!never.use_nerd_fonts(&|| true), "Never beats a true probe");
+    }
+
+    #[test]
+    fn nerd_fonts_auto_follows_the_probe() {
+        let prefs = Prefs::default();
+        assert_eq!(prefs.nerd_fonts, NerdFonts::Auto, "Auto is the default");
+        assert!(prefs.use_nerd_fonts(&|| true));
+        assert!(!prefs.use_nerd_fonts(&|| false));
+    }
+
+    #[test]
+    fn a_prefs_file_without_nerd_fonts_still_parses() {
+        // Schema drift: every field is `#[serde(default)]` precisely so an older file keeps
+        // working, and this is the newest field.
+        let older = r#"
+            last_screen = "browser"
+            collapsed = [false, false, true, true]
+        "#;
+        let prefs: Prefs = toml::from_str(older).expect("older prefs file must parse");
+        assert_eq!(prefs.nerd_fonts, NerdFonts::Auto);
+        assert_eq!(prefs.last_screen, LastScreen::Browser);
+    }
+
+    #[test]
+    fn nerd_fonts_round_trips_through_toml() {
+        let prefs = Prefs {
+            nerd_fonts: NerdFonts::Never,
+            ..Prefs::default()
+        };
+        let text = toml::to_string(&prefs).expect("must serialise");
+        let back: Prefs = toml::from_str(&text).expect("must parse back");
+        assert_eq!(back.nerd_fonts, NerdFonts::Never, "wrote: {text}");
+    }
+
     // Pure-state contract tests live in `petri/tests/s7_prefs.rs` (the
     // orchestrator-authored acceptance gate) — nothing here yet.
 }
