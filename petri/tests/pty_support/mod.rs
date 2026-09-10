@@ -12,11 +12,14 @@
 //! to call it. Without this, a green `-D warnings` build would demand deleting
 //! helpers that are demonstrably in use.
 //!
-//! The one genuinely uncalled item today is `spawn_and_settle_nonempty` (the
-//! ambient-`$HOME` variant). It is kept as the documented counterpart to
-//! `spawn_and_settle_nonempty_with_home`, which `s6_pty.rs`'s module docs
-//! explicitly contrast against when explaining why they use the scratch-`HOME`
-//! form.
+//! `spawn_and_settle_nonempty` and its `_with_home` variant used to live here and are
+//! deliberately GONE rather than deprecated. Their contract was "re-spawn while the output
+//! is empty", and that contract is itself the bug: petri's first write need not be a frame
+//! — S7's "preferences file missing, using defaults" warning goes to stderr before the
+//! alternate screen is entered — so the output goes non-empty, the retry loop declares
+//! success, and the caller asserts against a warning line. Every test that used them was
+//! flaky for exactly that reason. Use `screen_until` and name the frame you are waiting
+//! for; there is no case left where "any bytes at all" is the right condition.
 #![allow(dead_code)]
 
 //! Extracted from S4's `s4_pty.rs` once S5 needed the identical harness — see
@@ -52,65 +55,6 @@ pub fn petri_bin() -> PathBuf {
     // alongside the test binary; CARGO_BIN_EXE_<name> is cargo's own supported
     // way to locate a sibling binary from an integration test.
     PathBuf::from(env!("CARGO_BIN_EXE_petri"))
-}
-
-/// Repeatedly (re)spawn+settle up to `attempts` times, returning the first
-/// non-empty settled output (and the `Session` that produced it, still
-/// alive, for further interaction). Mitigates the empty-first-settle PTY
-/// race documented in this module's doc comment (bug 2's fix narrows it but
-/// doesn't fully close it) — S4's and S5's PTY tests each independently
-/// reinvented this same bounded-retry loop before it was pulled up here for
-/// S6 to reuse. Returns the LAST (possibly still empty) output if every
-/// attempt comes back empty, so a genuine regression fails loudly rather
-/// than silently passing.
-pub fn spawn_and_settle_nonempty(
-    state_path: &std::path::Path,
-    cols: u16,
-    rows: u16,
-    timeout: Duration,
-    quiet_for: Duration,
-    attempts: u32,
-) -> (Session, String) {
-    let mut session = Session::spawn(state_path, cols, rows);
-    let mut output = session.settle(timeout, quiet_for);
-    let mut attempt = 1;
-    while output.is_empty() && attempt < attempts {
-        attempt += 1;
-        eprintln!("attempt {attempt}/{attempts}: empty output (suspected PTY race), retrying");
-        session = Session::spawn(state_path, cols, rows);
-        output = session.settle(timeout, quiet_for);
-    }
-    (session, output)
-}
-
-/// Like `spawn_and_settle_nonempty`, but overrides `HOME` for the child
-/// process (via `Session::spawn_with_home`) — needed for any test whose
-/// assertions depend on `petri`'s startup behavior being independent of
-/// whatever real `~/.petridish/petri.toml` happens to exist on the machine
-/// running the tests (petri/SPEC.md §6, S7). Bare `spawn_and_settle_nonempty`
-/// inherits the ambient `$HOME`, which silently broke the S6 PTY gate's
-/// "Dashboard is the default landing screen" assumption once S7 added real
-/// prefs persistence and a stray `last_screen = "browser"` ended up in a
-/// developer's real prefs file from unrelated manual testing.
-pub fn spawn_and_settle_nonempty_with_home(
-    state_path: &std::path::Path,
-    cols: u16,
-    rows: u16,
-    home: &std::path::Path,
-    timeout: Duration,
-    quiet_for: Duration,
-    attempts: u32,
-) -> (Session, String) {
-    let mut session = Session::spawn_with_home(state_path, cols, rows, home);
-    let mut output = session.settle(timeout, quiet_for);
-    let mut attempt = 1;
-    while output.is_empty() && attempt < attempts {
-        attempt += 1;
-        eprintln!("attempt {attempt}/{attempts}: empty output (suspected PTY race), retrying");
-        session = Session::spawn_with_home(state_path, cols, rows, home);
-        output = session.settle(timeout, quiet_for);
-    }
-    (session, output)
 }
 
 pub struct Session {

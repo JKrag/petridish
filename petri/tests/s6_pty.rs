@@ -17,9 +17,8 @@
 //! `DashboardState`. Confirmed failing against the current stub (`lib.rs`
 //! still only knows the Browser) before delegating S6.
 //!
-//! All three tests use `spawn_and_settle_nonempty_with_home` (a scratch
-//! `HOME`), not bare `spawn_and_settle_nonempty` — this file's assertions
-//! assume Dashboard is the default landing screen, which S7 made dependent
+//! All three tests spawn with a scratch `HOME` rather than the ambient one — this file's
+//! assertions assume Dashboard is the default landing screen, which S7 made dependent
 //! on `~/.petridish/petri.toml`'s `last_screen`. A bare spawn inherits the
 //! ambient `$HOME`, which silently broke this exact assumption once a real
 //! developer machine's prefs file happened to say `last_screen = "browser"`
@@ -27,7 +26,7 @@
 //! against real environment state, not a fixture.
 
 mod pty_support;
-use pty_support::{Session, fixture_path, spawn_and_settle_nonempty_with_home};
+use pty_support::{Session, fixture_path};
 use std::io::Write;
 use std::time::Duration;
 
@@ -157,14 +156,21 @@ fn enter_on_a_row_switches_from_dashboard_to_browser() {
 #[test]
 fn dashboard_keystrokes_do_not_crash_the_binary() {
     let home = scratch_home("keystrokes");
-    let (mut session, _first_frame) = spawn_and_settle_nonempty_with_home(
-        &fixture_path("loaded.json"),
+    // Wait for a painted frame before sending anything. `spawn_and_settle_nonempty_with_home`
+    // returns as soon as the output is non-empty, which can be before the binary has entered
+    // raw mode — and a key written then is buffered by the line discipline in canonical mode
+    // and discarded when raw mode is enabled. petri never sees it. That is the same bug
+    // `s5_pty`'s quit test had, and it surfaces the same way: not as a wrong frame, but as
+    // "child did not exit", seconds later. Measured at 4 failures in 24 runs at eight-way
+    // concurrency.
+    let mut session = Session::spawn_with_home(&fixture_path("loaded.json"), 80, 24, &home);
+    session.screen_until(
         80,
         24,
-        &home,
         Duration::from_secs(5),
         Duration::from_millis(300),
-        3,
+        10,
+        |grid| grid.iter().any(|r| r.contains("petri · dashboard")),
     );
 
     for keys in [&b"j"[..], b"j", b"k", b" ", b"j", b" ", &[0x1b]] {
@@ -181,7 +187,9 @@ fn dashboard_keystrokes_do_not_crash_the_binary() {
         .writer
         .write_all(b"q")
         .expect("write 'q' must succeed");
-    let status = session.wait_with_timeout(Duration::from_secs(5));
+    // 20s, not 5: this is a hang detector, and a budget tight enough to trip on a busy
+    // machine teaches people to re-run rather than to look.
+    let status = session.wait_with_timeout(Duration::from_secs(20));
     assert_eq!(
         status.exit_code(),
         0,
