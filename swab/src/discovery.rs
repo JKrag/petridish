@@ -117,11 +117,51 @@ fn is_ignored(dir: &Path, config: &Config) -> bool {
     if dir.is_symlink() {
         return true;
     }
+    // `exclude_paths` prunes the descent as well as the result (issue #46): an excluded
+    // subtree is not crawled at all, rather than crawled and then filtered out at the
+    // union. Correctness does not depend on this — `run_scan`'s union filter is the
+    // load-bearing site, and it has to be, since a signal root never passes through here
+    // — but crawling a tree we have been told to ignore is work for nothing.
+    if is_excluded(dir, config) {
+        return true;
+    }
     let name = dir.file_name().and_then(|n| n.to_str());
     match name {
         Some(n) => config.ignore_dirs.contains(n),
         None => false,
     }
+}
+
+/// True if `path` lies inside one of `config.exclude_paths` (issue #46).
+///
+/// Subtree semantics: an entry excludes that directory *and everything under it*, which is
+/// what both cases in the issue need — a subfolder under a search root, and a path outside
+/// the roots that keeps arriving as a signal (`/private/tmp`, where agents create scratch
+/// directories). There is deliberately no glob support; a prefix is enough for both and is
+/// the form that can be compared without ambiguity.
+///
+/// Two details the naive version gets wrong:
+///
+/// - **Both sides are resolved non-strictly**, not compared as written. On macOS `/tmp` is
+///   a symlink to `/private/tmp`, and `resolve_root` hands this function already-resolved
+///   roots — so an `exclude_paths = ["/tmp"]` that was not resolved would never match the
+///   `/private/tmp/...` roots it was written to exclude. That is the issue's own motivating
+///   example, so it has to work. Resolution is non-strict (`resolve_non_strict`) so an
+///   exclusion may name a path that does not exist yet, or no longer does.
+/// - **`Path::starts_with` rather than string prefixing**, because it compares whole path
+///   components: `/private/tmp` must not exclude a sibling `/private/tmpfoo`.
+///
+/// The empty-`exclude_paths` short-circuit keeps the default configuration at exactly zero
+/// added syscalls — this is called once per directory visited by the crawl.
+pub fn is_excluded(path: &Path, config: &Config) -> bool {
+    if config.exclude_paths.is_empty() {
+        return false;
+    }
+    let resolved = resolve_non_strict(path);
+    config
+        .exclude_paths
+        .iter()
+        .any(|ex| resolved.starts_with(resolve_non_strict(ex)))
 }
 
 /// True if `dir` is a project: contains `.git`, OR one of the known manifest files.
@@ -365,6 +405,140 @@ mod tests {
             max_depth: 5,
             ..Config::default()
         }
+    }
+
+    // ═══ is_excluded / exclude_paths tests (issue #46) ══════════════════════════════
+
+    /// The default configuration excludes nothing, and must do so without touching the
+    /// filesystem — `is_excluded` is called once per directory the crawl visits, so the
+    /// empty case is the one that has to cost nothing.
+    #[test]
+    fn is_excluded_is_false_with_no_exclusions_configured() {
+        let cfg = test_config(vec![], vec![]);
+        assert!(cfg.exclude_paths.is_empty(), "default must exclude nothing");
+        assert!(!is_excluded(Path::new("/anywhere/at/all"), &cfg));
+    }
+
+    /// An entry excludes its whole subtree, not just the named directory itself.
+    #[test]
+    fn is_excluded_covers_the_whole_subtree() {
+        let tmp = Tmp::new("excluded_subtree");
+        let excluded = tmp.path.join("scratch");
+        fs::create_dir_all(excluded.join("a").join("b")).expect("mkdir deep");
+        let cfg = Config {
+            exclude_paths: vec![excluded.clone()],
+            ..test_config(vec![tmp.path.clone()], vec![])
+        };
+
+        assert!(is_excluded(&excluded, &cfg), "the named directory itself");
+        assert!(
+            is_excluded(&excluded.join("a").join("b"), &cfg),
+            "a descendant, however deep"
+        );
+        assert!(
+            !is_excluded(&tmp.path, &cfg),
+            "an ancestor is not excluded — exclusion points downwards only"
+        );
+    }
+
+    /// `Path::starts_with` compares whole components, and this is the test that pins it:
+    /// a plain string prefix check would exclude the sibling `scratchpad` too, which is a
+    /// silently-missing project and the worst failure mode this option has.
+    #[test]
+    fn is_excluded_matches_whole_components_not_string_prefixes() {
+        let tmp = Tmp::new("excluded_components");
+        let excluded = tmp.path.join("scratch");
+        let sibling = tmp.path.join("scratchpad");
+        fs::create_dir_all(&excluded).expect("mkdir excluded");
+        fs::create_dir_all(&sibling).expect("mkdir sibling");
+        let cfg = Config {
+            exclude_paths: vec![excluded],
+            ..test_config(vec![tmp.path.clone()], vec![])
+        };
+
+        assert!(
+            !is_excluded(&sibling, &cfg),
+            "`scratchpad` shares a string prefix with `scratch` but not a path component"
+        );
+    }
+
+    /// The issue's own motivating example depends on this: on macOS `/tmp` is a symlink to
+    /// `/private/tmp`, and the roots reaching `is_excluded` have already been canonicalised
+    /// by `resolve_root`. So an exclusion written as the symlink must still match the
+    /// resolved root. Reproduced with a symlink built in the fixture rather than by relying
+    /// on the real `/tmp`, so the test states the property on any platform.
+    #[test]
+    fn is_excluded_resolves_a_symlinked_exclusion() {
+        let tmp = Tmp::new("excluded_symlink");
+        let real = tmp.path.join("private").join("scratch");
+        fs::create_dir_all(real.join("work")).expect("mkdir real");
+        let link = tmp.path.join("scratch-link");
+        std::os::unix::fs::symlink(&real, &link).expect("symlink");
+
+        // Config names the *symlink*; the path under test is the *resolved* location, which
+        // is the only form `run_scan`'s union ever holds.
+        let cfg = Config {
+            exclude_paths: vec![link],
+            ..test_config(vec![tmp.path.clone()], vec![])
+        };
+        let resolved = real.join("work").canonicalize().expect("canonicalise");
+
+        assert!(
+            is_excluded(&resolved, &cfg),
+            "an exclusion named through a symlink must match the resolved path"
+        );
+    }
+
+    /// An exclusion may name a path that does not exist (yet, or any more) — resolution is
+    /// non-strict, so it degrades to a literal comparison rather than silently never
+    /// matching.
+    #[test]
+    fn is_excluded_handles_an_exclusion_that_does_not_exist() {
+        let tmp = Tmp::new("excluded_missing");
+        let ghost = tmp.path.join("never-created");
+        let cfg = Config {
+            exclude_paths: vec![ghost.clone()],
+            ..test_config(vec![tmp.path.clone()], vec![])
+        };
+
+        assert!(
+            is_excluded(&ghost.join("child"), &cfg),
+            "a non-existent exclusion still excludes its nominal subtree"
+        );
+    }
+
+    /// The crawl prune: a repo inside an excluded subtree is not discovered, even though it
+    /// is a perfectly good git repo under a configured root.
+    #[test]
+    fn discover_skips_repos_inside_an_excluded_path() {
+        let tmp = Tmp::new("discover_excluded");
+        let kept = tmp.path.join("kept");
+        let dropped = tmp.path.join("scratch").join("dropped");
+        fs::create_dir_all(&kept).expect("mkdir kept");
+        fs::create_dir_all(&dropped).expect("mkdir dropped");
+        for rel in ["kept", "scratch/dropped"] {
+            assert!(
+                tmp.run_git_in(rel, &["init", "."]).success(),
+                "git init failed in {rel}"
+            );
+        }
+
+        let cfg = Config {
+            exclude_paths: vec![tmp.path.join("scratch")],
+            ..test_config(vec![tmp.path.clone()], vec![])
+        };
+        let results = discover(&cfg);
+
+        let kept_canon = kept.canonicalize().expect("kept exists");
+        let dropped_canon = dropped.canonicalize().expect("dropped exists");
+        assert!(
+            results.contains(&kept_canon),
+            "the non-excluded repo must still be found: {results:?}"
+        );
+        assert!(
+            !results.contains(&dropped_canon),
+            "a repo under an excluded path must not be discovered: {results:?}"
+        );
     }
 
     // ═══ discover tests ════════════════════════════════════════════════════════════

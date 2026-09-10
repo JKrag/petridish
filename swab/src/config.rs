@@ -18,6 +18,19 @@ pub struct Config {
     pub author_patterns: Vec<String>,
     pub author_since: String,
     pub ignore_dirs: HashSet<String>,
+    /// Absolute path prefixes whose subtrees are excluded from the fleet entirely
+    /// (issue #46). Distinct from `ignore_dirs` in both respects that matter: it
+    /// matches a *path prefix* rather than a directory *basename*, so
+    /// `/private/tmp` can be excluded without also excluding every project's own
+    /// `tmp/`; and it is applied to the discovered ∪ signal-root union in
+    /// `scan::run_scan`, not only to the crawl, so it can reach a root that only
+    /// ever entered the fleet through a transcript's `cwd` and was therefore
+    /// unreachable by `ignore_dirs` at any value.
+    ///
+    /// Empty by default — an exclusion nobody asked for is a project silently
+    /// missing from the fleet, which is the one failure mode this tool has no way
+    /// to surface.
+    pub exclude_paths: Vec<PathBuf>,
     pub bucket_thresholds: HashMap<String, f64>,
     pub category_overrides: HashMap<String, String>,
     pub max_depth: u32,
@@ -46,6 +59,7 @@ impl Default for Config {
             .into_iter()
             .map(String::from)
             .collect(),
+            exclude_paths: vec![],
             bucket_thresholds: [
                 ("active".to_string(), 48.0),
                 ("in_flight".to_string(), 336.0),
@@ -282,6 +296,9 @@ pub fn load_config(path: &std::path::Path, home: &std::path::Path) -> Result<Con
     if let Some(items) = as_string_list(&table, "ignore_dirs") {
         cfg.ignore_dirs = items.into_iter().collect();
     }
+    if let Some(items) = as_path_list(&table, "exclude_paths", &home) {
+        cfg.exclude_paths = items;
+    }
     if let Some(v) = as_float_table(
         &table,
         "bucket_thresholds",
@@ -302,14 +319,21 @@ pub fn load_config(path: &std::path::Path, home: &std::path::Path) -> Result<Con
     Ok(expand_config_paths(cfg, &home))
 }
 
-/// Unconditionally `~`/env-expands `cfg.roots`/`cfg.extra_paths`, whether they came from
-/// the file (already expanded by `as_path_list`, so this is a harmless no-op re-pass) or
-/// fell through untouched from `Config::default()`'s raw `~/...` seed strings (the case
-/// this function exists to fix — see `load_config`'s doc comment).
+/// Unconditionally `~`/env-expands `cfg.roots`/`cfg.extra_paths`/`cfg.exclude_paths`,
+/// whether they came from the file (already expanded by `as_path_list`, so this is a
+/// harmless no-op re-pass) or fell through untouched from `Config::default()`'s raw
+/// `~/...` seed strings (the case this function exists to fix — see `load_config`'s doc
+/// comment).
+///
+/// Expansion only — deliberately not canonicalisation. `exclude_paths` is resolved
+/// against the real filesystem at comparison time by `discovery::is_excluded`, the same
+/// way `resolve_root` canonicalises `config.roots` per call, so a `Config` built directly
+/// in a test behaves identically to one that came through this loader.
 fn expand_config_paths(mut cfg: Config, home: &str) -> Config {
     let expand_one = |p: &PathBuf| PathBuf::from(expand_path(&p.to_string_lossy(), home));
     cfg.roots = cfg.roots.iter().map(expand_one).collect();
     cfg.extra_paths = cfg.extra_paths.iter().map(expand_one).collect();
+    cfg.exclude_paths = cfg.exclude_paths.iter().map(expand_one).collect();
     cfg
 }
 
@@ -524,5 +548,47 @@ stale = 1440.0
         let cfg = load_config(&path, &home).expect("env-expand must succeed");
         assert_eq!(cfg.roots.len(), 1);
         assert_eq!(cfg.roots[0], home.join("repos"));
+    }
+
+    /// `exclude_paths` (issue #46): absent from the file means exclude nothing. The default
+    /// has to be empty — an exclusion nobody configured is a project silently missing from
+    /// the fleet.
+    #[test]
+    fn exclude_paths_defaults_to_empty() {
+        let path = with_tmp("no_excludes.toml", "max_depth = 3");
+        let cfg = load_config(&path, &test_home()).expect("load");
+        assert!(cfg.exclude_paths.is_empty(), "got {:?}", cfg.exclude_paths);
+    }
+
+    /// `exclude_paths` goes through `as_path_list`, so it gets the same `~`/`$VAR`
+    /// expansion `roots` does — worth pinning, since the field whose whole purpose is to
+    /// name a path outside the roots is exactly the one someone will write as `~/scratch`.
+    #[test]
+    fn exclude_paths_are_expanded_like_roots() {
+        let home = test_home();
+        let path = with_tmp(
+            "excludes.toml",
+            "exclude_paths = [\"/private/tmp\", \"~/scratch\", \"$HOME/tmp\"]",
+        );
+        let cfg = load_config(&path, &home).expect("load");
+        assert_eq!(
+            cfg.exclude_paths,
+            vec![
+                std::path::PathBuf::from("/private/tmp"),
+                home.join("scratch"),
+                home.join("tmp"),
+            ]
+        );
+    }
+
+    /// A malformed `exclude_paths` degrades to the default (exclude nothing) rather than
+    /// failing the whole load — `load_config`'s field-by-field contract. Failing open is
+    /// the right direction here: an unreadable exclusion shows too many projects, which is
+    /// visible, rather than too few, which is not.
+    #[test]
+    fn malformed_exclude_paths_degrades_to_empty() {
+        let path = with_tmp("bad_excludes.toml", "exclude_paths = 42");
+        let cfg = load_config(&path, &test_home()).expect("a bad field must not fail the load");
+        assert!(cfg.exclude_paths.is_empty());
     }
 }

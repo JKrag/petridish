@@ -407,6 +407,10 @@ const CONFIG_FIELD_HELP: &[(&str, &str)] = &[
         "Directory basenames hard-skipped during crawl",
     ),
     (
+        "exclude_paths",
+        "Path prefixes whose subtrees are excluded entirely, even with agent activity",
+    ),
+    (
         "bucket_thresholds",
         "Hour cutoffs for the active/in_flight/stale/cold status buckets",
     ),
@@ -452,6 +456,7 @@ pub fn cmd_config(out: &mut dyn Write) -> std::io::Result<u8> {
             "ignore_dirs",
             format_toml_sorted_string_set(&cfg.ignore_dirs),
         ),
+        ("exclude_paths", format_toml_path_list(&cfg.exclude_paths)),
         (
             "bucket_thresholds",
             format_toml_bucket_thresholds(&cfg.bucket_thresholds),
@@ -475,7 +480,8 @@ pub fn cmd_config(out: &mut dyn Write) -> std::io::Result<u8> {
     writeln!(out)?;
     writeln!(
         out,
-        "Example — only override what you care about:\n\n  roots = [\"~/repos\", \"~/work\"]\n  max_depth = 6\n\n  \
+        "Example — only override what you care about:\n\n  roots = [\"~/repos\", \"~/work\"]\n  max_depth = 6\n  \
+         exclude_paths = [\"/private/tmp\", \"~/repos/scratch\"]\n\n  \
          [bucket_thresholds]\n  active = 24.0"
     )?;
 
