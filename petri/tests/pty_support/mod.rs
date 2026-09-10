@@ -241,11 +241,10 @@ impl Session {
     }
 
     /// Reconstruct the current on-screen `cols`×`rows` grid from everything
-    /// drained so far (settling first), by replaying the ANSI/VT sequences
-    /// ratatui's crossterm backend actually emits: absolute cursor
-    /// positioning (`CSI row;col H`), erase-in-display/-line (`CSI n J` /
-    /// `CSI n K`), SGR color/style (`CSI ... m`, ignored — no grid effect),
-    /// and `CSI ? 1049 h` (alt-screen entry, clears the grid).
+    /// drained so far (settling first), by feeding the accumulated bytes
+    /// through a real `vt100::Parser` (built on `vte`, Alacritty's parser)
+    /// rather than replaying only the handful of sequences a hand-rolled
+    /// parser recognised.
     ///
     /// This exists because petri/SPEC.md §8 names raw byte-stream substring
     /// matching as the root cause of the Python TUI's worst CI flakiness —
@@ -255,17 +254,26 @@ impl Session {
     /// which is what broke the other assertion." Asserting against a
     /// reconstructed screen makes a partial/interleaved write show up as
     /// wrong content in a specific cell, not a coincidentally-still-passing
-    /// substring check (S6's `s6_pty.rs` hit exactly this substring-matching
-    /// trap once, fixed ad hoc there — this is the systematic fix S7 needed
-    /// per spec anyway, since S7's Tab-switch test is the first one where a
-    /// diff-redraw genuinely interleaves two screens' content).
+    /// substring check.
     ///
-    /// Deliberately NOT a full VT100 emulator — only what crossterm's
-    /// backend actually emits, per the sequences enumerated above. Assumes
-    /// one terminal cell per `char` (no wide-glyph/combining-character
-    /// handling); acceptable because no PTY test asserts against a fixture
-    /// with CJK/emoji names (`hostile.json`'s exist only for JSON-parsing
-    /// coverage in other layers).
+    /// This module used to hand-roll its own CSI parsing — absolute cursor
+    /// positioning, erase-in-display/-line, and `CSI ? 1049 h` only, with
+    /// everything else (SGR, scroll regions, line wrapping, tab stops,
+    /// relative cursor movement) silently dropped rather than flagged. A
+    /// spike compared the two implementations' reconstructed grids for the
+    /// same captured byte stream row by row: 0 of 30 rows differed, so the
+    /// hand-rolled version was correct for what ratatui's crossterm backend
+    /// happens to emit today — but a future ratatui version reaching for any
+    /// of the dropped sequences would silently produce a wrong grid no test
+    /// could detect. `vt100` closes that exposure (issue #47).
+    ///
+    /// `Cell::contents()` is `""`, not `" "`, for a cell nothing has written
+    /// to — mapped to a space here so unwritten padding still reads as
+    /// blank rather than collapsing every row's trailing whitespace.
+    /// Assumes one terminal cell per `char` (no wide-glyph/combining-
+    /// character handling), same as before; acceptable because no PTY test
+    /// asserts against a fixture with CJK/emoji names (`hostile.json`'s
+    /// exist only for JSON-parsing coverage in other layers).
     pub fn screen(
         &mut self,
         cols: u16,
@@ -274,82 +282,19 @@ impl Session {
         quiet_for: Duration,
     ) -> Vec<String> {
         let raw = self.settle(timeout, quiet_for);
-        let (cols, rows) = (cols as usize, rows as usize);
-        let mut grid: Vec<Vec<char>> = vec![vec![' '; cols]; rows];
-        let (mut row, mut col): (usize, usize) = (0, 0);
+        let mut parser = vt100::Parser::new(rows, cols, 0);
+        parser.process(raw.as_bytes());
+        let screen = parser.screen();
 
-        let chars: Vec<char> = raw.chars().collect();
-        let mut i = 0;
-        while i < chars.len() {
-            let c = chars[i];
-            if c == '\u{1b}' && i + 1 < chars.len() && chars[i + 1] == '[' {
-                let start_params = i + 2;
-                let mut j = start_params;
-                while j < chars.len() && !chars[j].is_ascii_alphabetic() {
-                    j += 1;
-                }
-                if j >= chars.len() {
-                    break; // truncated sequence at the end of a settle window
-                }
-                let final_byte = chars[j];
-                let raw_params: String = chars[start_params..j].iter().collect();
-                let is_private = raw_params.starts_with('?');
-                let params_str = raw_params.trim_start_matches('?');
-                let params: Vec<i64> = params_str
-                    .split(';')
-                    .filter_map(|s| s.parse::<i64>().ok())
-                    .collect();
-
-                match final_byte {
-                    'H' | 'f' => {
-                        let r = params.first().copied().unwrap_or(1).max(1) as usize;
-                        let c2 = params.get(1).copied().unwrap_or(1).max(1) as usize;
-                        row = (r - 1).min(rows.saturating_sub(1));
-                        col = (c2 - 1).min(cols.saturating_sub(1));
-                    }
-                    'J' => {
-                        let mode = params.first().copied().unwrap_or(0);
-                        if mode == 2 || mode == 3 {
-                            for line in grid.iter_mut() {
-                                line.iter_mut().for_each(|cell| *cell = ' ');
-                            }
-                        }
-                    }
-                    'K' if row < rows => {
-                        let mode = params.first().copied().unwrap_or(0);
-                        match mode {
-                            1 => (0..=col.min(cols.saturating_sub(1)))
-                                .for_each(|cc| grid[row][cc] = ' '),
-                            2 => (0..cols).for_each(|cc| grid[row][cc] = ' '),
-                            _ => (col..cols).for_each(|cc| grid[row][cc] = ' '),
-                        }
-                    }
-                    'h' if is_private && params_str == "1049" => {
-                        for line in grid.iter_mut() {
-                            line.iter_mut().for_each(|cell| *cell = ' ');
-                        }
-                    }
-                    _ => {} // SGR, mode toggles, cursor show/hide — no grid effect.
-                }
-                i = j + 1;
-                continue;
-            }
-            match c {
-                '\n' => row = (row + 1).min(rows.saturating_sub(1)),
-                '\r' => col = 0,
-                '\u{7}' => {}
-                _ => {
-                    if row < rows && col < cols {
-                        grid[row][col] = c;
-                    }
-                    col += 1;
-                }
-            }
-            i += 1;
-        }
-
-        grid.into_iter()
-            .map(|line| line.into_iter().collect())
+        (0..rows)
+            .map(|r| {
+                (0..cols)
+                    .map(|c| {
+                        let contents = screen.cell(r, c).map(|cell| cell.contents()).unwrap_or("");
+                        if contents.is_empty() { " " } else { contents }
+                    })
+                    .collect::<String>()
+            })
             .collect()
     }
 
@@ -472,8 +417,35 @@ impl Session {
     /// charge of the terminal again", which is what a test must know before it can send
     /// another keystroke — a key written while the child still owns the terminal is queued
     /// by the line discipline in canonical mode and lost when raw mode is restored.
+    ///
+    /// Counts transitions of `vt100::Screen::alternate_screen()` from false to true, rather
+    /// than substring-matching `\x1b[?1049h` in the raw stream directly (the pre-#47 version
+    /// of this function) — the transition still has to be tracked by hand, since vt100
+    /// exposes only the *current* mode, not a count of times it was entered, but it is now
+    /// vt100's own real escape-sequence state machine doing the recognition rather than a
+    /// literal byte-pattern search.
+    ///
+    /// The scratch parser's geometry is a generous fixed 200×200, not the caller's real
+    /// session size: this call site never asks about grid content, only mode state, but
+    /// `vt100`'s internal scroll/cursor-clamp math still runs against whatever dimensions
+    /// it's given — a too-small grid (tried 1×1 first, since content is irrelevant) panics
+    /// with `attempt to subtract with overflow` in `vt100`'s own `grid.rs` once cursor
+    /// movement in a real session's stream (this crashed against s4_pty's degenerate 1×1
+    /// *session* geometry test, at 80×24 real content) references coordinates the parser's
+    /// grid is too small to represent.
     pub fn alt_screen_entries(stream: &str) -> usize {
-        stream.matches("\x1b[?1049h").count()
+        let mut parser = vt100::Parser::new(200, 200, 0);
+        let mut was_alt = false;
+        let mut entries = 0;
+        for byte in stream.as_bytes() {
+            parser.process(std::slice::from_ref(byte));
+            let now_alt = parser.screen().alternate_screen();
+            if now_alt && !was_alt {
+                entries += 1;
+            }
+            was_alt = now_alt;
+        }
+        entries
     }
 
     /// Wait for the child to exit, with a hard timeout so a genuine hang fails
