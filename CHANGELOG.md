@@ -7,7 +7,87 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-## [1.0.0-beta.2] — unreleased
+## [1.0.0-beta.3] — 2026-09-10
+
+### Added
+
+- `petri` focus panel: one responsive renderer behind #30/#31/#32, mounted two
+  ways — a Dashboard popup and `petri --mini [NAME]`, a whole-screen
+  single-project view. `--mini NAME` resolves to the most recently active match;
+  with no operand the cwd is resolved against `projects.json`'s own roots,
+  deepest first, rather than by a second copy of the scanner's `resolve_root`.
+- `petri` Dashboard: a `lush` density tier above `roomy` (SPACE-3, #33). RUNNING
+  cards carry `last` and `repo`, under a bounded per-card claim on surplus rows
+  so the SPACE-1 feed still gets the remainder.
+- `petri`: Claude quota in the header on both screens — `5h 16% · 7d 1%`, or the
+  compressed `16%/1%` — display-only from the `Radar.quota` the scanner already
+  writes. A half that degraded to `None` is omitted rather than printed as `0%`.
+  The header's right-hand group gained the elision ladder it never had (#29).
+- `petri` Browser: a git segment in the list row. `!N` modified, `?N` untracked,
+  zero counts omitted, and a non-repo gets a positive mark rather than an empty
+  cell. Nerd Font glyphs are opt-in (#38).
+- `swab`: `git.untracked_files`, counted separately from modified ones and
+  guarded so ignored entries do not inflate it. `uncommitted_files` keeps its
+  original meaning as the total (#38).
+- `--version` on `swab`, `swab-hook` and `petri`, none of which had it (#36).
+- `petridish doctor`: a version-agreement check across the four binaries, an
+  `N/N checks passed` summary line, and a `--json` output mode carrying the same
+  checks and the same exit code.
+- `make flake-hunt` (`petri/scripts/flake-hunt.sh`): runs each PTY test binary N
+  times at concurrency and reports a per-test failure rate. Deliberately not part
+  of `make check`.
+
+### Changed
+
+- `petri` Browser list rows are column-aligned, and the chrome collapses last as
+  the pane narrows — gaps first, then the row leader from the outside in (#38).
+- The `g` action is git-aware: on a non-repo it shows a notice instead of
+  launching a git tool that would exit immediately (#38).
+- `git log` hand-offs pin `core.pager=less -+F -R`, so a history short enough to
+  fit one screen stays open instead of flashing past.
+
+### Fixed
+
+- `swab` no longer keeps project roots that are no longer on disk. The entry was
+  not stale state — signal roots (a `cwd` read from a transcript or an event)
+  re-supplied the dead path every tick, so a rescan looked like a no-op (#41).
+- `petri` Browser: on a terminal too narrow for a side-by-side detail pane but
+  tall enough, the pane reflows below the list instead of disappearing, and its
+  height grows with the terminal. When neither placement fits it is still
+  reachable as a `Space` popup (#35).
+- `petri` Browser rows could wrap below seven columns, which misaligns every row
+  beneath them, since the list clips nothing and scrolling counts lines.
+- The Browser's shrink step could *grow* a column, inverting the ladder it
+  implements.
+- Ages no longer truncate into a different claim (`20d ago` → `20d` → `2`); the
+  age column is all-or-nothing and blanks rather than clips.
+- A *directory* named `Nerd Fonts/` passed the font probe, enabling PUA glyphs
+  for someone with no font installed. Directories are traversed, never answers.
+- The tool cache is invalidated when a re-pick changes the answer.
+- `yank_selected_path`'s budget is 10 attempts, not 30: issue #49 ("`y` blocks
+  for ~2s") was measured on a machine carrying leaked busy-loop processes and is
+  closed as mistaken. On an idle machine `pbcopy` takes 10-20ms.
+
+### Testing
+
+- Every flaky PTY wait is now a condition rather than a duration. Measured at
+  eight-way concurrency before the fix, `s8_pty_repick` failed 17 runs in 24,
+  `s8_pty_actions` 15 in 24, `s8_pty_filter` 10 in 24. Three rules came out of
+  it, each learned by getting it wrong first: the predicate must be false for the
+  pre-keystroke frame; an absence needs `settle_until_gone`; a keystroke that
+  hands over the terminal is not observable on the grid at all. See CLAUDE.md.
+- `"petri"` is not a startup marker — `prefs::load`'s warning is printed before
+  `enable_raw_mode`, so the stream is non-empty while a keystroke is still being
+  swallowed by the line discipline. Tests wait for a painted header badge or for
+  the alternate-screen entry itself.
+- `swab`'s quota sensor takes an injected clock, so its tests stop expiring.
+- No test mutates `$HOME` to fake it; the detail-popup PTY test isolates its own.
+
+### Known issues
+
+- `y` cannot copy on Linux: `pbcopy` is macOS-only (#50).
+
+## [1.0.0-beta.2] — 2026-09-07
 
 ### Added
 
@@ -27,7 +107,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   leaking it.
 - `Candidate` now has an identity distinct from its `program`.
 
-## [1.0.0-beta.1] — unreleased
+## [1.0.0-beta.1] — 2026-09-05
 
 First public release. Everything before this lived only in git history.
 
@@ -81,6 +161,7 @@ First public release. Everything before this lived only in git history.
   requires MIT and this project is GPL-3.0-or-later. See
   `integrations/raycast/README.md`.
 
-[Unreleased]: https://github.com/JKrag/petridish/compare/v1.0.0-beta.2...HEAD
+[Unreleased]: https://github.com/JKrag/petridish/compare/v1.0.0-beta.3...HEAD
+[1.0.0-beta.3]: https://github.com/JKrag/petridish/compare/v1.0.0-beta.2...v1.0.0-beta.3
 [1.0.0-beta.2]: https://github.com/JKrag/petridish/compare/v1.0.0-beta.1...v1.0.0-beta.2
 [1.0.0-beta.1]: https://github.com/JKrag/petridish/releases/tag/v1.0.0-beta.1
