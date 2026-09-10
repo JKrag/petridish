@@ -4,10 +4,21 @@
 //!
 //! Layer 3's job here (as in S4/S5) is plumbing/lifecycle, not visual
 //! content — that's layer 1 (`s6_dashboard.rs`) and layer 2
-//! (`s6_snapshot.rs`)'s job. The one content check kept here is the
-//! Dashboard-vs-Browser header discriminator, because it's the one thing
-//! that proves `Enter` on a row actually switches screens end-to-end through
-//! the real event loop, not just in `DashboardState`'s own unit tests.
+//! (`s6_snapshot.rs`)'s job. `enter_on_a_row_switches_from_dashboard_to_browser`
+//! is the one content check kept here, because it's the one thing that
+//! proves `Enter` on a row actually switches screens end-to-end through the
+//! real event loop, not just in `DashboardState`'s own unit tests — that is
+//! a `poll_loop` dispatch property, not a rendering one, and `poll_loop` is
+//! hardcoded to `Terminal<CrosstermBackend<Stdout>>` rather than generic
+//! over `Backend`, so there is nowhere else to put it today (issue #48's
+//! audit; making `poll_loop`/`mini_poll_loop` generic the way `exec::run`
+//! already is would be the precondition for moving it, and is out of scope
+//! here). The initial-frame header/RUNNING-label check that used to sit
+//! beside it was removed by that same audit: `s6_snapshot.rs`'s
+//! `header_identifies_the_dashboard_screen_at_80x24` and
+//! `running_label_rendered_for_loaded_json_which_has_agents_present` assert
+//! the identical thing against the identical fixture, with no process and
+//! no timing.
 //!
 //! Requires `lib.rs`'s `poll_loop` to default to the Dashboard screen (not
 //! the Browser — petri/SPEC.md §3.2 frames it as "the ambient monitor" and
@@ -35,42 +46,6 @@ fn scratch_home(name: &str) -> std::path::PathBuf {
         std::env::temp_dir().join(format!("petri_s6_pty_{name}_home_{}", std::process::id()));
     std::fs::create_dir_all(&home).expect("scratch home dir must be creatable");
     home
-}
-
-#[test]
-fn initial_frame_shows_the_dashboard_header_and_a_populated_section_label() {
-    let home = scratch_home("initial_frame");
-    let mut session = Session::spawn_with_home(&fixture_path("loaded.json"), 80, 40, &home);
-    // `spawn_and_settle_nonempty_with_home` retries only on completely empty output, and petri's first write
-    // need not be a frame — S7's "preferences file missing, using defaults" warning goes to
-    // stderr before the alternate screen is entered, which makes the output non-empty and
-    // ends the retry loop with no frame in it. Wait for the header itself. (Same root cause
-    // as the fix in this file's enter-on-a-row test; measured at 1 failure in 24 runs at
-    // eight-way concurrency.)
-    let grid = session.screen_until(
-        80,
-        40,
-        Duration::from_secs(5),
-        Duration::from_millis(300),
-        5,
-        |g| g.iter().any(|r| r.contains("petri · dashboard")),
-    );
-    let first_frame = grid.join("\n");
-    session.writer.write_all(b"q").ok();
-    let _ = session.wait_with_timeout(Duration::from_secs(5));
-
-    assert!(
-        first_frame.contains("petri"),
-        "initial frame must contain \"petri\" after 3 attempts, got: {first_frame:?}"
-    );
-    assert!(
-        first_frame.contains("petri · dashboard"),
-        "petri must land on the Dashboard by default (Tab-switching isn't wired until S7). Checking the literal \"petri · dashboard\" header text, not a loose \"dashboard\" substring — the Browser's own footer already advertises \"Tab Dashboard\", which would make a loose check pass against the Browser too. Got: {first_frame:?}"
-    );
-    assert!(
-        first_frame.contains("RUNNING") || first_frame.contains("RECENT"),
-        "loaded.json populates RUNNING (25 active projects), so its header (RUNNING, or RECENT if degraded) must appear, got: {first_frame:?}"
-    );
 }
 
 #[test]

@@ -869,6 +869,36 @@ Four layers. Full reasoning: ADR-0003. This work is intended for unattended
    A flaky layer is worse than no layer when nobody is watching: an unattended
    agent cannot tell a flake from a defect, so it either halts on a false failure
    or learns to ignore the layer.
+
+   **What earns a place in this layer** (issue #48's audit, run after three PTY
+   tests were fixed and every flake found so far turned out to be in this layer
+   and never in a `TestBackend` one): a PTY test earns its place only if its
+   assertion is provably untestable any other way — a real terminal-mode
+   transition (raw mode, alternate-screen enter/leave/restore), a real subprocess
+   hand-off or spawn, a real file written by the actual running binary, or the
+   real argv/exit-code contract. If the assertion is "this frame contains this
+   text" or "this state changed after this key", it belongs in a `TestBackend`
+   test instead (layer 2, above) — and if no such test is possible today because
+   `poll_loop`/`mini_poll_loop` are hardcoded to `Terminal<CrosstermBackend<Stdout>>`
+   rather than generic over `Backend` (unlike `exec::run<B: Backend>`, which
+   already takes the trait), that is a signal to make them generic the same way,
+   not a license to leave the assertion in the PTY layer. The audit found two
+   PTY tests that were exact content duplicates of an existing `TestBackend`
+   snapshot test against the same fixture (`s5_pty.rs`'s
+   `initial_frame_shows_section_labels` vs. `s5_snapshot.rs`'s
+   `section_labels_are_rendered_for_populated_buckets`; `s6_pty.rs`'s
+   `initial_frame_shows_the_dashboard_header_and_a_populated_section_label` vs.
+   `s6_snapshot.rs`'s `header_identifies_the_dashboard_screen_at_80x24` +
+   `running_label_rendered_for_loaded_json_which_has_agents_present`) — both
+   removed. Most of the remaining PTY tests, though, are key-dispatch/state-
+   transition assertions (`Enter`→screen switch, `Space`→popup, filter typing,
+   mtime-reload calling `.refresh()` not `DashboardState::new()`) that are
+   conceptually pure-state tests wearing rendered content as their only
+   observable — they stay in this layer for now because `poll_loop`/
+   `mini_poll_loop` give them nowhere else to go, not because the property they
+   assert is actually terminal-only. The generic-over-`Backend` refactor that
+   would unblock moving them is its own piece of work, tracked separately
+   (issues #47/#53) rather than done as part of this audit.
 4. **Human smoke test** — but as confirmation, not as the gate. "It works, and I
    have an idea for a change" is the expected shape of it.
 
