@@ -1495,6 +1495,35 @@ fn begin_repick(
 /// which is a stronger guarantee than a test that a later refactor could
 /// silently stop exercising. The event loop's half — persist only when the
 /// picker says so — is covered by `s8_pty_repick.rs`.
+/// The notice to show *instead of* launching, when this project cannot supply what the
+/// action needs. `None` means go ahead.
+///
+/// **Rule 1 has to be re-checked on the launch path, not only where the picker opened.**
+/// `tools::launch_for` maps a program name to a `Launch` and deliberately knows nothing
+/// about targets, so without this the picker's choice bypasses the check entirely — and the
+/// gap is reachable rather than theoretical: the poll loop keeps reloading `projects.json`
+/// while the picker sits open as a modal, so the selected project can lose its `.git` (or
+/// its remote) between the keypress that opened the picker and the choice that closes it.
+/// `g` would then launch into a non-repo and git would exit at once, which is the exact
+/// flash issue #38 exists to fix, reintroduced through the back door.
+///
+/// Public so an integration test can reach it: `lib.rs` has no unit-test module, and a
+/// one-line guard nobody can call is a one-line guard nobody can prove.
+pub fn launch_blocked_notice(
+    action: &crate::tools::Action,
+    project: &petridish_core::schema::Project,
+) -> Option<String> {
+    let facts = crate::tools::Facts {
+        path: &project.path,
+        url: project.git.github_url.as_deref(),
+        is_repo: project.git.is_repo,
+    };
+    action
+        .target
+        .missing(&facts)
+        .then(|| format!("{} {}", project.name, action.target.notice()))
+}
+
 fn run_action(
     terminal: &mut ratatui::Terminal<ratatui::backend::CrosstermBackend<std::io::Stdout>>,
     action: &crate::tools::Action,
@@ -1510,6 +1539,9 @@ fn run_action(
         url: project.git.github_url.as_deref(),
         is_repo: project.git.is_repo,
     };
+    if let Some(notice) = launch_blocked_notice(action, project) {
+        return Some(notice);
+    }
     let launch = crate::tools::launch_for(action, &facts, program);
     launch_now(terminal, &launch, std::path::Path::new(&project.path))
 }

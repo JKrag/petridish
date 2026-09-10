@@ -861,12 +861,29 @@ const NAME_COLUMN_MIN: usize = 6;
 /// still readable in the detail pane.
 const NAME_COLUMN_MAX: usize = 28;
 
-/// The three data columns' widths for one render pass, in display columns.
+/// One render pass's column widths, in display columns — the three data cells plus the
+/// chrome around them.
+///
+/// The chrome is part of this rather than a constant because it has to be able to give way
+/// too: `ROW_LEADER_COLS + COLUMN_GAP * 2` is 7 columns, so a pane narrower than that
+/// cannot be satisfied by zeroing the data cells alone, and `render` really can pass such a
+/// width (`list_area.width.saturating_sub(2)` on a degenerate geometry).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct RowColumns {
     pub(crate) name: usize,
     pub(crate) git: usize,
     pub(crate) silence: usize,
+    /// Columns before the name: the activity glyph and the spaces around it.
+    pub(crate) leader: usize,
+    /// Blank columns between two adjacent cells, twice over.
+    pub(crate) gap: usize,
+}
+
+impl RowColumns {
+    /// Total columns a row built to these widths occupies.
+    pub(crate) fn total(&self) -> usize {
+        self.leader + self.name + self.gap * 2 + self.git + self.silence
+    }
 }
 
 /// Fit the three columns into the pane, shrinking under pressure.
@@ -889,40 +906,83 @@ pub(crate) fn column_widths(
     widest_silence: usize,
     avail: usize,
 ) -> RowColumns {
-    let fixed = ROW_LEADER_COLS + COLUMN_GAP * 2;
     let mut cols = RowColumns {
         name: widest_name.min(NAME_COLUMN_MAX),
         git: widest_git,
         silence: widest_silence,
+        leader: ROW_LEADER_COLS,
+        gap: COLUMN_GAP,
     };
-    let over = |c: &RowColumns| (fixed + c.name + c.git + c.silence).saturating_sub(avail);
+    let over = |c: &RowColumns| c.total().saturating_sub(avail);
 
+    // 1. The name, down to the floor — but the floor may never make a column BIGGER. A
+    //    one-character name asked to give up a column must not become six, which is what a
+    //    bare `.max(NAME_COLUMN_MIN)` did: it grew the name and then took the width back
+    //    out of the git and age cells, inverting the whole ladder.
     let excess = over(&cols);
     if excess > 0 {
-        cols.name = cols.name.saturating_sub(excess).max(NAME_COLUMN_MIN);
+        let floor = cols.name.min(NAME_COLUMN_MIN);
+        cols.name = cols.name.saturating_sub(excess).max(floor);
     }
+    // 2. The git cell. Truncation here is honest: `fit_exact` elides with `…`, so a
+    //    shortened `!12 ?3` reads as shortened rather than as a smaller number.
     let excess = over(&cols);
     if excess > 0 {
         cols.git = cols.git.saturating_sub(excess);
     }
+    // 3. The age, ALL OR NOTHING. This is the one cell truncation makes dishonest rather
+    //    than merely terse: the unit is the final character, so `20d ago` clipped to `20d`
+    //    or `20` is a different claim, not a shorter one. Dropping the cell says "not shown"
+    //    and hands its columns to the name, which is the honest trade.
     let excess = over(&cols);
     if excess > 0 {
-        cols.silence = cols.silence.saturating_sub(excess);
+        cols.silence = 0;
     }
-    // A pane too narrow for even the floor: the name gives up the remainder. Nothing may
-    // return a total wider than `avail`, or the row wraps.
+    // 4. The name again, now to zero.
     let excess = over(&cols);
     if excess > 0 {
         cols.name = cols.name.saturating_sub(excess);
     }
+    // 5. The chrome, last: the gaps and then the leader. A pane this narrow is unusable and
+    //    nothing here improves that — the only remaining requirement is that the row must
+    //    not be WIDER than the pane, because the list wraps rather than clips and a wrapped
+    //    row puts every row below it out of step with the line-counting scroll offset.
+    let excess = over(&cols);
+    if excess > 0 {
+        cols.gap = cols.gap.saturating_sub(excess.div_ceil(2));
+    }
+    let excess = over(&cols);
+    if excess > 0 {
+        cols.leader = cols.leader.saturating_sub(excess);
+    }
+    debug_assert!(
+        cols.total() <= avail,
+        "columns {cols:?} total {} exceed the pane's {avail} — the row will wrap",
+        cols.total()
+    );
     cols
 }
 
 /// Right-aligned cell, for the age column: the unit is the last character, and a ragged
 /// right edge is what makes a column of ages hard to compare at a glance.
+///
+/// **Never truncates: it shows the whole value or nothing.** `column_widths` sizes this
+/// column all-or-nothing so the common path always fits, and the fallback here is a blank
+/// cell rather than a clipped one, because clipping is the one thing this cell must not do
+/// — `20d ago` cut to `20d` is a different claim, not a shorter one.
+///
+/// The fallback is reachable despite `column_widths`' guarantee, which is why it exists: the
+/// width is measured from `silence_display` and then the cell is rendered from a second call
+/// to it, so a clock tick in between can lengthen the string (`9m ago` -> `10m ago`). A
+/// column one short of its content must still not produce a row one wider than the pane.
 fn cell_right(text: &str, w: usize) -> String {
-    let text = crate::width::take_width(text, w);
-    let pad = w.saturating_sub(crate::width::width(&text));
+    if w == 0 {
+        return String::new();
+    }
+    if crate::width::width(text) > w {
+        return " ".repeat(w);
+    }
+    let pad = w - crate::width::width(text);
     format!("{}{}", " ".repeat(pad), text)
 }
 
@@ -977,9 +1037,17 @@ fn render_project_row(
         Style::default().fg(theme::DIM)
     };
 
-    let gap = " ".repeat(COLUMN_GAP);
+    // The leader collapses from the outside in — the glyph is the last thing worth keeping,
+    // so the trailing space goes before the leading one and the glyph before neither.
+    let leader = match cols.leader {
+        0 => String::new(),
+        1 => glyph.to_string(),
+        2 => format!("{glyph} "),
+        n => format!(" {glyph}{}", " ".repeat(n - 2)),
+    };
+    let gap = " ".repeat(cols.gap);
     Line::from(vec![
-        Span::styled(format!(" {} ", glyph), style),
+        Span::styled(leader, style),
         Span::styled(crate::width::fit_exact(&name, cols.name), style),
         Span::styled(gap.clone(), meta_style),
         Span::styled(crate::width::fit_exact(&git, cols.git), meta_style),
@@ -1271,6 +1339,71 @@ mod tests {
     }
 
     #[test]
+    fn no_pane_width_can_make_a_row_wrap() {
+        // Sweeps from ZERO, which is the point. The previous version started at 8 — an
+        // unexamined lower bound that happened to sit one column above the failure. The
+        // chrome alone is 7 columns, so below that no amount of zeroing the data cells
+        // could fit, and `render` can pass such a width via `saturating_sub(2)` on a
+        // degenerate geometry. Wrapping is not cosmetic: the list clips nothing and the
+        // scroll offset counts lines, so one wrapped row misaligns every row beneath it.
+        for avail in 0..90 {
+            for (n, g, sil) in [(30, 6, 7), (1, 0, 0), (28, 12, 8), (0, 0, 0)] {
+                let cols = super::column_widths(n, g, sil, avail);
+                assert!(
+                    cols.total() <= avail,
+                    "avail={avail} widest=({n},{g},{sil}) -> {cols:?} totals {}",
+                    cols.total()
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn shrinking_never_makes_a_column_bigger() {
+        // The floor is a floor, not a target. `saturating_sub(excess).max(NAME_COLUMN_MIN)`
+        // grew a one-character name to six and then took the width back out of the git and
+        // age cells — inverting the ladder it was meant to implement.
+        for avail in 0..40 {
+            for widest_name in 0..10 {
+                let cols = super::column_widths(widest_name, 6, 7, avail);
+                assert!(
+                    cols.name <= widest_name,
+                    "avail={avail}: name column grew from {widest_name} to {}",
+                    cols.name
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn the_age_is_shown_whole_or_not_at_all() {
+        // Truncation makes this cell dishonest rather than terse: the unit is the last
+        // character, so `20d ago` clipped to `20d` is a different claim. The column is
+        // all-or-nothing, and `cell_right` blanks rather than clips even when a clock tick
+        // lengthens the value after the width was measured.
+        let widest = crate::width::width("20d ago");
+        for avail in 0..40 {
+            let cols = super::column_widths(10, 2, widest, avail);
+            assert!(
+                cols.silence == 0 || cols.silence >= widest,
+                "avail={avail}: age column {} would clip a {widest}-column value",
+                cols.silence
+            );
+        }
+        assert_eq!(
+            super::cell_right("20d ago", 4),
+            "    ",
+            "blank, never clipped"
+        );
+        assert_eq!(super::cell_right("20d ago", 0), "");
+        assert_eq!(
+            super::cell_right("3m ago", 7),
+            " 3m ago",
+            "right-aligned when it fits"
+        );
+    }
+
+    #[test]
     fn every_row_is_laid_out_to_the_same_width() {
         // The alignment property itself, and the safety property behind it: the list is
         // drawn with `Wrap { trim: false }`, so a row wider than the pane wraps rather than
@@ -1305,7 +1438,9 @@ mod tests {
             super::RowColumns {
                 name: 20,
                 git: 6,
-                silence: 7
+                silence: 7,
+                leader: super::ROW_LEADER_COLS,
+                gap: super::COLUMN_GAP,
             }
         );
     }
@@ -1327,9 +1462,11 @@ mod tests {
     fn a_pane_too_narrow_for_the_floor_still_fits() {
         // Below `NAME_COLUMN_MIN` everything gives way in turn rather than overflowing.
         let cols = super::column_widths(30, 6, 7, 12);
-        let total =
-            super::ROW_LEADER_COLS + cols.name + super::COLUMN_GAP * 2 + cols.git + cols.silence;
-        assert!(total <= 12, "got {cols:?} totalling {total}");
+        assert!(
+            cols.total() <= 12,
+            "got {cols:?} totalling {}",
+            cols.total()
+        );
     }
 
     #[test]

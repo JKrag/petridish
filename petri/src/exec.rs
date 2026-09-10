@@ -317,13 +317,21 @@ fn holds_a_nerd_font_within(dir: &Path, depth: u8) -> bool {
         return false; // A missing font directory is the normal case, not an error.
     };
     for entry in entries.flatten() {
-        if looks_like_a_nerd_font(&entry.file_name().to_string_lossy()) {
-            return true;
+        let Ok(file_type) = entry.file_type() else {
+            continue;
+        };
+        // **A matching DIRECTORY is not a font.** The name check used to run first, so a
+        // folder called `Nerd Fonts/` answered the whole question — and that is exactly what
+        // unzipping a Nerd Font release produces, so an empty or half-extracted one would
+        // switch the glyphs on for someone with no font actually installed, and they would
+        // see tofu. A directory is something to look *inside*, never an answer.
+        if file_type.is_dir() {
+            if depth > 0 && holds_a_nerd_font_within(&entry.path(), depth - 1) {
+                return true;
+            }
+            continue;
         }
-        if depth > 0
-            && entry.file_type().is_ok_and(|t| t.is_dir())
-            && holds_a_nerd_font_within(&entry.path(), depth - 1)
-        {
+        if looks_like_a_nerd_font(&entry.file_name().to_string_lossy()) {
             return true;
         }
     }
@@ -359,6 +367,29 @@ mod tests {
         let nested = root.join("truetype").join("jetbrains");
         std::fs::create_dir_all(&nested).expect("nested font dir must be creatable");
         std::fs::write(nested.join("JetBrainsMonoNerdFont-Regular.ttf"), "x").expect("write");
+        assert!(super::dir_holds_a_nerd_font(&root));
+    }
+
+    #[test]
+    fn a_directory_named_like_a_font_is_not_a_font() {
+        // Unzipping a Nerd Font release produces a folder called exactly this. Treating the
+        // name as the answer meant an empty or half-extracted one switched the glyphs on for
+        // someone with no font installed at all — who then sees tofu. A directory is
+        // something to look inside, never an answer.
+        let root = scratch_dir("nerd_dir_named");
+        std::fs::create_dir_all(root.join("Hack Nerd Font Complete")).expect("dir");
+        assert!(
+            !super::dir_holds_a_nerd_font(&root),
+            "an empty directory with a font-like name must not count as an installed font"
+        );
+
+        // ...but its CONTENTS still do, which is the case the descent exists for.
+        std::fs::write(
+            root.join("Hack Nerd Font Complete")
+                .join("HackNerdFont-Regular.ttf"),
+            "x",
+        )
+        .expect("write");
         assert!(super::dir_holds_a_nerd_font(&root));
     }
 

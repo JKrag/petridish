@@ -657,6 +657,67 @@ fn git_history_offers_no_repick_in_a_project_that_is_not_a_repo() {
     );
 }
 
+/// A project as the scanner would report it, with only the git facts this test cares about.
+fn project_with(name: &str, is_repo: bool, url: Option<&str>) -> petridish_core::schema::Project {
+    petridish_core::schema::Project {
+        id: "id".to_string(),
+        name: name.to_string(),
+        path: format!("/repos/{name}"),
+        category: "default".to_string(),
+        parent_path: None,
+        is_foreign: false,
+        git: petridish_core::schema::GitState {
+            is_repo,
+            branch: None,
+            is_dirty: false,
+            uncommitted_files: 0,
+            untracked_files: 0,
+            last_commit_at: None,
+            mine_last_commit_at: None,
+            github_url: url.map(str::to_string),
+            daily_commits: Vec::new(),
+        },
+        agent: petridish_core::schema::AgentState::idle_unknown(),
+        last_activity_at: None,
+        status_bucket: petridish_core::schema::StatusBucket::Cold,
+        agent_activity: Vec::new(),
+    }
+}
+
+#[test]
+fn the_launch_path_re_checks_the_target_the_picker_did_not() {
+    // `launch_for` knows nothing about targets, so the picker's choice would otherwise skip
+    // rule 1 entirely. The gap is reachable: the poll loop reloads state while the picker is
+    // open as a modal, so the selection can stop being a repo between the keypress that
+    // opened it and the choice that closes it — and `g` would then launch into a non-repo,
+    // reinstating the very flash #38 fixes.
+    let reg = tools::registry();
+    let gitlog = reg.iter().find(|a| a.id == "gitlog").expect("gitlog");
+    let reveal = reg.iter().find(|a| a.id == "reveal").expect("reveal");
+    let browse = reg.iter().find(|a| a.id == "browse").expect("browse");
+
+    let not_a_repo = project_with("notes", false, None);
+    let notice = petri::launch_blocked_notice(gitlog, &not_a_repo)
+        .expect("g must be refused on a non-repo, not launched");
+    assert!(
+        notice.contains("notes") && notice.contains("not a git repository"),
+        "the notice must name the project and the reason, got: {notice:?}"
+    );
+
+    // Same project, an action that only needs a path: not blocked.
+    assert_eq!(
+        petri::launch_blocked_notice(reveal, &not_a_repo),
+        None,
+        "a non-repo is a legitimate project, not a disabled one"
+    );
+
+    // And the URL axis goes through the same guard.
+    assert!(petri::launch_blocked_notice(browse, &not_a_repo).is_some());
+    let with_remote = project_with("thing", true, Some("https://github.com/x/thing"));
+    assert_eq!(petri::launch_blocked_notice(browse, &with_remote), None);
+    assert_eq!(petri::launch_blocked_notice(gitlog, &with_remote), None);
+}
+
 #[test]
 fn each_target_states_its_own_reason() {
     // The notice and the panel's dimmed entry both come from the target, so `o` and `g`
