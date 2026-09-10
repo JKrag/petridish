@@ -86,6 +86,33 @@ fn q_quits_cleanly_and_restores_the_terminal() {
          below could not be delivered, got: {first_frame:?}"
     );
 
+    // The entry proves the keystroke is deliverable; it does not prove anything was drawn,
+    // and something has to. This is the only test in this file that runs at a normal
+    // geometry — `missing_state_file_exits_one_with_message` never reaches a terminal and
+    // `survives_a_resize_to_a_degenerate_geometry` is 1x1 by construction — so if it does
+    // not assert that petri paints, nothing here does. The old `"petri"` predicate did
+    // assert it on a machine whose ambient `$HOME` had a `petri.toml` (no warning to match
+    // instead); replacing it with the entry alone would have quietly dropped that.
+    //
+    // On the GRID, not the raw stream: `settle_until_raw`'s doc comment reserves that for
+    // mode transitions, and SPEC.md §8 is why. The needle is `"petri \u{b7} "` rather than
+    // either full badge because this test inherits the ambient `$HOME`, so which screen it
+    // lands on depends on a persisted `last_screen` — the same contamination `s5_pty.rs`
+    // documents. Both badges share the prefix and the warning does not.
+    let first_grid = session.screen_until(
+        80,
+        24,
+        Duration::from_secs(5),
+        Duration::from_millis(300),
+        6,
+        |grid| grid.iter().any(|r| r.contains("petri \u{b7} ")),
+    );
+    assert!(
+        first_grid.iter().any(|r| r.contains("petri \u{b7} ")),
+        "petri must paint a frame before we send any keystroke, got:\n{}",
+        first_grid.join("\n")
+    );
+
     session
         .writer
         .write_all(b"q")
@@ -110,15 +137,22 @@ fn survives_a_resize_to_a_degenerate_geometry() {
     // than resizing after the fact, since portable-pty's own openpty already
     // exercises the same code path petri must not panic on.
     let mut session = Session::spawn(&fixture_path("minimal.json"), 1, 1);
-    // Same readiness condition as the quit test above, and for the same reason. The
+    // Same readiness condition as the quit test above, and for the same reason: the
     // unconditional `settle` that used to be here returned as soon as the stream went
     // quiet, which can be before petri has taken the terminal at all — and at 1x1 there is
-    // barely any output to keep it un-quiet. The `q` below was then written in canonical
-    // mode, buffered by the line discipline and discarded when raw mode came on, and the
-    // test failed as "child did not exit" five seconds later and nowhere near the cause.
-    // Measured during a full `make flake-hunt`: 8 failures in 24 runs at eight-way
-    // concurrency, while the same binary run on its own was clean 24 times — a reminder
-    // that this whole class only shows up under the concurrency `cargo test` actually has.
+    // barely any output to keep it un-quiet. A `q` written then is buffered by the line
+    // discipline in canonical mode and discarded when raw mode comes on.
+    //
+    // **What is measured and what is not, because the difference matters here.** This test
+    // did fail 8 times in 24 during one full `make flake-hunt`, with the "child did not
+    // exit within 5s" signature that a swallowed `q` produces. That the swallowed `q` was
+    // the cause is NOT established: the pre-fix binary was then clean 24/24 at eight-way,
+    // 24/24 at sixteen-way and 32/32 at thirty-two-way concurrency in isolation, so the
+    // failure has not been reproduced outside that one full-hunt run and plain machine load
+    // against the 5s budget below remains an equally good explanation. This change is made
+    // because an unconditional settle before a keystroke is the exact pattern this PR
+    // exists to remove and it is strictly stronger, not because it is a proven fix. If the
+    // budget below trips again, that is the other hypothesis, and it is still live.
     let mut output = String::new();
     let entered = session.settle_until_raw(
         Duration::from_secs(5),
@@ -142,9 +176,9 @@ fn survives_a_resize_to_a_degenerate_geometry() {
          raw mode rather than crashed, output so far: {output:?}"
     );
     session.writer.write_all(b"q").ok();
-    // A HANG DETECTOR, not a performance assertion — the same call this budget is made for
-    // in `s5_pty.rs`'s `EXIT_BUDGET`. Five seconds is tight enough to trip on a loaded
-    // machine, which teaches people to re-run rather than to look; the swallowed keystroke
-    // above is the reason this ever tripped, and it is fixed at the cause, not here.
-    let _ = session.wait_with_timeout(Duration::from_secs(20));
+    // Deliberately left at five seconds. This budget is what tripped when the `q` above was
+    // being swallowed, and raising it was the tempting fix — but the swallowed keystroke is
+    // fixed at its cause now, so a tight budget here buys a real signal rather than masking
+    // one. If this starts failing again, that is information, not noise to be absorbed.
+    let _ = session.wait_with_timeout(Duration::from_secs(5));
 }
