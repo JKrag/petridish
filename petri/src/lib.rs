@@ -359,20 +359,14 @@ pub fn run_mini(
 
     let prefs = prefs::load(&prefs::default_prefs_path());
 
-    crossterm::terminal::enable_raw_mode()?;
-    let mut stdout = std::io::stdout();
-    crossterm::execute!(stdout, crossterm::terminal::EnterAlternateScreen)?;
-    let backend = ratatui::backend::CrosstermBackend::new(stdout);
+    let _guard = TerminalGuard::enter()?;
+    let backend = ratatui::backend::CrosstermBackend::new(std::io::stdout());
     let mut terminal = ratatui::Terminal::new(backend)?;
     install_panic_hook();
 
+    // `_guard`'s `Drop` restores the terminal here whether the `?` above or below fires or
+    // the function falls through to `Ok(exit_code)` (issue #45).
     let exit_code = mini_poll_loop(state_path, &mut terminal, radar, target, cwd, &prefs)?;
-
-    {
-        let mut out = std::io::stdout().lock();
-        let _ = crossterm::execute!(out, crossterm::terminal::LeaveAlternateScreen);
-    }
-    let _ = crossterm::terminal::disable_raw_mode();
 
     Ok(exit_code)
 }
@@ -529,14 +523,11 @@ pub fn run(state_path: &std::path::Path) -> std::io::Result<u8> {
     };
     let prefs = prefs::load(&prefs::default_prefs_path());
 
-    // Step 2: enter alternate screen + raw mode. If any of these fails we
-    // propagate the IO error — we haven't touched terminal state beyond what
-    // succeeded, and the OS-level teardown will happen when the process exits.
-    crossterm::terminal::enable_raw_mode()?;
-    let mut stdout = std::io::stdout();
-    crossterm::execute!(stdout, crossterm::terminal::EnterAlternateScreen)?;
+    // Step 2: enter alternate screen + raw mode via `TerminalGuard`, which restores both on
+    // drop — including on every `?` below, not just the normal exit path (issue #45).
+    let _guard = TerminalGuard::enter()?;
 
-    let backend = ratatui::backend::CrosstermBackend::new(stdout);
+    let backend = ratatui::backend::CrosstermBackend::new(std::io::stdout());
     let mut terminal = ratatui::Terminal::new(backend)?;
 
     // Step 3: install a panic hook that leaves the alternate screen and
@@ -547,17 +538,51 @@ pub fn run(state_path: &std::path::Path) -> std::io::Result<u8> {
     // panic message still reaches stderr (in restored, non-raw mode).
     install_panic_hook();
 
-    // Step 4: event loop.
+    // Step 4: event loop. Step 5 (terminal restore) is `_guard`'s `Drop`, which fires here
+    // whether this `?` returns early or the function falls through to `Ok(exit_code)` below.
     let exit_code = poll_loop(state_path, &mut terminal, initial_radar, prefs)?;
 
-    // Step 5: restore the terminal on the normal (non-panic) exit path.
-    {
+    Ok(exit_code)
+}
+
+/// Raw mode + alternate screen, torn down on every path out — including an `Err` from
+/// whatever runs between `enter()` and the guard's drop (issue #45).
+///
+/// Before this existed, `run` and `run_mini` did `enable_raw_mode()?;
+/// execute!(..., EnterAlternateScreen)?; ...; Terminal::new(backend)?; ...;
+/// poll_loop(...)?;` with the restore written out by hand *after* all of those `?`s — so an
+/// `Err` from `Terminal::new` or the poll loop skipped the restore block entirely, and the
+/// user was dropped back into a shell still rendering the alternate buffer with no `reset`
+/// sequence sent. `install_panic_hook` only covers *panics*; this covers `Err` returns, the
+/// case it does not.
+///
+/// A `Drop` impl removes the class rather than the instance: every `?` between
+/// `TerminalGuard::enter()` and the end of the enclosing function unwinds through it, so
+/// there is nowhere left to add a third copy of the same hole.
+struct TerminalGuard;
+
+impl TerminalGuard {
+    /// Enable raw mode and enter the alternate screen, returning a guard that restores both
+    /// on drop. If entering the alternate screen fails after raw mode was already enabled,
+    /// raw mode is disabled again before the error is returned — otherwise that failure would
+    /// leave raw mode on with no guard yet constructed to unwind it.
+    fn enter() -> std::io::Result<Self> {
+        crossterm::terminal::enable_raw_mode()?;
+        let mut stdout = std::io::stdout();
+        if let Err(e) = crossterm::execute!(stdout, crossterm::terminal::EnterAlternateScreen) {
+            let _ = crossterm::terminal::disable_raw_mode();
+            return Err(e);
+        }
+        Ok(TerminalGuard)
+    }
+}
+
+impl Drop for TerminalGuard {
+    fn drop(&mut self) {
         let mut out = std::io::stdout().lock();
         let _ = crossterm::execute!(out, crossterm::terminal::LeaveAlternateScreen);
+        let _ = crossterm::terminal::disable_raw_mode();
     }
-    let _ = crossterm::terminal::disable_raw_mode();
-
-    Ok(exit_code)
 }
 
 /// Install a panic hook that restores the terminal (leaves alternate screen,
