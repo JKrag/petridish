@@ -99,6 +99,83 @@ fn version_wins_from_any_position() {
 }
 
 #[test]
+fn help_flags_are_recognised() {
+    for flag in ["--help", "-h"] {
+        let args = parse(&[flag]);
+        assert!(args.help, "{flag} must set help");
+        assert!(!args.version, "{flag} must not also set version");
+    }
+}
+
+#[test]
+fn help_wins_from_any_position_and_outranks_version() {
+    // Rule 0. `--help --version` printing the version would be the unhelpful answer to
+    // someone who just asked, twice over, what this program is.
+    assert!(parse(&["/tmp/state.json", "--help"]).help);
+    assert!(parse(&["--mini", "--help"]).help);
+    assert!(
+        parse(&["--help", "--version"]).help,
+        "help outranks version"
+    );
+    assert!(
+        parse(&["--version", "--help"]).help,
+        "order must not matter"
+    );
+}
+
+#[test]
+fn help_short_circuits_arguments_that_would_otherwise_be_errors() {
+    // Same property rule 1 has: asking for help must never fail on the rest of the line.
+    // `--mini -x` and a doubled positional are both hard errors without it.
+    assert!(
+        parse_args(&argv(&["--help", "--mini", "-x"]))
+            .expect("help must not fail on a bad --mini operand")
+            .help
+    );
+    assert!(
+        parse_args(&argv(&["a.json", "b.json", "-h"]))
+            .expect("help must not fail on a doubled positional")
+            .help
+    );
+}
+
+#[test]
+fn the_help_text_documents_every_flag_the_parser_accepts() {
+    // The drift this guards: a flag added to `parse_args` and not to `HELP` is invisible,
+    // and a flag removed from the parser but left in `HELP` is a lie. Asserted against the
+    // parser rather than a hardcoded list — each spelling below is one the parser really
+    // accepts, proven by the assertion in the same loop.
+    for flag in ["--mini", "-h", "--help", "-V", "--version"] {
+        assert!(
+            petri::HELP.contains(flag),
+            "{flag} is accepted by parse_args but absent from HELP"
+        );
+    }
+    // The positional, and the pointer to the in-app key list that HELP deliberately does
+    // not duplicate.
+    assert!(petri::HELP.contains("STATE_PATH"), "the positional");
+    assert!(
+        petri::HELP.contains('?'),
+        "HELP must point at the `?` popup rather than restating the key bindings"
+    );
+}
+
+#[test]
+fn the_usage_const_is_what_parse_errors_print() {
+    // `USAGE` exists so the usage line has exactly one definition; this is what stops a
+    // future edit from reintroducing a hand-written copy at an error site.
+    let err = parse_args(&argv(&["--focus"])).expect_err("--focus is not a petri flag");
+    assert!(
+        err.contains(petri::USAGE),
+        "the error must print USAGE verbatim, got: {err}"
+    );
+    assert!(
+        petri::HELP.contains("petri [STATE_PATH] [--mini [PATH|NAME]]"),
+        "HELP must carry the same usage line as USAGE"
+    );
+}
+
+#[test]
 fn bare_mini_targets_the_cwd() {
     let args = parse(&["--mini"]);
     assert_eq!(args.mini, Some(MiniTarget::Cwd));

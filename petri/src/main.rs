@@ -15,6 +15,14 @@ fn main() -> std::io::Result<()> {
         }
     };
 
+    // Help goes to stdout and exits 0: it was asked for, so it is this run's output, not a
+    // diagnostic. The `Err` branch above is the opposite case — stderr and exit 2 — and the
+    // two must not be collapsed, or `petri --help | less` pipes nothing.
+    if args.help {
+        println!("{}", petri::HELP);
+        std::process::exit(0);
+    }
+
     if args.version {
         println!("petri {}", env!("CARGO_PKG_VERSION"));
         std::process::exit(0);

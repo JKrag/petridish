@@ -56,9 +56,51 @@ pub enum MiniTarget {
     Pinned(String),
 }
 
+/// The one-line usage summary. Extracted to a const because it was previously written out
+/// by hand at each `parse_args` error site, and a usage string that exists in more than one
+/// place is one that eventually disagrees with itself — `--help` (issue #42) would have been
+/// the third copy.
+pub const USAGE: &str = "usage: petri [STATE_PATH] [--mini [PATH|NAME]]";
+
+/// The full `--help` text (issue #42).
+///
+/// Deliberately only covers the *command line*. The in-app key bindings have their own
+/// surface — the `?` popup (`help.rs`), which generates the action half from
+/// `tools::registry()` and so cannot drift from what is actually bound. Duplicating the
+/// keys here would create exactly the second copy `USAGE` exists to avoid, so this points
+/// at `?` instead of restating it.
+pub const HELP: &str = "\
+petri — a terminal dashboard for the petridish project radar.
+
+usage:
+  petri [STATE_PATH] [--mini [PATH|NAME]]
+
+arguments:
+  STATE_PATH        Read the radar from this file instead of the default
+                    (~/.petridish/projects.json). Read-only — petri never
+                    writes it; `swab scan` is the only writer.
+
+options:
+  --mini [PATH|NAME]  Run as a single-project pane instead of the full
+                      dashboard. With no operand, shows the project the
+                      terminal is standing in. The operand is matched as a
+                      path first, then as a project name.
+  -h, --help          Print this help and exit.
+  -V, --version       Print the version and exit.
+
+notes:
+  `--mini`'s operand is the argument immediately following it, and only if it
+  does not start with `-`. So `petri --mini state.json` pins a project named
+  `state.json` rather than reading a state file from it.
+
+  Press `?` inside petri for the key bindings.";
+
 /// The parsed command line.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct CliArgs {
+    /// `--help` / `-h` was given: print [`HELP`] and exit 0, ignoring everything else.
+    /// Outranks `version` — see `parse_args`' rule 0.
+    pub help: bool,
     /// `--version` / `-V` was given: print the version and exit, ignoring everything else.
     pub version: bool,
     /// The state-file path override (the long-standing first-positional test hook the PTY
@@ -78,7 +120,12 @@ pub struct CliArgs {
 /// suite depends on. So `petri --mini foo` could mean "mini, pinned to foo" or "mini,
 /// state file foo", and something has to choose. The rules, in order:
 ///
-/// 1. **`--version` or `-V` in any position wins**, and nothing else is parsed. (Today's
+/// 0. **`--help` or `-h` in any position wins over everything, including `--version`**
+///    (issue #42). Convention across GNU and BSD tools alike: when someone asks both what
+///    the tool is and what version it is, they are lost, and the help is the answer that
+///    helps. Short-circuits for the same reason rule 1 does.
+/// 1. **`--version` or `-V` in any position wins** over everything else, and nothing else
+///    is parsed. (Today's
 ///    `main.rs` only looks at argv\[1\]; this widens it, which is a superset of the shipped
 ///    behaviour rather than a change to it.)
 /// 2. **`--mini`'s operand is the argument immediately following it**, and only if that
@@ -93,6 +140,15 @@ pub struct CliArgs {
 ///    an error, returned as the message to print. Failing loudly beats silently ignoring
 ///    an argument the user clearly meant something by.
 pub fn parse_args(argv: &[String]) -> Result<CliArgs, String> {
+    // Rule 0, checked before rule 1 so `petri --help --version` prints the help: a user
+    // who asked for both is lost, and the help is the answer that helps.
+    if argv.iter().any(|a| a == "--help" || a == "-h") {
+        return Ok(CliArgs {
+            help: true,
+            ..CliArgs::default()
+        });
+    }
+
     // Rule 1, and it short-circuits: `--version` anywhere means the rest of the line is
     // never parsed, so `petri --mini --version` cannot fail on the operand it does not have.
     if argv.iter().any(|a| a == "--version" || a == "-V") {
@@ -128,16 +184,14 @@ pub fn parse_args(argv: &[String]) -> Result<CliArgs, String> {
         }
 
         if arg.starts_with('-') {
-            return Err(format!(
-                "unrecognised argument {arg}\nusage: petri [STATE_PATH] [--mini [PATH|NAME]]"
-            ));
+            return Err(format!("unrecognised argument {arg}\n{USAGE}"));
         }
 
         // Rule 3, then rule 4: the first bare positional is the state path, and a second
         // one is an error rather than a silently discarded argument.
         if out.state_path.is_some() {
             return Err(format!(
-                "unexpected extra argument {arg}: the state path is given once\nusage: petri [STATE_PATH] [--mini [PATH|NAME]]"
+                "unexpected extra argument {arg}: the state path is given once\n{USAGE}"
             ));
         }
         out.state_path = Some(std::path::PathBuf::from(arg));
