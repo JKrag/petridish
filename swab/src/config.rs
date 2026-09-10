@@ -30,6 +30,17 @@ pub struct Config {
     /// Empty by default — an exclusion nobody asked for is a project silently
     /// missing from the fleet, which is the one failure mode this tool has no way
     /// to surface.
+    ///
+    /// **Precedence: an exclusion beats `roots` and `extra_paths`.** The two sites
+    /// agree on this by construction rather than by a rule written twice —
+    /// `extra_paths` entries are seeds handed to `crawl_root`, which tests the seed
+    /// itself through `is_ignored`, and the union filter then applies again. Chosen
+    /// over "an explicit `extra_paths` entry wins" because a negative intent is the
+    /// one worth honouring when the config contradicts itself: the alternative
+    /// hides a stated exclusion. The contradiction is not left silent, though —
+    /// `swab doctor`'s `exclude_paths` check reports an exclusion that swallows a
+    /// configured root or an `extra_paths` entry whole. Excluding a *subtree under*
+    /// a root is the normal use and is not flagged.
     pub exclude_paths: Vec<PathBuf>,
     pub bucket_thresholds: HashMap<String, f64>,
     pub category_overrides: HashMap<String, String>,

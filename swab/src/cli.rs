@@ -258,6 +258,7 @@ pub fn cmd_path(
 /// Checks:
 /// - config loads without error,
 /// - every path in `roots` exists on disk (dir),
+/// - no `exclude_paths` entry swallows a configured root or `extra_paths` entry whole,
 /// - state file exists and is fresh (<24h old),
 /// - `~/.claude/settings.json` contains the HOOK_MARKER string.
 pub fn cmd_doctor(
@@ -304,6 +305,31 @@ pub fn cmd_doctor(
             Ok(true)
         } else {
             Err(format!("roots not found: {}", missing.join(", ")))
+        }
+    });
+
+    // `exclude_paths` beats `roots`/`extra_paths` (see that field's doc comment). That
+    // precedence is the right one, but it makes a contradictory config look like an empty
+    // fleet, and a project missing because of a config contradiction is exactly what
+    // nothing else here can surface. Only a *whole* configured path being swallowed is
+    // flagged — excluding a subtree under a root is the normal, intended use.
+    check!("exclude_paths", {
+        let cfg = crate::config::load_config(&crate::config::for_home(home), home)
+            .map_err(|e| format!("config load failed: {e}"))?;
+        let cancelled: Vec<String> = cfg
+            .roots
+            .iter()
+            .chain(cfg.extra_paths.iter())
+            .filter(|p| crate::discovery::is_excluded(p, &cfg))
+            .map(|p| p.display().to_string())
+            .collect();
+        if cancelled.is_empty() {
+            Ok(true)
+        } else {
+            Err(format!(
+                "exclude_paths cancels a configured path entirely: {}",
+                cancelled.join(", ")
+            ))
         }
     });
 
@@ -1212,6 +1238,60 @@ mod tests {
         assert!(
             captured.contains("ok: hook"),
             "hook should be ok: {captured}"
+        );
+        assert!(
+            captured.contains("ok: exclude_paths"),
+            "a config with no exclusions must report exclude_paths ok: {captured}"
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// `exclude_paths` beats `roots`/`extra_paths` (see that field's doc comment), so a
+    /// config that excludes a configured root entirely produces an empty fleet and no
+    /// explanation. `doctor` is the only thing that can say why, which is the whole reason
+    /// this check exists.
+    ///
+    /// The second half is the one that matters as much as the first: excluding a *subtree
+    /// under* a root is the normal, intended use and must NOT be flagged, or the check
+    /// fires on every correct configuration and gets ignored.
+    #[test]
+    fn doctor_flags_an_exclusion_that_cancels_a_root_but_not_one_below_it() {
+        let dir =
+            std::env::temp_dir().join(format!("swab_test_doctor_exclude_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join(".petridish")).unwrap();
+        std::fs::create_dir_all(dir.join("repos").join("scratch")).unwrap();
+        let state_path = dir.join(".petridish").join("projects.json");
+        write_fixture_radar(&state_path, test_radar(vec![]));
+
+        // The contradiction: the only root is also excluded.
+        std::fs::write(
+            dir.join(".petridish").join("config.toml"),
+            "roots = [\"$HOME/repos\"]\nexclude_paths = [\"$HOME/repos\"]",
+        )
+        .unwrap();
+        let mut cap = Capture::new();
+        let code = cmd_doctor(&state_path, &dir, &mut cap).unwrap();
+        let captured = cap.as_str();
+        assert_ne!(code, 0, "a cancelled root must fail doctor: {captured}");
+        assert!(
+            captured.contains("exclude_paths cancels a configured path entirely"),
+            "doctor must name the contradiction: {captured}"
+        );
+
+        // The normal case: a subtree under the root, which must not be flagged.
+        std::fs::write(
+            dir.join(".petridish").join("config.toml"),
+            "roots = [\"$HOME/repos\"]\nexclude_paths = [\"$HOME/repos/scratch\"]",
+        )
+        .unwrap();
+        let mut cap = Capture::new();
+        cmd_doctor(&state_path, &dir, &mut cap).unwrap();
+        let captured = cap.as_str();
+        assert!(
+            captured.contains("ok: exclude_paths"),
+            "excluding a subtree under a root is the intended use: {captured}"
         );
 
         let _ = std::fs::remove_dir_all(&dir);

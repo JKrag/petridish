@@ -1122,6 +1122,42 @@ mod tests {
         );
     }
 
+    /// Precedence, pinned: `exclude_paths` beats an explicit `extra_paths` entry. Both
+    /// filter sites agree on this by construction — `extra_paths` entries are seeds handed
+    /// to `crawl_root`, which tests the seed itself through `is_ignored`, and 3c applies
+    /// again afterwards — but "the two lists contradict each other and the negative wins"
+    /// is a real decision, so it gets a test rather than being left to be rediscovered.
+    /// `swab doctor`'s `exclude_paths` check is what stops this being silent.
+    #[test]
+    fn exclude_paths_beats_an_explicit_extra_paths_entry() {
+        let fixture = Tmp::new("exclude_vs_extra");
+        let listed = fixture.path.join("listed");
+        git_init_at(&listed);
+
+        // Baseline: `extra_paths` alone does reach the fleet, so the assertion below cannot
+        // pass merely because the extra path was never honoured.
+        let without = Config {
+            roots: vec![fixture.path.join("does_not_exist")],
+            extra_paths: vec![listed.clone()],
+            ..test_config(vec![fixture.path.join("does_not_exist")])
+        };
+        let paths = ScanPaths::for_home(&fixture.path);
+        assert_eq!(
+            run_scan(&without, &paths, None).projects.len(),
+            1,
+            "baseline: an extra_paths entry reaches the fleet"
+        );
+
+        let with = Config {
+            exclude_paths: vec![listed.clone()],
+            ..without
+        };
+        assert!(
+            run_scan(&with, &paths, None).projects.is_empty(),
+            "an exclusion must beat an explicit extra_paths entry"
+        );
+    }
+
     // ═══ Test 7: signal-only root outside configured roots still produces a Project. ═══
 
     #[test]
