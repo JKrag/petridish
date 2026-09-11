@@ -898,7 +898,7 @@ Four layers. Full reasoning: ADR-0003. This work is intended for unattended
    `mini_poll_loop` give them nowhere else to go, not because the property they
    assert is actually terminal-only. The generic-over-`Backend` refactor that
    would unblock moving them is its own piece of work, tracked separately
-   (issues #47/#53) rather than done as part of this audit.
+   (issue #61) rather than done as part of this audit.
 4. **Human smoke test** — but as confirmation, not as the gate. "It works, and I
    have an idea for a change" is the expected shape of it.
 
