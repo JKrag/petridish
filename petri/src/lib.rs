@@ -461,9 +461,7 @@ fn mini_poll_loop(
                 // is wired up — a resolution that would need either
                 // (`Ambiguous`/`NoTool`/`NoTarget`) is silently a no-op, the
                 // same as pressing an unbound key already is. Full parity
-                // with the Dashboard/Browser (picker, notices) is a real gap
-                // — scoped out here deliberately, but not yet filed as its
-                // own issue.
+                // with the Dashboard/Browser (picker, notices) is issue #65.
                 crossterm::event::KeyCode::Char(c) => {
                     let registry = crate::tools::registry();
                     if let Some(r) = last_good.as_ref()

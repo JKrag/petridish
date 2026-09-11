@@ -4,8 +4,8 @@
 //! key, including every registry action key, was read and silently discarded. The fix is
 //! deliberately minimal, scoped down with the maintainer rather than inferred: only the
 //! unambiguous `Resolution::Ready` case is wired up, since `--mini` has no picker and no
-//! notice pane to show anything else in. Full parity (picker, notices) is a real gap, not
-//! yet filed as its own issue. This file gates both halves of what *is* in scope — the case
+//! notice pane to show anything else in. Full parity (picker, notices) is issue #65. This
+//! file gates both halves of what *is* in scope — the case
 //! that must now work, and the case that must stay a harmless no-op.
 //!
 //! Mirrors `s8_pty_handoff.rs`'s technique for the launch half: `true` is pre-answered as
