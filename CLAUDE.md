@@ -124,6 +124,16 @@ installed for this (prunes by last-used time instead of a full wipe) — cadence
 (pre-AFK-session, scheduled, or a Makefile target) is not yet decided; whichever is chosen,
 document it here once settled so it isn't only tribal knowledge.
 
+**Dev/test/clippy builds use `line-tables-only` debuginfo** (`[profile.dev]` in the root
+`Cargo.toml`), not full debuginfo — one of matklad's [fast-rust-builds](https://matklad.github.io/2021/09/04/fast-rust-builds.html)
+tips, tried because it targets the exact bloat mechanism above. Measured before/after on a
+clean `target/`: cold `make check` 89.4s → 83.6s (~6.5% faster), `target/` after a full
+build 1.6G → 1.4G (~13% smaller), `make check` still green. Touching one file in `petri` and
+rebuilding the workspace was flat (3.48s → 3.61s, within noise) — this doesn't speed up the
+small-edit inner loop, only cold builds and disk footprint. Kept because it's free and
+zero-risk (debuginfo doesn't change runtime behavior); line-tables-only was chosen over
+disabling debuginfo entirely so panic backtraces still resolve to file:line.
+
 **PTY tests:** `petri/tests/pty_support/` drives the real binary through a pseudo-terminal.
 Assert against a reconstructed screen grid, never the raw byte stream — a partially-painted
 frame must show up as wrong content in a specific cell, not as a coincidentally-passing

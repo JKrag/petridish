@@ -50,6 +50,13 @@ serde_json = { version = "1", features = ["preserve_order"] }
 toml = "1.1"
 petridish-core = { path = "petridish-core", version = "1.0.0-beta.5" }
 
+# Dev/test/clippy builds all use this profile. Full debuginfo isn't needed for
+# local iteration (backtraces still resolve to file:line with line-tables-only),
+# and cutting it shrinks target/ and link time — see CLAUDE.md's documented
+# 441k-file/22.7GiB target/ bloat incident for why this is worth trying.
+[profile.dev]
+debug = "line-tables-only"
+
 # Release binaries are shipped as prebuilt tarballs (Homebrew tap + shell
 # installer), so build time at release is cheap and size/speed at the user's
 # machine is what matters.
