@@ -563,17 +563,24 @@ struct TerminalGuard;
 
 impl TerminalGuard {
     /// Enable raw mode and enter the alternate screen, returning a guard that restores both
-    /// on drop. If entering the alternate screen fails after raw mode was already enabled,
-    /// raw mode is disabled again before the error is returned — otherwise that failure would
-    /// leave raw mode on with no guard yet constructed to unwind it.
+    /// on drop.
+    ///
+    /// The guard is constructed right after `enable_raw_mode()`, BEFORE the
+    /// `EnterAlternateScreen` write — not after, and not by hand-catching that write's error.
+    /// `execute!` can write and flush part of the escape sequence and still return `Err` (a
+    /// Copilot review on this PR caught the earlier version, which only called
+    /// `disable_raw_mode()` on that path): if any of those bytes reached the terminal before
+    /// the failure, skipping the guard here would leave a partially-entered alternate screen
+    /// with raw mode off and nothing left in scope to send `LeaveAlternateScreen`. With the
+    /// guard already alive, the `?` below drops it on the way out and its `Drop` sends the
+    /// leave sequence regardless of how much of the enter sequence actually landed —
+    /// harmless if none of it did, corrective if some of it did.
     fn enter() -> std::io::Result<Self> {
         crossterm::terminal::enable_raw_mode()?;
+        let guard = TerminalGuard;
         let mut stdout = std::io::stdout();
-        if let Err(e) = crossterm::execute!(stdout, crossterm::terminal::EnterAlternateScreen) {
-            let _ = crossterm::terminal::disable_raw_mode();
-            return Err(e);
-        }
-        Ok(TerminalGuard)
+        crossterm::execute!(stdout, crossterm::terminal::EnterAlternateScreen)?;
+        Ok(guard)
     }
 }
 
