@@ -899,15 +899,28 @@ Four layers. Full reasoning: ADR-0003. This work is intended for unattended
    `initial_frame_shows_the_dashboard_header_and_a_populated_section_label` vs.
    `s6_snapshot.rs`'s `header_identifies_the_dashboard_screen_at_80x24` +
    `running_label_rendered_for_loaded_json_which_has_agents_present`) — both
-   removed. Most of the remaining PTY tests, though, are key-dispatch/state-
+   removed. Most of the remaining PTY tests, though, were key-dispatch/state-
    transition assertions (`Enter`→screen switch, `Space`→popup, filter typing,
    mtime-reload calling `.refresh()` not `DashboardState::new()`) that are
    conceptually pure-state tests wearing rendered content as their only
-   observable — they stay in this layer for now because `poll_loop`/
-   `mini_poll_loop` give them nowhere else to go, not because the property they
-   assert is actually terminal-only. The generic-over-`Backend` refactor that
-   would unblock moving them is its own piece of work, tracked separately
-   (issue #61) rather than done as part of this audit.
+   observable — they stayed in this layer only because `poll_loop`/
+   `mini_poll_loop` gave them nowhere else to go, not because the property they
+   assert is actually terminal-only.
+
+   Issue #61 did that generic-over-`Backend` refactor: `poll_loop`'s dispatch
+   logic is now `handle_key<B: Backend>` (public, mirroring `exec::run`'s own
+   bound), and three of the flagged tests have moved to
+   `s61_key_dispatch.rs` against `ratatui::backend::TestBackend` —
+   `s6_pty.rs`'s `enter_on_a_row_switches_from_dashboard_to_browser` and
+   `s13_pty_dashboard_actions.rs`'s two tests (that file, now empty, was
+   deleted). The rest are tracked as follow-up migration work under the same
+   issue, not done all at once here. One wrinkle #61 surfaced along the way:
+   `exec::run`'s original `where io::Error: From<B::Error>` bound could never
+   have been satisfied by `TestBackend` (its `Error` is `Infallible`, which
+   has no such `From` impl) — fixed by dropping the bound entirely and
+   formatting `B::Error` directly via its `Display` impl (guaranteed by
+   `Backend::Error: core::error::Error`), which is all `resume`'s one call
+   site ever actually needed.
 4. **Human smoke test** — but as confirmation, not as the gate. "It works, and I
    have an idea for a change" is the expected shape of it.
 

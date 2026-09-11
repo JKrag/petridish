@@ -439,10 +439,7 @@ fn mini_poll_loop<B: ratatui::backend::Backend>(
     target: &MiniTarget,
     cwd: &std::path::Path,
     prefs: &Prefs,
-) -> std::io::Result<u8>
-where
-    std::io::Error: From<B::Error>,
-{
+) -> std::io::Result<u8> {
     let mut feed = crate::feed::FeedState::seeded(&initial);
     let mut last_good = Some(initial);
     let mut last_mtime = std::fs::metadata(state_path)
@@ -687,15 +684,22 @@ fn install_panic_hook() {
 /// landing screen (petri/SPEC.md §3.2 frames it as the ambient monitor) — S6
 /// wires a one-way `Enter`-on-a-row transition to the Browser; `Tab` to
 /// switch back is S7's job (petri/SPEC.md §9), not implemented here.
+///
+/// Public so an integration test can reach it: `lib.rs` has no unit-test
+/// module, and `handle_key`'s pure-state dispatch tests need to construct and
+/// inspect this the same way they do `crate::dashboard::DashboardState`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum Screen {
+pub enum Screen {
     Dashboard,
     Browser,
 }
 
 /// What a keypress asks the poll loop to do: exit with a process code, or keep
 /// running (redraw only if this key actually changed something).
-enum KeyOutcome {
+///
+/// Public for the same reason `handle_key` is: a test needs to match on it.
+#[derive(Debug, PartialEq, Eq)]
+pub enum KeyOutcome {
     Quit(u8),
     Continue(bool),
 }
@@ -717,8 +721,14 @@ enum KeyOutcome {
 /// back: `Radar` can hold on the order of a hundred projects, and cloning it
 /// per keystroke would be real waste for a value the dispatch body only ever
 /// reads.
+///
+/// Public so an integration test can reach it: `lib.rs` has no unit-test
+/// module, and this is the seam issue #61 exists to open — proving key
+/// dispatch (screen switches, popup toggles, action routing) against a
+/// `TestBackend` instead of a real terminal, the same way `resolve_action`
+/// already does for tool resolution.
 #[allow(clippy::too_many_arguments)]
-fn handle_key<B: ratatui::backend::Backend>(
+pub fn handle_key<B: ratatui::backend::Backend>(
     key: crossterm::event::KeyEvent,
     terminal: &mut ratatui::Terminal<B>,
     screen_ref: &mut Screen,
@@ -730,10 +740,7 @@ fn handle_key<B: ratatui::backend::Backend>(
     notice_ref: &mut Option<String>,
     last_good: &Option<petridish_core::schema::Radar>,
     prefs_ref: &mut Prefs,
-) -> KeyOutcome
-where
-    std::io::Error: From<B::Error>,
-{
+) -> KeyOutcome {
     let mut screen = *screen_ref;
     let mut dashboard_state = dashboard_state_ref.take();
     let mut browser_state = browser_state_ref.take();
@@ -1257,10 +1264,7 @@ fn poll_loop<B: ratatui::backend::Backend>(
     terminal: &mut ratatui::Terminal<B>,
     mut last_good: Option<petridish_core::schema::Radar>,
     prefs: Prefs,
-) -> std::io::Result<u8>
-where
-    std::io::Error: From<B::Error>,
-{
+) -> std::io::Result<u8> {
     // Initial mtime snapshot. We don't draw on ticks where nothing has
     // changed — the initial draw below is unconditional so we always paint
     // something on startup, but subsequent mtime comparisons rely on this
@@ -1503,8 +1507,13 @@ pub fn absorb_snapshot(
 /// propagated (mid-run failures degrade in place).
 // See `render_section` in dashboard.rs: distinct render-state arguments, no
 // natural grouping, so a params struct would be lint-driven noise.
+///
+/// Public so an integration test can reach it: proving a notice or an
+/// overlay is actually drawn, not merely computed and discarded, needs the
+/// real compound render this function does (screen content + focus/help/
+/// picker/notice overlay ordering) against a `TestBackend`.
 #[allow(clippy::too_many_arguments)]
-fn render_current<B: ratatui::backend::Backend>(
+pub fn render_current<B: ratatui::backend::Backend>(
     terminal: &mut ratatui::Terminal<B>,
     radar: &Option<petridish_core::schema::Radar>,
     screen: Screen,
@@ -1689,10 +1698,7 @@ fn begin_action<B: ratatui::backend::Backend>(
     prefs: &Prefs,
     picker: &mut Option<crate::picker::PickerState>,
     picker_action: &mut Option<crate::tools::Action>,
-) -> Option<String>
-where
-    std::io::Error: From<B::Error>,
-{
+) -> Option<String> {
     let Some(project) = project else {
         return Some("nothing selected".to_string());
     };
@@ -1812,10 +1818,7 @@ fn run_action<B: ratatui::backend::Backend>(
     action: &crate::tools::Action,
     program: &str,
     project: Option<&petridish_core::schema::Project>,
-) -> Option<String>
-where
-    std::io::Error: From<B::Error>,
-{
+) -> Option<String> {
     let Some(project) = project else {
         return Some("nothing selected".to_string());
     };
@@ -1875,10 +1878,7 @@ fn launch_now<B: ratatui::backend::Backend>(
     terminal: &mut ratatui::Terminal<B>,
     launch: &crate::tools::Launch,
     cwd: &std::path::Path,
-) -> Option<String>
-where
-    std::io::Error: From<B::Error>,
-{
+) -> Option<String> {
     match crate::exec::run(terminal, launch, cwd) {
         Ok(crate::exec::Outcome::Finished(_)) | Ok(crate::exec::Outcome::Detached) => None,
         Ok(crate::exec::Outcome::Failed(e)) => {
