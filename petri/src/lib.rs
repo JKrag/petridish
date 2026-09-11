@@ -592,7 +592,8 @@ pub fn run(state_path: &std::path::Path) -> std::io::Result<u8> {
             None
         }
     };
-    let prefs = prefs::load(&prefs::default_prefs_path());
+    let prefs_path = prefs::default_prefs_path();
+    let prefs = prefs::load(&prefs_path);
 
     // Step 2: enter alternate screen + raw mode via `TerminalGuard`, which restores both on
     // drop — including on every `?` below, not just the normal exit path (issue #45).
@@ -611,7 +612,7 @@ pub fn run(state_path: &std::path::Path) -> std::io::Result<u8> {
 
     // Step 4: event loop. Step 5 (terminal restore) is `_guard`'s `Drop`, which fires here
     // whether this `?` returns early or the function falls through to `Ok(exit_code)` below.
-    let exit_code = poll_loop(state_path, &mut terminal, initial_radar, prefs)?;
+    let exit_code = poll_loop(state_path, &mut terminal, initial_radar, prefs, &prefs_path)?;
 
     Ok(exit_code)
 }
@@ -727,6 +728,14 @@ pub enum KeyOutcome {
 /// dispatch (screen switches, popup toggles, action routing) against a
 /// `TestBackend` instead of a real terminal, the same way `resolve_action`
 /// already does for tool resolution.
+///
+/// `prefs_path` is a parameter rather than an internal `prefs::default_prefs_path()`
+/// call, for the reason `default_state_path`'s doc comment already gives for its own
+/// callers: a test calling this in-process (no spawned subprocess, no scratch `$HOME`
+/// of its own) would otherwise persist straight to the real machine's
+/// `~/.petridish/petri.toml` on every Tab/Enter screen switch or ACT-8 tool choice —
+/// exactly what happened the first time a `TestBackend` test here pressed `Enter` on a
+/// project row, before this parameter existed.
 #[allow(clippy::too_many_arguments)]
 pub fn handle_key<B: ratatui::backend::Backend>(
     key: crossterm::event::KeyEvent,
@@ -740,6 +749,7 @@ pub fn handle_key<B: ratatui::backend::Backend>(
     notice_ref: &mut Option<String>,
     last_good: &Option<petridish_core::schema::Radar>,
     prefs_ref: &mut Prefs,
+    prefs_path: &std::path::Path,
 ) -> KeyOutcome {
     let mut screen = *screen_ref;
     let mut dashboard_state = dashboard_state_ref.take();
@@ -782,7 +792,7 @@ pub fn handle_key<B: ratatui::backend::Backend>(
                         // fails the user has still been asked once
                         // and only once (ACT-8).
                         prefs.tools.insert(action.id.to_string(), program.clone());
-                        if let Err(e) = prefs::save(&prefs::default_prefs_path(), &prefs) {
+                        if let Err(e) = prefs::save(prefs_path, &prefs) {
                             eprintln!("petri: persisting the tool choice failed: {e}");
                         }
                         // The focus panel names the resolved tool on its
@@ -823,7 +833,7 @@ pub fn handle_key<B: ratatui::backend::Backend>(
                 .as_ref()
                 .map(|d| d.collapsed)
                 .unwrap_or([false, false, true, true]);
-            if let Err(e) = prefs::save(&prefs::default_prefs_path(), &prefs) {
+            if let Err(e) = prefs::save(prefs_path, &prefs) {
                 eprintln!("petri S7: persist Tab switch failed: {e}");
             }
             true
@@ -868,7 +878,7 @@ pub fn handle_key<B: ratatui::backend::Backend>(
                                 // Persist Dashboard → Browser transition (same as Tab).
                                 prefs.last_screen = LastScreen::Browser;
                                 prefs.collapsed = dstate.collapsed;
-                                if let Err(e) = prefs::save(&prefs::default_prefs_path(), &prefs) {
+                                if let Err(e) = prefs::save(prefs_path, &prefs) {
                                     eprintln!("petri S7: persist Enter→Browser failed: {e}");
                                 }
                                 let mut bstate = crate::browser::BrowserState::new(radar);
@@ -1078,7 +1088,7 @@ pub fn handle_key<B: ratatui::backend::Backend>(
                 .as_ref()
                 .map(|d| d.collapsed)
                 .unwrap_or([false, false, true, true]);
-            if let Err(e) = prefs::save(&prefs::default_prefs_path(), &prefs) {
+            if let Err(e) = prefs::save(prefs_path, &prefs) {
                 eprintln!("petri S7: persist Tab switch (Browser→Dashboard) failed: {e}");
             }
             screen = Screen::Dashboard;
@@ -1264,6 +1274,7 @@ fn poll_loop<B: ratatui::backend::Backend>(
     terminal: &mut ratatui::Terminal<B>,
     mut last_good: Option<petridish_core::schema::Radar>,
     prefs: Prefs,
+    prefs_path: &std::path::Path,
 ) -> std::io::Result<u8> {
     // Initial mtime snapshot. We don't draw on ticks where nothing has
     // changed — the initial draw below is unconditional so we always paint
@@ -1359,6 +1370,7 @@ fn poll_loop<B: ratatui::backend::Backend>(
                 &mut notice,
                 &last_good,
                 &mut prefs,
+                prefs_path,
             ) {
                 KeyOutcome::Quit(code) => return Ok(code),
                 KeyOutcome::Continue(handled) => {

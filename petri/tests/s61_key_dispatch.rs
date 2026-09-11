@@ -18,13 +18,22 @@
 //!   `an_action_still_fires_while_the_focus_popup_is_open`
 //!
 //! What stays PTY (not migrated, and not attempted here): anything that
-//! actually launches a program (MECH-2/MECH-3), persists to a real prefs
-//! file, or asserts a real process's exit code — `handle_key` still has to
-//! prove those through a real terminal, which is exactly why
-//! `begin_action`/`launch_now` are the one part of dispatch this file never
-//! calls with anything but a `NoTarget`-resolving action (`o` on a
-//! no-remote project): a notice, never a launch, so there is no side effect
-//! to fake or avoid.
+//! actually launches a program (MECH-2/MECH-3) or asserts a real process's
+//! exit code — `handle_key` still has to prove those through a real
+//! terminal, which is exactly why `begin_action`/`launch_now` are the one
+//! part of dispatch this file never calls with anything but a
+//! `NoTarget`-resolving action (`o` on a no-remote project): a notice, never
+//! a launch, so there is no side effect to fake or avoid.
+//!
+//! **`handle_key` takes an explicit `prefs_path` for exactly this file's benefit.**
+//! The `Enter`-switches-screen test below persists the screen switch (same
+//! as `Tab`), and the very first version of this test called `handle_key`
+//! with no way to redirect that write — it went to this machine's real
+//! `~/.petridish/petri.toml` and overwrote it, because `prefs::default_prefs_path()`
+//! reads the real `$HOME`, and a PTY test's usual fix (a scratch `$HOME` env
+//! var for a spawned subprocess) does nothing for a function called
+//! in-process. Every test here builds its own scratch path instead — see
+//! `scratch_prefs_path` below — never the real one.
 
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use petri::dashboard::DashboardState;
@@ -33,6 +42,15 @@ use petri::{KeyOutcome, Screen, handle_key, render_current};
 use petridish_core::schema::{AgentState, GitState, Project, Radar, SCHEMA_VERSION, StatusBucket};
 use ratatui::Terminal;
 use ratatui::backend::TestBackend;
+
+/// A prefs-file path under a per-test scratch directory, never the real
+/// `~/.petridish/petri.toml` — see this module's doc comment for why that
+/// distinction is load-bearing here specifically.
+fn scratch_prefs_path(tag: &str) -> std::path::PathBuf {
+    let dir = std::env::temp_dir().join(format!("petri_s61_dispatch_{tag}_{}", std::process::id()));
+    std::fs::create_dir_all(&dir).expect("scratch dir must be creatable");
+    dir.join("petri.toml")
+}
 
 fn project(id: &str, name: &str) -> Project {
     Project {
@@ -99,6 +117,7 @@ fn enter_on_a_dashboard_row_switches_to_browser() {
     let mut help_open = false;
     let mut notice = None;
     let mut prefs = Prefs::default();
+    let prefs_path = scratch_prefs_path("enter_switch");
     let last_good = Some(radar);
     let mut terminal =
         Terminal::new(TestBackend::new(80, 24)).expect("TestBackend terminal must construct");
@@ -118,6 +137,7 @@ fn enter_on_a_dashboard_row_switches_to_browser() {
         &mut notice,
         &last_good,
         &mut prefs,
+        &prefs_path,
     );
     assert_eq!(after_j, KeyOutcome::Continue(true));
     assert_eq!(
@@ -138,6 +158,7 @@ fn enter_on_a_dashboard_row_switches_to_browser() {
         &mut notice,
         &last_good,
         &mut prefs,
+        &prefs_path,
     );
     assert_eq!(after_enter, KeyOutcome::Continue(true));
     assert_eq!(
@@ -174,6 +195,7 @@ fn an_action_on_the_dashboard_reaches_the_selected_project() {
     let mut help_open = false;
     let mut notice = None;
     let mut prefs = Prefs::default();
+    let prefs_path = scratch_prefs_path("action_dispatch");
     let last_good = Some(radar);
     let feed = petri::feed::FeedState::default();
     let mut terminal =
@@ -191,6 +213,7 @@ fn an_action_on_the_dashboard_reaches_the_selected_project() {
         &mut notice,
         &last_good,
         &mut prefs,
+        &prefs_path,
     );
 
     let outcome = handle_key(
@@ -205,6 +228,7 @@ fn an_action_on_the_dashboard_reaches_the_selected_project() {
         &mut notice,
         &last_good,
         &mut prefs,
+        &prefs_path,
     );
     assert_eq!(outcome, KeyOutcome::Continue(true));
     assert_eq!(
@@ -252,6 +276,7 @@ fn an_action_still_fires_while_the_focus_popup_is_open() {
     let mut help_open = false;
     let mut notice = None;
     let mut prefs = Prefs::default();
+    let prefs_path = scratch_prefs_path("action_popup");
     let last_good = Some(radar);
     let mut terminal =
         Terminal::new(TestBackend::new(80, 24)).expect("TestBackend terminal must construct");
@@ -268,6 +293,7 @@ fn an_action_still_fires_while_the_focus_popup_is_open() {
         &mut notice,
         &last_good,
         &mut prefs,
+        &prefs_path,
     );
     handle_key(
         key(KeyCode::Char(' ')),
@@ -281,6 +307,7 @@ fn an_action_still_fires_while_the_focus_popup_is_open() {
         &mut notice,
         &last_good,
         &mut prefs,
+        &prefs_path,
     );
     assert!(
         dashboard_state.as_ref().is_some_and(|d| d.focus_open),
@@ -299,6 +326,7 @@ fn an_action_still_fires_while_the_focus_popup_is_open() {
         &mut notice,
         &last_good,
         &mut prefs,
+        &prefs_path,
     );
     assert_eq!(outcome, KeyOutcome::Continue(true));
     assert_eq!(
