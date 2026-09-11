@@ -1475,10 +1475,11 @@ fn render_current(
                     // ever drew them). `render_notice` lives in `browser.rs`
                     // but draws a plain `Frame` + `&str`, no `BrowserState`
                     // involved, so it is exactly as reusable here.
+                    //
+                    // No `help_open` leg here: `?` isn't bound on the
+                    // Dashboard, so that branch would have no caller.
                     if let Some(p) = picker {
                         crate::picker::render(frame, p);
-                    } else if help_open {
-                        crate::help::render(frame);
                     } else if let Some(text) = notice {
                         crate::browser::render_notice(frame, text);
                     }
