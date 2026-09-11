@@ -854,6 +854,32 @@ mod tests {
         assert_eq!(p.path, repo.canonicalize().unwrap().to_str().unwrap());
     }
 
+    // ═══ Test 1b: regression guard for issue #63 — `is_repo` must not flap across ════
+    // ═══ back-to-back scans of the same, unmodified repo. ════════════════════════════
+
+    /// Runs `run_scan` twice in a row against the same real repo fixture, per #63's
+    /// suggested regression test. This is a guard, not a reproduction: the flap was
+    /// observed against one specific, so-far-unshared repo, and nothing here reproduces
+    /// the underlying `gix::open` failure — it passes today because a plain `git init`
+    /// fixture doesn't trigger whatever this one repo's structure triggers. What it does
+    /// guard is the *unconditional* form of the bug: if a future change made `git::scan`
+    /// non-idempotent for an ordinary repo, this would catch it.
+    #[test]
+    fn run_scan_twice_in_a_row_keeps_is_repo_true() {
+        let fixture = Tmp::new("repeat_scan");
+        let repo = fixture.path.join("repo");
+        git_init_at(&repo);
+
+        let first = run_scan_with_home(&fixture.path, &repo);
+        let second = run_scan_with_home(&fixture.path, &repo);
+
+        assert_eq!(first.projects.len(), 1);
+        assert_eq!(second.projects.len(), 1);
+        assert!(first.projects[0].git.is_repo, "first scan lost is_repo");
+        assert!(second.projects[0].git.is_repo, "second scan lost is_repo");
+        assert_eq!(first.projects[0].git.branch, second.projects[0].git.branch);
+    }
+
     // ═══ Test 2: round-trip serialize/deserialize Radar. ════════════════════════════
 
     #[test]
