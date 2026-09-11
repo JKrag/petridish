@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.0.0-beta.5] — 2026-09-11
+
+### Changed
+
+- `swab`: `git::scan` no longer silently discards `gix::open` failures. A
+  plain "this directory has no `.git`" (`gix::open::Error::NotARepository`)
+  still degrades to `is_repo: false` with no output, since most scanned paths
+  legitimately aren't repos — but every other failure (a malformed gitdir,
+  permission/ownership issues, bad config) is now written to stderr with the
+  resolved path, which the launchd plist already routes into `daemon.log`.
+  This is diagnostic instrumentation for #63 (a project intermittently
+  flipping from `git: main` to "Not a git repo" between scans), not a fix —
+  the underlying flap hasn't been reproduced yet.
+
 ## [1.0.0-beta.4] — 2026-09-11
 
 ### Added
