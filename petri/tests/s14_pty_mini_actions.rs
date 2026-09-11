@@ -4,9 +4,23 @@
 //! key, including every registry action key, was read and silently discarded. The fix is
 //! deliberately minimal, scoped down with the maintainer rather than inferred: only the
 //! unambiguous `Resolution::Ready` case is wired up, since `--mini` has no picker and no
-//! notice pane to show anything else in. Full parity (picker, notices) is issue #65. This
-//! file gates both halves of what *is* in scope — the case
-//! that must now work, and the case that must stay a harmless no-op.
+//! notice pane to show anything else in. Full parity (picker, notices) is issue #65.
+//!
+//! This file gates the `Ready` half at the PTY layer, where the launch hand-off is a real,
+//! observable event. **It does not attempt the same for the non-`Ready` outcomes** — a
+//! Copilot review on this PR caught an earlier version that claimed to, and the claim didn't
+//! hold up: `dispatch_mini_action`'s body is a single `if let Resolution::Ready(..) = ..`
+//! match, so "does nothing" for `Ambiguous`, `NoTool`, and `NoTarget` is exactly as
+//! unobservable on screen as the pre-fix bug it replaces — a PTY test comparing before/after
+//! frames would pass identically whether the new dispatch code ran and correctly declined,
+//! or never ran at all. That's the same "no picker/notice surface" gap issue #65 exists to
+//! close, reached from a different angle. What *is* real and PTY-observable about that half
+//! is liveness: the process must not hang or crash on a key with nowhere to resolve, which
+//! `an_action_with_nowhere_to_resolve_does_not_hang_mini` checks by demanding a clean exit
+//! immediately afterward, rather than a screen comparison. Which specific non-`Ready`
+//! variant (`Ambiguous`/`NoTool`/`NoTarget`) that single key reaches doesn't change what's
+//! being proven, since all three take the same "not `Ready`" branch; `tools::resolve`'s own
+//! classification into those three is already exhaustively covered by `s8_tools.rs`.
 //!
 //! Mirrors `s8_pty_handoff.rs`'s technique for the launch half: `true` is pre-answered as
 //! the `gitlog` tool via a seeded `petri.toml`, so the hand-off is real (suspend, run,
@@ -135,10 +149,13 @@ fn an_unambiguous_action_hands_the_terminal_to_the_resolved_tool() {
 }
 
 #[test]
-fn an_action_that_would_need_a_picker_or_notice_is_a_harmless_no_op() {
-    // No remote at all, so `o` resolves to `Resolution::NoTarget` — exactly the case
-    // `--mini`'s minimal dispatch has nowhere to show. The assertion is that this does not
-    // crash, wedge, or otherwise corrupt the pane: same screen before and after.
+fn an_action_with_nowhere_to_resolve_does_not_hang_mini() {
+    // No remote at all, so `o` resolves to `Resolution::NoTarget` — a stand-in for any
+    // non-`Ready` outcome, per this file's module doc. There is no screen effect to wait for
+    // by design, so the proof here is liveness, not a before/after frame comparison: `o`
+    // immediately followed by `q` must still produce a clean exit. A hang or a panic that
+    // corrupts the terminal (leaving raw mode set, or the child stuck) would fail this via
+    // `wait_with_timeout`'s own panic-on-hang rather than a flaky screen diff.
     let home = scratch_home("noop");
     let state_path = state_file_pointing_at(&home, true, None);
 
@@ -158,32 +175,21 @@ fn an_action_that_would_need_a_picker_or_notice_is_a_harmless_no_op() {
         5,
         |grid| grid.iter().any(|r| r.contains("mini-action-project")),
     );
+    assert!(
+        before.iter().any(|r| r.contains("mini-action-project")),
+        "precondition: the pane must show the pinned project, got:\n{}",
+        before.join("\n")
+    );
 
     session.writer.write_all(b"o").expect("write o");
     session.writer.flush().expect("flush");
-    // There is nothing to wait FOR here — the whole claim is that nothing changes — so
-    // settle for a real quiet window rather than a condition, then compare.
-    let after = session.settle(Duration::from_secs(1), Duration::from_millis(300));
-
-    assert!(
-        session.child.try_wait().ok().flatten().is_none(),
-        "petri must still be alive after an action key with nowhere to resolve, got \
-         output:\n{after}"
-    );
-    let after_screen = session.screen_retry(
-        90,
-        24,
-        Duration::from_secs(2),
-        Duration::from_millis(200),
-        3,
-    );
-    assert_eq!(
-        before, after_screen,
-        "an action key that resolves to Ambiguous/NoTool/NoTarget must be a no-op in \
-         --mini, not a partial or corrupted repaint"
-    );
-
     session.writer.write_all(b"q").expect("write q");
     session.writer.flush().expect("flush");
-    session.wait_with_timeout(Duration::from_secs(10));
+
+    let status = session.wait_with_timeout(Duration::from_secs(10));
+    assert!(
+        status.success(),
+        "an action key with nowhere to resolve, followed by q, must still exit mini \
+         cleanly (issue #64), got exit status {status:?}"
+    );
 }

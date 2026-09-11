@@ -719,6 +719,43 @@ fn the_launch_path_re_checks_the_target_the_picker_did_not() {
 }
 
 #[test]
+fn resolve_action_only_launches_on_ready_the_seam_a_pty_frame_cannot_prove() {
+    // Regression for a Copilot review on PR #66 (issue #64): the original `--mini` PTY test
+    // for "an action with nowhere to resolve is a no-op" compared screens before and after —
+    // but that comparison passes identically whether the new dispatch code ran and correctly
+    // declined to launch, or never ran at all, since a declined `Resolution` produces no
+    // repaint by design. That is not a real regression guard. `resolve_action` is the exact
+    // seam `--mini`'s dispatch calls before deciding whether to hand off the terminal, so
+    // asserting against ITS return value — deterministically, no PATH probing involved for
+    // either case below — proves what the screen cannot.
+    let reg = tools::registry();
+    let browse = reg.iter().find(|a| a.id == "browse").expect("browse");
+    let gitlog = reg.iter().find(|a| a.id == "gitlog").expect("gitlog");
+
+    // No remote at all: `Target::Url` is missing, so `tools::resolve` short-circuits on
+    // rule 1 before it ever probes an installed candidate (`petri/src/tools.rs`'s own doc
+    // comment on rule 1) — deterministic on every machine, CI included.
+    let no_remote = project_with("notes", true, None);
+    assert_eq!(
+        petri::resolve_action(browse, &no_remote, &petri::prefs::Prefs::default()),
+        Resolution::NoTarget,
+        "a project with no remote must resolve NoTarget, not silently do nothing"
+    );
+
+    // A stored answer of `true` — the same fixture `s14_pty_mini_actions.rs` seeds via
+    // `petri.toml` for its real hand-off test — collapses straight to Ready without probing
+    // any other candidate, since `true` is executable on every machine that can run this
+    // suite (a POSIX builtin/coreutil).
+    let repo = project_with("thing", true, None);
+    let mut prefs = petri::prefs::Prefs::default();
+    prefs.tools.insert("gitlog".to_string(), "true".to_string());
+    match petri::resolve_action(gitlog, &repo, &prefs) {
+        Resolution::Ready(launch) => assert_eq!(launch.program, "true"),
+        other => panic!("a stored, installed answer must resolve Ready, got {other:?}"),
+    }
+}
+
+#[test]
 fn each_target_states_its_own_reason() {
     // The notice and the panel's dimmed entry both come from the target, so `o` and `g`
     // cannot end up telling the user the same wrong thing. Regression for the hardcoded

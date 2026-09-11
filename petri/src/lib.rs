@@ -1553,7 +1553,14 @@ fn current_selected_project<'a>(
 /// answer (`begin_action`'s Dashboard/Browser dispatch and `--mini`'s
 /// Ready-only dispatch, issue #64) so the two can never disagree about which
 /// tool a project resolves to.
-fn resolve_action(
+///
+/// Public for the same reason `launch_blocked_notice` is: `lib.rs` has no unit-test module,
+/// and this is the deterministic seam that proves `--mini`'s dispatch reaches every
+/// `Resolution` variant correctly, not only `Ready` — a claim no PTY frame can make, since a
+/// declined `Ambiguous`/`NoTool`/`NoTarget` and a dispatch that never ran are the same
+/// (nonexistent) frame (a Copilot review on PR #66 caught an earlier PTY test asserting
+/// exactly that unfalsifiable claim). See `s8_tools.rs`'s `resolve_action` tests.
+pub fn resolve_action(
     action: &crate::tools::Action,
     project: &petridish_core::schema::Project,
     prefs: &Prefs,

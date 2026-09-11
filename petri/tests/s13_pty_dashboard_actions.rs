@@ -86,18 +86,22 @@ fn send(session: &mut Session, bytes: &[u8]) {
 /// section header, per `DashboardState::rebuild` — so one `j` moves it onto the project row
 /// itself, the same single deterministic step `s11_pty_focus.rs`'s tests take for the
 /// identical reason (see e.g. `space_on_a_project_row_opens_the_focus_popup`).
+///
+/// Deliberately does **not** try to synchronize on `j` itself: a `screen_retry` here only
+/// ever catches a blank grid, and the frame is non-blank both before and after `j` (the
+/// project row is already on screen), so it returned instantly without proving the
+/// keystroke had been processed (a Copilot review on this PR caught it). The real
+/// synchronization is each caller's own `settle_until` for "no remote"/"Focus" after its
+/// *next* keystroke — the OS delivers `j` and that next byte to the same fd in program
+/// order, and `poll_loop` fully handles and repaints one key per iteration before reading
+/// the next, so if `j` had not landed the following key would hit the header instead of the
+/// project row and the caller's predicate would never turn true (a loud, real failure), not
+/// a silent stale pass.
 fn spawn_alpha_02(home: &std::path::Path) -> Session {
     let state_path = state_file_with_one_no_remote_project(home);
     let mut session = Session::spawn_with_home(&state_path, 90, 40, home);
     settle_until(&mut session, "alpha-02");
     send(&mut session, b"j");
-    let _ = session.screen_retry(
-        90,
-        40,
-        Duration::from_secs(5),
-        Duration::from_millis(300),
-        5,
-    );
     session
 }
 
