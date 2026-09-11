@@ -16,6 +16,7 @@
 //!   `an_action_on_the_dashboard_reaches_the_selected_project`
 //! - `s13_pty_dashboard_actions.rs`'s
 //!   `an_action_still_fires_while_the_focus_popup_is_open`
+//! - `s8_pty_help.rs`'s `help_popup_opens_and_closes_on_any_key`
 //!
 //! What stays PTY (not migrated, and not attempted here): anything that
 //! actually launches a program (MECH-2/MECH-3) or asserts a real process's
@@ -333,5 +334,89 @@ fn an_action_still_fires_while_the_focus_popup_is_open() {
         notice.as_deref(),
         Some("alpha-02 has no remote"),
         "an action key must still dispatch to the selected project while the focus popup is open (issue #64)"
+    );
+}
+
+/// Replaces `s8_pty_help.rs`'s `help_popup_opens_and_closes_on_any_key`.
+///
+/// The popup is a modal that consumes every keystroke while open — `?` opens
+/// it, and any subsequent key (even one with its own normal-mode binding,
+/// `j` here) closes it without falling through to that binding. Starts
+/// directly on the Browser screen rather than reaching it via `Tab`: `Tab`'s
+/// own screen-switch persistence is exercised by
+/// `enter_on_a_dashboard_row_switches_to_browser` above, and this test's
+/// property is the popup, not how the Browser was reached.
+#[test]
+fn help_popup_opens_and_closes_on_any_key() {
+    let radar = radar_of(vec![project("alpha", "alpha")]);
+    let mut screen = Screen::Browser;
+    let mut dashboard_state: Option<DashboardState> = None;
+    let mut browser_state = Some(petri::browser::BrowserState::new(&radar));
+    let mut picker = None;
+    let mut picker_action = None;
+    let mut help_open = false;
+    let mut notice = None;
+    let mut prefs = Prefs::default();
+    let prefs_path = scratch_prefs_path("help_popup");
+    let last_good = Some(radar);
+    let feed = petri::feed::FeedState::default();
+    let mut terminal =
+        Terminal::new(TestBackend::new(80, 24)).expect("TestBackend terminal must construct");
+
+    let after_question = handle_key(
+        key(KeyCode::Char('?')),
+        &mut terminal,
+        &mut screen,
+        &mut dashboard_state,
+        &mut browser_state,
+        &mut picker,
+        &mut picker_action,
+        &mut help_open,
+        &mut notice,
+        &last_good,
+        &mut prefs,
+        &prefs_path,
+    );
+    assert_eq!(after_question, KeyOutcome::Continue(true));
+    assert!(help_open, "'?' must open the help popup");
+
+    render_current(
+        &mut terminal,
+        &last_good,
+        screen,
+        &dashboard_state,
+        &browser_state,
+        &picker,
+        help_open,
+        &notice,
+        &feed,
+        &prefs,
+    );
+    let opened_text = rendered_text(&terminal);
+    assert!(
+        opened_text.contains("any key closes"),
+        "the help popup's own footer must be drawn while open, got:\n{opened_text}"
+    );
+
+    // `j` has its own normal-mode binding (move selection) — closing on it
+    // rather than falling through is the whole point of a modal popup.
+    let after_j = handle_key(
+        key(KeyCode::Char('j')),
+        &mut terminal,
+        &mut screen,
+        &mut dashboard_state,
+        &mut browser_state,
+        &mut picker,
+        &mut picker_action,
+        &mut help_open,
+        &mut notice,
+        &last_good,
+        &mut prefs,
+        &prefs_path,
+    );
+    assert_eq!(after_j, KeyOutcome::Continue(true));
+    assert!(
+        !help_open,
+        "any key, including one with its own binding, must close the help popup"
     );
 }

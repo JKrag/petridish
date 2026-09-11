@@ -909,18 +909,32 @@ Four layers. Full reasoning: ADR-0003. This work is intended for unattended
 
    Issue #61 did that generic-over-`Backend` refactor: `poll_loop`'s dispatch
    logic is now `handle_key<B: Backend>` (public, mirroring `exec::run`'s own
-   bound), and three of the flagged tests have moved to
+   bound), and four of the flagged tests have moved to
    `s61_key_dispatch.rs` against `ratatui::backend::TestBackend` —
-   `s6_pty.rs`'s `enter_on_a_row_switches_from_dashboard_to_browser` and
+   `s6_pty.rs`'s `enter_on_a_row_switches_from_dashboard_to_browser`,
    `s13_pty_dashboard_actions.rs`'s two tests (that file, now empty, was
-   deleted). The rest are tracked as follow-up migration work under the same
-   issue, not done all at once here. One wrinkle #61 surfaced along the way:
-   `exec::run`'s original `where io::Error: From<B::Error>` bound could never
-   have been satisfied by `TestBackend` (its `Error` is `Infallible`, which
-   has no such `From` impl) — fixed by dropping the bound entirely and
-   formatting `B::Error` directly via its `Display` impl (guaranteed by
-   `Backend::Error: core::error::Error`), which is all `resume`'s one call
-   site ever actually needed.
+   deleted), and `s8_pty_help.rs`'s `help_popup_opens_and_closes_on_any_key`
+   (same reason — now empty, deleted). The rest are tracked as follow-up
+   migration work under the same issue, not done all at once here. Two
+   wrinkles #61 surfaced along the way:
+   - `exec::run`'s original `where io::Error: From<B::Error>` bound could
+     never have been satisfied by `TestBackend` (its `Error` is `Infallible`,
+     which has no such `From` impl) — fixed by dropping the bound entirely
+     and formatting `B::Error` directly via its `Display` impl (guaranteed by
+     `Backend::Error: core::error::Error`), which is all `resume`'s one call
+     site ever actually needed.
+   - `handle_key`'s `Tab`/`Enter` screen-switch persistence called
+     `prefs::save(&prefs::default_prefs_path(), ...)` directly, and
+     `default_prefs_path()` reads the real `$HOME`. A PTY test never hit this
+     (it spawns the real binary as a subprocess with its own scratch `$HOME`
+     env var), but a `TestBackend` test calling `handle_key` in-process has
+     no subprocess boundary to hide behind — the first version of
+     `enter_on_a_dashboard_row_switches_to_browser` wrote straight to this
+     machine's real `~/.petridish/petri.toml`. Fixed by threading
+     `prefs_path` through `handle_key`/`poll_loop` as an explicit parameter
+     (`run` computes it once via `default_prefs_path()` and passes it down),
+     the same "parameter over an environment read" convention `CLAUDE.md`
+     already states for `swab`/`petridish-cli`.
 4. **Human smoke test** — but as confirmation, not as the gate. "It works, and I
    have an idea for a change" is the expected shape of it.
 
