@@ -1134,6 +1134,19 @@ mod tests {
             out.contains("ignore_dirs\n      Directory basenames hard-skipped during crawl\n      default: [\".Trash\""),
             "ignore_dirs (a HashSet) must render sorted, matching Python's frozenset->sorted() branch"
         );
+        // issue #46: the field itself (help line + empty-list default) and the worked
+        // example in the trailing "Example" block — Copilot flagged this test as the only
+        // thing standing between `swab config` and silently dropping the option's own
+        // documentation, since removing either line would still leave every other
+        // assertion here green.
+        assert!(
+            out.contains("  exclude_paths\n      Path prefixes whose subtrees are excluded entirely, even with agent activity\n      default: []\n"),
+            "exclude_paths help/default line must be present: {out}"
+        );
+        assert!(
+            out.contains("exclude_paths = [\"/private/tmp\", \"~/repos/scratch\"]"),
+            "the worked example must still demonstrate exclude_paths: {out}"
+        );
     }
 
     // ── Tests 7..8: Doctor ──────────────────────────────────────────────
