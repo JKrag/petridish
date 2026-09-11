@@ -542,6 +542,18 @@ pub fn run_scan(config: &Config, paths: &ScanPaths, previous: Option<&Radar>) ->
     // cannot reach either.
     all_roots.retain(|root| Path::new(root).is_dir());
 
+    // 3c. Drop roots inside a configured `exclude_paths` subtree (issue #46). This is the
+    // load-bearing site for that option, and it has to be here rather than in `discovery`:
+    // a signal root is a `cwd` read out of a transcript or an event and never passes
+    // through the crawl at all, so `ignore_dirs` could not reach it at any value — which is
+    // why `/private/tmp/claude-<uid>/...`, where agents create scratch directories, was
+    // unexcludable before this. `discovery::is_ignored` also consults `exclude_paths`, but
+    // only to avoid crawling a tree we have been told to ignore; correctness lives here.
+    //
+    // Applied after 3b rather than folded into it so the two reasons a root can leave the
+    // fleet stay separable: 3b is "this is gone", 3c is "you asked us not to look".
+    all_roots.retain(|root| !discovery::is_excluded(Path::new(root), config));
+
     // Bucket thresholds — fall back to the documented defaults if config omits them. Python
     // uses `thresholds.get("active", 48.0)`, same fallback semantics.
     let thresholds = &config.bucket_thresholds;
@@ -1026,6 +1038,123 @@ mod tests {
             radar.projects[0].status_bucket,
             StatusBucket::Active,
             "Working agent overrides cold bucket -> Active"
+        );
+    }
+
+    // ═══ exclude_paths: the union filter (issue #46) ════════════════════════════════
+
+    /// The issue's motivating case, and the one `ignore_dirs` could never reach: a project
+    /// that enters the fleet **only** through a transcript's `cwd` — an agent scratch
+    /// directory under `/private/tmp` — is excluded by `exclude_paths`.
+    ///
+    /// This is the test that proves the filter belongs in `run_scan`'s union rather than in
+    /// `discovery`: nothing here is ever crawled, so a crawl-side filter alone would leave
+    /// the project in the fleet no matter how it was configured.
+    #[test]
+    fn signal_only_root_inside_an_excluded_path_produces_no_project() {
+        let fixture = Tmp::new("signal_excluded");
+
+        // Stand in for `/private/tmp/claude-<uid>`: a live directory, outside any configured
+        // root, reachable only via the transcript below.
+        let scratch_parent = fixture.path.join("scratch");
+        let scratch = scratch_parent.join("claude-501").join("session-work");
+        std::fs::create_dir_all(&scratch).expect("mkdir scratch");
+
+        let projects_dir = fixture.path.join(".claude/projects");
+        write_transcript(
+            &projects_dir.join("-slug").join("sess.jsonl"),
+            &[&tline(Some("sess-x"), scratch.to_str().unwrap())],
+            0,
+        );
+
+        let paths = ScanPaths::for_home(&fixture.path);
+
+        // First, without the exclusion: the project IS in the fleet. Without this half the
+        // test could pass because the transcript was never read at all.
+        let without = test_config(vec![fixture.path.join("does_not_exist")]);
+        let radar = run_scan(&without, &paths, None);
+        assert_eq!(
+            radar.projects.len(),
+            1,
+            "baseline: a signal-only scratch root does reach the fleet"
+        );
+
+        // Then with it.
+        let with = Config {
+            exclude_paths: vec![scratch_parent],
+            ..test_config(vec![fixture.path.join("does_not_exist")])
+        };
+        let radar = run_scan(&with, &paths, None);
+        let remaining: Vec<&str> = radar.projects.iter().map(|p| p.path.as_str()).collect();
+        assert!(
+            radar.projects.is_empty(),
+            "a signal-only root under an excluded path must not reach the fleet: {remaining:?}"
+        );
+    }
+
+    /// The other half of the issue: a subfolder under an existing search root. Here the
+    /// crawl prune and the union filter both apply, and a sibling that merely shares a
+    /// string prefix with the exclusion must survive.
+    #[test]
+    fn exclude_paths_drops_a_crawled_root_and_spares_its_prefix_sibling() {
+        let fixture = Tmp::new("exclude_crawled");
+        let kept = fixture.path.join("kept");
+        let sibling = fixture.path.join("scratchpad");
+        let dropped = fixture.path.join("scratch").join("inner");
+        for p in [&kept, &sibling, &dropped] {
+            git_init_at(p);
+        }
+
+        let config = Config {
+            exclude_paths: vec![fixture.path.join("scratch")],
+            ..test_config(vec![fixture.path.clone()])
+        };
+        let paths = ScanPaths::for_home(&fixture.path);
+        let radar = run_scan(&config, &paths, None);
+
+        let mut names: Vec<&str> = radar.projects.iter().map(|p| p.name.as_str()).collect();
+        names.sort_unstable();
+        assert_eq!(
+            names,
+            vec!["kept", "scratchpad"],
+            "the excluded subtree drops out; `scratchpad` shares a string prefix with \
+             `scratch` but not a path component, so it stays"
+        );
+    }
+
+    /// Precedence, pinned: `exclude_paths` beats an explicit `extra_paths` entry. Both
+    /// filter sites agree on this by construction — `extra_paths` entries are seeds handed
+    /// to `crawl_root`, which tests the seed itself through `is_ignored`, and 3c applies
+    /// again afterwards — but "the two lists contradict each other and the negative wins"
+    /// is a real decision, so it gets a test rather than being left to be rediscovered.
+    /// `swab doctor`'s `exclude_paths` check is what stops this being silent.
+    #[test]
+    fn exclude_paths_beats_an_explicit_extra_paths_entry() {
+        let fixture = Tmp::new("exclude_vs_extra");
+        let listed = fixture.path.join("listed");
+        git_init_at(&listed);
+
+        // Baseline: `extra_paths` alone does reach the fleet, so the assertion below cannot
+        // pass merely because the extra path was never honoured.
+        let without = Config {
+            roots: vec![fixture.path.join("does_not_exist")],
+            extra_paths: vec![listed.clone()],
+            ..test_config(vec![fixture.path.join("does_not_exist")])
+        };
+        let paths = ScanPaths::for_home(&fixture.path);
+        assert_eq!(
+            run_scan(&without, &paths, None).projects.len(),
+            1,
+            "baseline: an extra_paths entry reaches the fleet"
+        );
+
+        let with = Config {
+            exclude_paths: vec![listed.clone()],
+            ..without
+        };
+        assert!(
+            run_scan(&with, &paths, None).projects.is_empty(),
+            "an exclusion must beat an explicit extra_paths entry"
         );
     }
 
