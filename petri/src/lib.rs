@@ -451,14 +451,31 @@ fn mini_poll_loop(
     loop {
         let event_ready =
             crossterm::event::poll(std::time::Duration::from_secs(1)).unwrap_or(false);
-        if event_ready
-            && let Ok(crossterm::event::Event::Key(key)) = crossterm::event::read()
-            && matches!(
-                key.code,
-                crossterm::event::KeyCode::Char('q') | crossterm::event::KeyCode::Esc
-            )
-        {
-            return Ok(0);
+        if event_ready && let Ok(crossterm::event::Event::Key(key)) = crossterm::event::read() {
+            match key.code {
+                crossterm::event::KeyCode::Char('q') | crossterm::event::KeyCode::Esc => {
+                    return Ok(0);
+                }
+                // Tool shortcuts (issue #64), minimal on purpose: `--mini` has
+                // no picker and no notice pane, so only the unambiguous case
+                // is wired up — a resolution that would need either
+                // (`Ambiguous`/`NoTool`/`NoTarget`) is silently a no-op, the
+                // same as pressing an unbound key already is. Full parity
+                // with the Dashboard/Browser (picker, notices) is issue #65.
+                crossterm::event::KeyCode::Char(c) => {
+                    let registry = crate::tools::registry();
+                    if let Some(r) = last_good.as_ref()
+                        && let Ok(idx) = resolve_mini(r, target, cwd)
+                        && let Some(project) = r.projects.get(idx)
+                        && let Some(action) = registry.iter().find(|a| a.key == c)
+                        && let crate::tools::Resolution::Ready(launch) =
+                            resolve_action(action, project, prefs)
+                    {
+                        launch_now(terminal, &launch, std::path::Path::new(&project.path));
+                    }
+                }
+                _ => {}
+            }
         }
 
         let new_mtime = std::fs::metadata(state_path)
@@ -813,8 +830,13 @@ fn poll_loop(
                                 // the user just replaced until petri restarts.
                                 crate::focus::invalidate_tool_cache();
                             }
-                            notice =
-                                run_action(terminal, &action, &program, &last_good, &browser_state);
+                            let project = current_selected_project(
+                                screen,
+                                &last_good,
+                                &browser_state,
+                                &dashboard_state,
+                            );
+                            notice = run_action(terminal, &action, &program, project);
                         }
                     }
                 }
@@ -914,6 +936,50 @@ fn poll_loop(
                                 dstate.close_focus();
                             }
                             true
+                        }
+                        // Action keys (issue #64). Last arm, same ordering
+                        // rule as the Browser's identical arm below: every
+                        // navigation binding above keeps priority, so an
+                        // action can never steal `j`/`k`/`Space`/`Enter`.
+                        // Fires whether or not the focus popup is open — the
+                        // popup has no key handling of its own, it just
+                        // renders whatever `dstate.selected` points at
+                        // (`focus_target`'s doc comment), so the project this
+                        // dispatches to is exactly the one the popup shows.
+                        crossterm::event::KeyCode::Char(c) => {
+                            let registry = crate::tools::registry();
+                            let lower = registry.iter().find(|a| a.key == c).cloned();
+                            let shifted = registry
+                                .iter()
+                                .find(|a| a.key.to_ascii_uppercase() == c && a.key != c)
+                                .cloned();
+                            let project = dashboard_state
+                                .as_ref()
+                                .zip(last_good.as_ref())
+                                .and_then(|(d, r)| d.selected_project(r));
+                            match (lower, shifted) {
+                                (Some(action), _) => {
+                                    notice = begin_action(
+                                        terminal,
+                                        &action,
+                                        project,
+                                        &prefs,
+                                        &mut picker,
+                                        &mut picker_action,
+                                    );
+                                    true
+                                }
+                                (None, Some(action)) => {
+                                    notice = begin_repick(
+                                        &action,
+                                        project,
+                                        &mut picker,
+                                        &mut picker_action,
+                                    );
+                                    true
+                                }
+                                (None, None) => false,
+                            }
                         }
                         _ => false,
                     }
@@ -1193,13 +1259,13 @@ fn poll_loop(
                                 .iter()
                                 .find(|a| a.key.to_ascii_uppercase() == c && a.key != c)
                                 .cloned();
+                            let project = selected_project(&last_good, &browser_state);
                             match (lower, shifted) {
                                 (Some(action), _) => {
                                     notice = begin_action(
                                         terminal,
                                         &action,
-                                        &last_good,
-                                        &browser_state,
+                                        project,
                                         &prefs,
                                         &mut picker,
                                         &mut picker_action,
@@ -1209,8 +1275,7 @@ fn poll_loop(
                                 (None, Some(action)) => {
                                     notice = begin_repick(
                                         &action,
-                                        &last_good,
-                                        &browser_state,
+                                        project,
                                         &mut picker,
                                         &mut picker_action,
                                     );
@@ -1401,6 +1466,22 @@ fn render_current(
                         };
                         crate::dashboard::render_focus_overlay(frame, frame.area(), &ctx);
                     }
+                    // Same overlay ordering as the Browser, drawn on top of
+                    // everything above including the focus popup: the picker
+                    // (ACT-8/ACT-11) and the one-line notice (issue #64's
+                    // "no error is shown" half — `begin_action`/`begin_repick`
+                    // could already set these on the Dashboard, but nothing
+                    // ever drew them). `render_notice` lives in `browser.rs`
+                    // but draws a plain `Frame` + `&str`, no `BrowserState`
+                    // involved, so it is exactly as reusable here.
+                    //
+                    // No `help_open` leg here: `?` isn't bound on the
+                    // Dashboard, so that branch would have no caller.
+                    if let Some(p) = picker {
+                        crate::picker::render(frame, p);
+                    } else if let Some(text) = notice {
+                        crate::browser::render_notice(frame, text);
+                    }
                 });
             }
         }
@@ -1429,8 +1510,8 @@ fn render_current(
     }
 }
 
-/// The currently-selected project's path and remote URL, or `None` when
-/// nothing is selected (an empty filtered list is a representable state —
+/// The Browser's currently-selected project, or `None` when nothing is
+/// selected (an empty filtered list is a representable state —
 /// `browser::BrowserState::selected` is deliberately an `Option`).
 fn selected_project<'a>(
     radar: &'a Option<petridish_core::schema::Radar>,
@@ -1443,24 +1524,47 @@ fn selected_project<'a>(
     radar.projects.get(idx)
 }
 
-/// Press an action key: resolve it against this machine and this project, then
-/// either run it, open the picker, or explain why neither happened.
-///
-/// Returns the notice to display, if any. `Ok`-shaped outcomes return `None` —
-/// a successful launch needs no commentary.
-#[allow(clippy::too_many_arguments)]
-fn begin_action(
-    terminal: &mut ratatui::Terminal<ratatui::backend::CrosstermBackend<std::io::Stdout>>,
-    action: &crate::tools::Action,
-    radar: &Option<petridish_core::schema::Radar>,
+/// The current screen's selected project, whichever screen that is (issue
+/// #64). `begin_action`/`begin_repick`/`run_action` used to take `radar` and
+/// `browser_state` directly and resolve the project themselves, which meant
+/// only the Browser screen — the one state shape they knew about — could ever
+/// reach them. This is the one place that knows both screens' selection
+/// models (`browser::BrowserState::selected`+`visible` vs.
+/// `dashboard::DashboardState::selected_project`, which also covers the focus
+/// popup — it renders whatever `selected` points at, so there is no separate
+/// "popup selection" to resolve).
+fn current_selected_project<'a>(
+    screen: Screen,
+    radar: &'a Option<petridish_core::schema::Radar>,
     browser_state: &Option<crate::browser::BrowserState>,
+    dashboard_state: &Option<crate::dashboard::DashboardState>,
+) -> Option<&'a petridish_core::schema::Project> {
+    match screen {
+        Screen::Browser => selected_project(radar, browser_state),
+        Screen::Dashboard => dashboard_state
+            .as_ref()
+            .zip(radar.as_ref())
+            .and_then(|(d, r)| d.selected_project(r)),
+    }
+}
+
+/// Resolve an action against this machine and this project — the stored-tool
+/// chain plus `tools::resolve`, shared by every call site that needs an
+/// answer (`begin_action`'s Dashboard/Browser dispatch and `--mini`'s
+/// Ready-only dispatch, issue #64) so the two can never disagree about which
+/// tool a project resolves to.
+///
+/// Public for the same reason `launch_blocked_notice` is: `lib.rs` has no unit-test module,
+/// and this is the deterministic seam that proves `--mini`'s dispatch reaches every
+/// `Resolution` variant correctly, not only `Ready` — a claim no PTY frame can make, since a
+/// declined `Ambiguous`/`NoTool`/`NoTarget` and a dispatch that never ran are the same
+/// (nonexistent) frame (a Copilot review on PR #66 caught an earlier PTY test asserting
+/// exactly that unfalsifiable claim). See `s8_tools.rs`'s `resolve_action` tests.
+pub fn resolve_action(
+    action: &crate::tools::Action,
+    project: &petridish_core::schema::Project,
     prefs: &Prefs,
-    picker: &mut Option<crate::picker::PickerState>,
-    picker_action: &mut Option<crate::tools::Action>,
-) -> Option<String> {
-    let Some(project) = selected_project(radar, browser_state) else {
-        return Some("nothing selected".to_string());
-    };
+) -> crate::tools::Resolution {
     let facts = crate::tools::Facts {
         path: &project.path,
         url: project.git.github_url.as_deref(),
@@ -1495,10 +1599,29 @@ fn begin_action(
                 })
                 .flatten()
         });
-
-    match crate::tools::resolve(action, &facts, stored.as_deref(), &|p| {
+    crate::tools::resolve(action, &facts, stored.as_deref(), &|p| {
         crate::exec::is_installed_probe(p)
-    }) {
+    })
+}
+
+/// Press an action key: resolve it against this machine and this project, then
+/// either run it, open the picker, or explain why neither happened.
+///
+/// Returns the notice to display, if any. `Ok`-shaped outcomes return `None` —
+/// a successful launch needs no commentary.
+#[allow(clippy::too_many_arguments)]
+fn begin_action(
+    terminal: &mut ratatui::Terminal<ratatui::backend::CrosstermBackend<std::io::Stdout>>,
+    action: &crate::tools::Action,
+    project: Option<&petridish_core::schema::Project>,
+    prefs: &Prefs,
+    picker: &mut Option<crate::picker::PickerState>,
+    picker_action: &mut Option<crate::tools::Action>,
+) -> Option<String> {
+    let Some(project) = project else {
+        return Some("nothing selected".to_string());
+    };
+    match resolve_action(action, project, prefs) {
         crate::tools::Resolution::Ready(launch) => {
             launch_now(terminal, &launch, std::path::Path::new(&project.path))
         }
@@ -1538,12 +1661,11 @@ fn begin_action(
 /// is the door that stays open.
 fn begin_repick(
     action: &crate::tools::Action,
-    radar: &Option<petridish_core::schema::Radar>,
-    browser_state: &Option<crate::browser::BrowserState>,
+    project: Option<&petridish_core::schema::Project>,
     picker: &mut Option<crate::picker::PickerState>,
     picker_action: &mut Option<crate::tools::Action>,
 ) -> Option<String> {
-    let Some(project) = selected_project(radar, browser_state) else {
+    let Some(project) = project else {
         return Some("nothing selected".to_string());
     };
     let facts = crate::tools::Facts {
@@ -1614,10 +1736,9 @@ fn run_action(
     terminal: &mut ratatui::Terminal<ratatui::backend::CrosstermBackend<std::io::Stdout>>,
     action: &crate::tools::Action,
     program: &str,
-    radar: &Option<petridish_core::schema::Radar>,
-    browser_state: &Option<crate::browser::BrowserState>,
+    project: Option<&petridish_core::schema::Project>,
 ) -> Option<String> {
-    let Some(project) = selected_project(radar, browser_state) else {
+    let Some(project) = project else {
         return Some("nothing selected".to_string());
     };
     let facts = crate::tools::Facts {
