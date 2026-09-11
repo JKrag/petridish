@@ -2273,7 +2273,7 @@ pub(crate) fn abbreviate_home(path: &str) -> String {
 #[cfg(test)]
 mod layout_tests {
     use super::*;
-    use petridish_core::schema::{AgentState, GitState};
+    use petridish_core::schema::{AgentState, GitState, SCHEMA_VERSION};
 
     fn project(id: &str, bucket: StatusBucket) -> Project {
         Project {
@@ -2298,7 +2298,7 @@ mod layout_tests {
     fn radar_with_bucket(n: usize, bucket: StatusBucket) -> Radar {
         let projects = (0..n).map(|i| project(&format!("p{i}"), bucket)).collect();
         Radar {
-            schema_version: 1,
+            schema_version: SCHEMA_VERSION,
             updated_at: chrono::Utc::now(),
             scan_duration_ms: 0,
             projects,

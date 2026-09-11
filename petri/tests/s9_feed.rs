@@ -10,7 +10,9 @@
 //! delegating.
 
 use petri::feed::{FeedKind, FeedState, agent_detail, humanize_event};
-use petridish_core::schema::{AgentActivity, AgentState, GitState, Project, Radar, StatusBucket};
+use petridish_core::schema::{
+    AgentActivity, AgentState, GitState, Project, Radar, SCHEMA_VERSION, StatusBucket,
+};
 
 fn ts(s: &str) -> chrono::DateTime<chrono::Utc> {
     chrono::DateTime::parse_from_rfc3339(s)
@@ -65,7 +67,7 @@ fn with_git(mut p: Project, branch: &str, files: u32, commit_at: Option<&str>) -
 
 fn radar_at(updated_at: &str, projects: Vec<Project>) -> Radar {
     Radar {
-        schema_version: 1,
+        schema_version: SCHEMA_VERSION,
         updated_at: ts(updated_at),
         scan_duration_ms: 0,
         projects,
@@ -599,7 +601,7 @@ fn feed_is_capped_at_feed_capacity_dropping_the_oldest() {
             waiting_since: None,
         };
         let next = Radar {
-            schema_version: 1,
+            schema_version: SCHEMA_VERSION,
             updated_at: at,
             scan_duration_ms: 0,
             projects: vec![p],

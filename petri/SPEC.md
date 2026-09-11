@@ -526,6 +526,15 @@ The focus panel as the whole screen: one project, no list, sized for a corner sp
   **immediately following it**, and only if that argument does not start with `-`; the
   state-path hook remains the first argument that is neither a flag nor `--mini`'s operand. So
   `petri --mini state.json` pins a project called `state.json`, and does not read a state file.
+- **`--help`/`-h` outranks `--version`/`-V`, and both outrank everything else** (issue #42).
+  Each short-circuits the rest of the line, so asking for help can never fail on an argument
+  the help would have explained. Help goes to **stdout** and exits 0 — it is the output that
+  was asked for, not a diagnostic — while a parse error goes to stderr and exits 2; the two
+  must stay separate or `petri --help | less` pipes nothing. The usage line has exactly one
+  definition (`petri::USAGE`), cited by every error site, and the full help text
+  (`petri::HELP`) deliberately does **not** restate the key bindings: those belong to the `?`
+  popup, which generates the action half from `tools::registry()` and therefore cannot drift
+  from what is bound.
 
 ---
 

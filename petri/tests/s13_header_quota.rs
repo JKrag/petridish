@@ -16,7 +16,9 @@
 //! `hostile.json` stays the absent-quota case and is used as such below.
 
 use petri::dashboard;
-use petridish_core::schema::{AgentState, GitState, Project, QuotaState, Radar, StatusBucket};
+use petridish_core::schema::{
+    AgentState, GitState, Project, QuotaState, Radar, SCHEMA_VERSION, StatusBucket,
+};
 use std::path::PathBuf;
 
 fn load(name: &str) -> Radar {
@@ -72,7 +74,7 @@ fn project(id: &str) -> Project {
 /// `now()` stays where it belongs: injected into the functions that take a clock.
 fn radar(n: usize, q: Option<QuotaState>) -> Radar {
     Radar {
-        schema_version: 1,
+        schema_version: SCHEMA_VERSION,
         updated_at: chrono::Utc::now(),
         scan_duration_ms: 300,
         projects: (0..n).map(|i| project(&format!("p{i}"))).collect(),

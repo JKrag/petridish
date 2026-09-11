@@ -11,7 +11,7 @@
 //! confirmed before delegating S5.
 
 use petri::browser::BrowserState;
-use petridish_core::schema::Radar;
+use petridish_core::schema::{Radar, SCHEMA_VERSION};
 use std::path::PathBuf;
 
 fn fixture_path(name: &str) -> PathBuf {
@@ -88,7 +88,7 @@ fn empty_visible_list_has_no_selection_and_does_not_panic() {
     // exercise the true empty-list case petri/SPEC.md §3.1 requires be
     // representable.
     let radar = Radar {
-        schema_version: 1,
+        schema_version: SCHEMA_VERSION,
         updated_at: chrono::Utc::now(),
         scan_duration_ms: 0,
         projects: vec![],

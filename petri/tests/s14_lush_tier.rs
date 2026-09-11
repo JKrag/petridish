@@ -14,7 +14,9 @@
 //! two rendering tests at the end, which are structural per `SPEC.md` §8.
 
 use petri::dashboard::{self, DashboardState};
-use petridish_core::schema::{AgentActivity, AgentState, GitState, Project, Radar, StatusBucket};
+use petridish_core::schema::{
+    AgentActivity, AgentState, GitState, Project, Radar, SCHEMA_VERSION, StatusBucket,
+};
 use ratatui::layout::Rect;
 
 fn project(id: &str, bucket: StatusBucket) -> Project {
@@ -58,7 +60,7 @@ fn radar(running: usize, other: &[(StatusBucket, usize)]) -> Radar {
         }
     }
     Radar {
-        schema_version: 1,
+        schema_version: SCHEMA_VERSION,
         // Recent, so `plan_layout`'s staleness banner never eats the row the sizes below
         // are counted against.
         updated_at: chrono::Utc::now(),

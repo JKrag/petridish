@@ -12,7 +12,9 @@
 
 use petri::dashboard::{DashboardState, feed_rows_for, plan_layout};
 use petri::feed::{FeedKind, FeedState, feed_block_lines};
-use petridish_core::schema::{AgentActivity, AgentState, GitState, Project, Radar, StatusBucket};
+use petridish_core::schema::{
+    AgentActivity, AgentState, GitState, Project, Radar, SCHEMA_VERSION, StatusBucket,
+};
 use ratatui::{Terminal, backend::TestBackend, layout::Rect};
 
 fn ts(s: &str) -> chrono::DateTime<chrono::Utc> {
@@ -66,7 +68,7 @@ fn with_agent(mut p: Project, who: &str, event: &str, at: &str) -> Project {
 /// need this.
 fn fresh_radar(projects: Vec<Project>) -> Radar {
     Radar {
-        schema_version: 1,
+        schema_version: SCHEMA_VERSION,
         updated_at: chrono::Utc::now(),
         scan_duration_ms: 0,
         projects,
@@ -76,7 +78,7 @@ fn fresh_radar(projects: Vec<Project>) -> Radar {
 
 fn radar_at(updated_at: &str, projects: Vec<Project>) -> Radar {
     Radar {
-        schema_version: 1,
+        schema_version: SCHEMA_VERSION,
         updated_at: ts(updated_at),
         scan_duration_ms: 0,
         projects,

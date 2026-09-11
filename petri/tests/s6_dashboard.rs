@@ -31,7 +31,7 @@
 
 use chrono::{Duration as ChronoDuration, Utc};
 use petri::dashboard::{DashRow, DashboardState, SECTION_ORDER, SelectionAnchor};
-use petridish_core::schema::{AgentState, GitState, Project, Radar, StatusBucket};
+use petridish_core::schema::{AgentState, GitState, Project, Radar, SCHEMA_VERSION, StatusBucket};
 use std::path::PathBuf;
 
 fn fixture_path(name: &str) -> PathBuf {
@@ -69,7 +69,7 @@ fn project(id: &str, name: &str, bucket: StatusBucket) -> Project {
 
 fn radar_of(projects: Vec<Project>) -> Radar {
     Radar {
-        schema_version: 1,
+        schema_version: SCHEMA_VERSION,
         updated_at: Utc::now(),
         scan_duration_ms: 0,
         projects,
