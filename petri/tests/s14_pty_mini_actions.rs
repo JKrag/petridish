@@ -2,10 +2,11 @@
 //!
 //! Before this fix, `mini_poll_loop`'s key handling was a bare `q`/`Esc` guard — every other
 //! key, including every registry action key, was read and silently discarded. The fix is
-//! deliberately minimal (scoped in the issue's own discussion): only the unambiguous
-//! `Resolution::Ready` case is wired up, since `--mini` has no picker and no notice pane to
-//! show anything else in. This file gates both halves — the case that must now work, and
-//! the case that must stay a harmless no-op.
+//! deliberately minimal, scoped down with the maintainer rather than inferred: only the
+//! unambiguous `Resolution::Ready` case is wired up, since `--mini` has no picker and no
+//! notice pane to show anything else in. Full parity (picker, notices) is a real gap, not
+//! yet filed as its own issue. This file gates both halves of what *is* in scope — the case
+//! that must now work, and the case that must stay a harmless no-op.
 //!
 //! Mirrors `s8_pty_handoff.rs`'s technique for the launch half: `true` is pre-answered as
 //! the `gitlog` tool via a seeded `petri.toml`, so the hand-off is real (suspend, run,

@@ -18,7 +18,11 @@
 //! a `j` was processed satisfies "the row is visible" just as well as one from after, so a
 //! swallowed keystroke lands `o` on the wrong project rather than failing loudly. A
 //! single-project state file (built the same way `s14_pty_mini_actions.rs` builds its own)
-//! is selected the moment the Dashboard lands, with no navigation and nothing to race.
+//! removes that unbounded walk — there is exactly one row to reach. It does **not** remove
+//! navigation entirely: the cursor still lands on the section header first
+//! (`DashboardState::rebuild`'s first stop is always a header), so `spawn_alpha_02` still
+//! sends one `j`, the same single deterministic step `s11_pty_focus.rs` takes for the same
+//! reason — that step is load-bearing, not vestigial.
 
 mod pty_support;
 use pty_support::Session;
