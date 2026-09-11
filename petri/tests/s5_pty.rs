@@ -7,66 +7,20 @@
 //! Layer 3's actual job (ADR-0003: "the only thing covering whether q
 //! actually gives you your shell back") is plumbing/lifecycle, not visual
 //! content — that's layer 1 (`s5_selection.rs`, which exhaustively covers the
-//! real selection-movement logic) and layer 2's job. The one exception here
-//! is the initial-frame section-label check, which is the one thing S4's
-//! already-working flat-list stub structurally cannot produce (it has no
-//! section concept at all) and so is the one assertion that actually
-//! discriminates "S5 implemented" from "still the stub" — every other
-//! plausible PTY-level check (e.g. "does *something* redraw on a keypress")
-//! turned out to trivially pass against S4 too, since its poll loop already
-//! redraws unconditionally on any key event.
+//! real selection-movement logic) and layer 2's job.
 //!
-//! Requires `lib.rs`'s `poll_loop` to route key events into a live
-//! `BrowserState` and render via `browser::render` — currently it calls
-//! `app::render` (S4's flat-list placeholder, no section labels), so the
-//! section-label check FAILS on that basis, confirmed before delegating S5.
+//! The initial-frame section-label check that used to live here (`S4 stub
+//! vs. S5 implemented`) was removed by the issue #48 PTY-layer audit: once
+//! `s5_snapshot.rs`'s `section_labels_are_rendered_for_populated_buckets`
+//! existed, the two were byte-for-byte the same assertion against the same
+//! fixture, and the PTY copy bought nothing the `TestBackend` copy didn't
+//! already prove faster and without the flake risk (SPEC.md §8's rule: a PTY
+//! test earns its place only for a real-terminal-only property).
 
 mod pty_support;
 use pty_support::{Session, fixture_path};
 use std::io::Write;
 use std::time::Duration;
-
-#[test]
-fn initial_frame_shows_section_labels() {
-    // Bounded retry for the same class of OS-level PTY race documented in
-    // pty_support's module doc comment and s4_pty.rs's missing-state-file
-    // test: observed here at roughly 1/3 runs (measured empirically — this
-    // slice's real terminal setup, alternate screen + raw mode, appears to
-    // widen the race window versus S4's simpler flat-list render). ADR-0003
-    // is explicit that a flaky layer-3 test is worse than none in an
-    // unattended context, so rather than accept a nonzero flake rate, retry
-    // the whole spawn+settle cycle up to 3 times and only fail if it's
-    // consistently empty — which would mean a real regression, not this race.
-    // Waits for the FRAME, on the grid, rather than spawning up to three times and hoping
-    // one of them has painted by the time the quiet window elapses. The old shape retried
-    // only when the output was completely empty — but petri's first bytes need not be a
-    // frame at all (a prefs warning on stderr is enough to make it non-empty), and a
-    // partially painted frame is not empty either. Measured at 1 failure in 24 runs at
-    // eight-way concurrency; see `petri/scripts/flake-hunt.sh`.
-    //
-    // Asserting on the reconstructed grid rather than the raw stream is the other half:
-    // `SPEC.md` §8 names raw substring matching as the root cause of the Python TUI's worst
-    // CI flakiness, and a diffed redraw need not emit a label contiguously.
-    //
-    // normal.json populates every bucket (5 active / 4 in_flight / 4 stale / 3 cold) — see
-    // s5_snapshot.rs's identical assertion for why this is the one check that actually
-    // discriminates S5 from S4's stub. COLD is last on screen, so waiting for it means all
-    // four have been painted.
-    let mut session = Session::spawn(&fixture_path("normal.json"), 80, 40);
-    let first_frame = settle_grid_until(&mut session, 80, 40, |grid| {
-        grid.iter().any(|r| r.contains("COLD"))
-    });
-    session.writer.write_all(b"q").ok();
-    let _ = session.wait_with_timeout(EXIT_BUDGET);
-
-    let body = first_frame.join("\n");
-    for label in ["RUNNING", "IN FLIGHT", "STALE", "COLD"] {
-        assert!(
-            first_frame.iter().any(|r| r.contains(label)),
-            "initial frame must show section label {label:?}, got:\n{body}"
-        );
-    }
-}
 
 #[test]
 fn navigation_and_filter_keystrokes_do_not_crash_the_binary() {
