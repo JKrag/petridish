@@ -324,11 +324,22 @@ pub fn registry() -> Vec<Action> {
                 // instead of behaving like a TUI. `-+F` is explicit because git
                 // also exports `LESS=FRX` when LESS is otherwise unset.
                 // Measured on a real machine, not assumed.
+                //
+                // `-+X` cancels that same inherited `X`, for a distinct reason
+                // (#62): `-X` tells less to skip the terminal's init/deinit
+                // strings, which is what enters and leaves the alternate
+                // screen. With `X` left set, less draws straight into the
+                // shell's normal screen buffer, so the log survives `q` and
+                // sits appended to whatever was already there — exactly the
+                // "petri left git output in my shell" bug report. Confirmed
+                // on a real machine with `LESS=FRX`: without `-+X` the log
+                // stays inline after `q`; with it, less runs full-screen and
+                // leaves nothing behind.
                 Candidate::new(
                     "git",
                     &[
                         "-c",
-                        "core.pager=less -+F -R",
+                        "core.pager=less -+F -+X -R",
                         "log",
                         "--graph",
                         "--oneline",

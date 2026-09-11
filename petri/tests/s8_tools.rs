@@ -415,7 +415,7 @@ fn a_single_real_candidate_runs_without_asking() {
 #[test]
 fn only_placeholder_arguments_are_substituted() {
     // Literal arguments must survive untouched — `ACT-3`'s real git fallback
-    // carries seven of them, including `core.pager=less -+F -R`, and mangling any
+    // carries seven of them, including `core.pager=less -+F -+X -R`, and mangling any
     // one would change what the user sees.
     let action = Action {
         id: "gitlog",
@@ -424,7 +424,13 @@ fn only_placeholder_arguments_are_substituted() {
         target: Target::Path,
         candidates: vec![Candidate::new(
             "git",
-            &["-c", "core.pager=less -+F -R", "log", "--graph", "{path}"],
+            &[
+                "-c",
+                "core.pager=less -+F -+X -R",
+                "log",
+                "--graph",
+                "{path}",
+            ],
             ExecMode::Terminal,
         )],
     };
@@ -435,7 +441,7 @@ fn only_placeholder_arguments_are_substituted() {
             program: "git".to_string(),
             args: vec![
                 "-c".to_string(),
-                "core.pager=less -+F -R".to_string(),
+                "core.pager=less -+F -+X -R".to_string(),
                 "log".to_string(),
                 "--graph".to_string(),
                 "/Users/x/repos/thing".to_string(),
@@ -576,6 +582,32 @@ fn git_history_fallback_disables_less_quit_if_one_screen() {
     assert!(
         fallback.args.iter().any(|arg| arg.contains("-+F")),
         "git fallback pager must disable less -F so short logs stay open: {:?}",
+        fallback.args
+    );
+}
+
+#[test]
+fn git_history_fallback_disables_less_no_init_so_output_does_not_leak_into_the_shell() {
+    // Regression for #62: git also sets the `X` flag in the same inherited
+    // `LESS=FRX`, which tells less to skip the terminal's init/deinit strings
+    // — the alternate-screen enter/leave. Left set, less draws straight into
+    // the shell's normal buffer, so the log survives `q` and sticks around
+    // after petri hands the terminal back. The command line must cancel it
+    // explicitly, the same way it already cancels `F`.
+    let reg = tools::registry();
+    let gitlog = reg
+        .iter()
+        .find(|a| a.id == "gitlog")
+        .expect("registry must carry a gitlog action");
+    let fallback = gitlog
+        .candidates
+        .iter()
+        .find(|c| c.fallback)
+        .expect("gitlog must have a fallback");
+    assert_eq!(fallback.program, "git");
+    assert!(
+        fallback.args.iter().any(|arg| arg.contains("-+X")),
+        "git fallback pager must disable less -X so the log stays in its own alternate screen: {:?}",
         fallback.args
     );
 }
@@ -878,7 +910,7 @@ fn repick_lists_all_four_git_tuis_plus_their_fallback() {
                 "git",
                 &[
                     "-c",
-                    "core.pager=less -+F -R",
+                    "core.pager=less -+F -+X -R",
                     "log",
                     "--graph",
                     "--oneline",
