@@ -7,6 +7,38 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.0.0-beta.4] — 2026-09-11
+
+### Added
+
+- `swab`: `exclude_paths` config option to drop a whole subtree from the fleet
+  by path prefix, e.g. agent scratch directories under `/private/tmp/...` that
+  `ignore_dirs` could never reach (it only matches on basename, and only
+  during the crawl). `swab doctor` now also flags an exclusion that
+  accidentally swallows a configured root or `extra_paths` entry whole (#46).
+- `petri`: `--help` / `-h` (#42).
+- `petridish_core`: a single `SCHEMA_VERSION` constant, replacing a literal
+  `1` copy-pasted across 20 sites in four crates. No behavior change yet —
+  nothing compares against it — but it closes the gap that let a real
+  `swab`/`petri` version mismatch ship in beta.3 (#54).
+
+### Fixed
+
+- `petri`: the alternate screen is now guarded by a `Drop` impl, so an error
+  partway through startup can no longer leave the shell stuck rendering into
+  the TUI's alt buffer (#45).
+- `swab`: `exclude_paths` is now resolved once per scan instead of once per
+  directory visited, removing an O(directories × exclusions) cost on large
+  roots.
+
+### Changed
+
+- `petri`'s PTY test harness now parses terminal output with `vt100` instead
+  of a hand-rolled ANSI parser, closing gaps (scroll regions, line wrapping,
+  relative cursor movement) the old parser silently dropped (#47). Its test
+  suite was also audited end-to-end, dropping two tests that duplicated an
+  existing non-PTY snapshot test (#48).
+
 ## [1.0.0-beta.3] — 2026-09-10
 
 ### Added
