@@ -52,3 +52,4 @@ unicode-width = "0.2"
 # (serde_json is already a real dependency above, also usable from tests/.)
 [dev-dependencies]
 portable-pty = "0.9"
+vt100 = "0.16.2"
