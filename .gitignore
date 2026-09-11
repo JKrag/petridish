@@ -19,3 +19,4 @@ raycast-env.d.ts
 meta_docs/
 
 .claude/settings.local.json
+mutants.out/
