@@ -87,12 +87,38 @@ pub(crate) fn github_url(remote: &str) -> Option<String> {
     None
 }
 
+/// Formats a diagnostic line for a `gix::open` failure that is NOT the plain
+/// "this directory has no `.git`" case — see `scan`'s doc for why that one case is
+/// excluded. Pure and separately testable, since the `eprintln!` call site isn't.
+fn format_gix_open_failure(path: &Path, err: &gix::open::Error) -> String {
+    format!("swab: gix::open({}) failed: {err}", path.display())
+}
+
 /// gix implementation of `git::scan`. If `path` isn't a repo at all, short-circuits to
 /// `GitState::not_a_repo()` without touching any other field.
+///
+/// `run_scan` calls this for every discovered path AND every AI-agent signal root
+/// (`scan.rs`'s module doc), so a plain "no `.git` here" is the *expected* outcome for
+/// most calls, not an error worth logging — logging it unconditionally would churn
+/// `daemon.log`'s 5MB rotation every tick and bury the one failure worth seeing (issue
+/// #63). `gix::open::Error::NotARepository` is exactly that expected case (confirmed
+/// against `gix` 0.87.1's source: it's what `gix_discover` returns when it walks up from
+/// `path` and finds no git dir at all). Every other variant — `Config`, `Io`,
+/// `UnsafeGitDir`, `EnvironmentAccessDenied`, `PrefixNotRelative` — means `path` *is* (or
+/// was, until something else went wrong) a git repository that `gix` refused to open, which
+/// is the signal #63 is chasing: it's written to stderr, which the launchd plist points at
+/// `daemon.log` alongside stdout, so it surfaces from automatic scans with no plumbing
+/// change. This instruments the symptom; it does not fix it — nothing reproduces the flap
+/// here, so there's nothing yet to correct.
 pub fn scan(path: &Path, author_patterns: &[String], author_since: &str) -> GitState {
     let repo = match gix::open(path) {
         Ok(r) => r,
-        Err(_) => return GitState::not_a_repo(),
+        Err(err) => {
+            if !matches!(err, gix::open::Error::NotARepository { .. }) {
+                eprintln!("{}", format_gix_open_failure(path, &err));
+            }
+            return GitState::not_a_repo();
+        }
     };
 
     let mut result = GitState {
@@ -479,6 +505,20 @@ mod tests {
         assert_eq!(state.last_commit_at, None);
         assert_eq!(state.mine_last_commit_at, None);
         assert_eq!(state.github_url, None);
+    }
+
+    /// `format_gix_open_failure` is the only part of the issue-#63 diagnostic that's
+    /// unit-testable without capturing stderr — it just needs to actually name the path
+    /// and carry the underlying error's message, not swallow it like the old `Err(_) =>`.
+    #[test]
+    fn format_gix_open_failure_names_path_and_error() {
+        let path = Path::new("/tmp/some-repo");
+        let err = gix::open::Error::UnsafeGitDir {
+            path: path.to_path_buf(),
+        };
+        let msg = format_gix_open_failure(path, &err);
+        assert!(msg.contains("/tmp/some-repo"), "{msg}");
+        assert!(msg.contains("unsafe"), "{msg}");
     }
 
     #[test]
