@@ -338,15 +338,16 @@ Rejected alternatives:
    nature (launchd, `~/Library`) and actively refuse elsewhere via `check_platform` (D5
    below), so brew is the natural fit for discoverability and upgrades there. `doctor` and
    `menubar` are macOS-only in the same sense — their checks are launchd/`~/Library`-shaped
-   and meaningless elsewhere — but do not yet call `check_platform` themselves, so they run
-   on Linux without refusing (issue #25 tracks giving them the same explicit gate, or at
-   least an honest "not applicable" instead of the permanent `fail` they currently report
-   there). A personal tap (`brew install jkrag/tap/petridish`) rather than `homebrew-core`,
-   which imposes notability requirements and ongoing maintenance obligations. `swab` and
-   `petri` themselves carry no such dependency (issue #23/#24, landed); Linux has no
-   equivalent packaged channel yet, only the manual `cargo install` + systemd/cron path
-   README.md's "Linux" section documents (issue #26). A real Linux installer/package is a
-   future follow-up, not yet built.
+   and meaningless elsewhere — but degrade rather than refuse outright (issue #25):
+   `doctor::checks` takes the OS name the same parameter-not-`#[cfg]` way as
+   `check_platform` and reports its plist/menu-bar checks as `skip: ... not applicable` on
+   non-macOS instead of a permanent, unfixable `fail`; `menubar` prints an explicit
+   macOS-only message and still exits 0. A personal tap (`brew install jkrag/tap/petridish`)
+   rather than `homebrew-core`, which imposes notability requirements and ongoing
+   maintenance obligations. `swab` and `petri` themselves carry no such dependency (issue
+   #23/#24, landed); Linux has no equivalent packaged channel yet, only the manual `cargo
+   install` + systemd/cron path README.md's "Linux" section documents (issue #26). A real
+   Linux installer/package is a future follow-up, not yet built.
 2. **Shell installer — secondary.** A `curl | sh` script for people who do not use brew.
 3. **`cargo install` — for Rust users**, from crates.io once published, or from a git
    checkout at any time. The only channel that currently reaches Linux.

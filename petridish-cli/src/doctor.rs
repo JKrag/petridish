@@ -21,6 +21,12 @@ use std::path::Path;
 pub struct Check {
     pub key: &'static str,
     pub ok: bool,
+    /// Issue #25: `true` for a check that does not apply on this platform (the launchd
+    /// plist and the xbar/SwiftBar menu-bar plugin, on non-macOS) — reported as "skip",
+    /// distinct from both a pass and a fail, so a Linux `doctor` run does not read as a
+    /// permanently broken install.
+    #[serde(default)]
+    pub skipped: bool,
     pub detail: String,
 }
 
@@ -29,6 +35,7 @@ impl Check {
         Check {
             key,
             ok: true,
+            skipped: false,
             detail: detail.into(),
         }
     }
@@ -36,6 +43,19 @@ impl Check {
         Check {
             key,
             ok: false,
+            skipped: false,
+            detail: detail.into(),
+        }
+    }
+    /// Not applicable on this platform — issue #25. `ok: true` so it never fails the
+    /// install and never trips `main.rs`'s `checks.iter().any(|c| !c.ok)` exit code; the
+    /// distinct `skipped` flag is what lets `report()` say "not applicable" rather than
+    /// a bare, confusing "ok".
+    fn skip(key: &'static str, detail: impl Into<String>) -> Self {
+        Check {
+            key,
+            ok: true,
+            skipped: true,
             detail: detail.into(),
         }
     }
@@ -194,10 +214,18 @@ fn version_check(path_var: &str) -> Check {
 
 /// Run every install-surface check. Pure over the filesystem it is handed, so
 /// tests point it at a scratch layout.
-pub fn checks(layout: &Layout, path_var: &str) -> Vec<Check> {
+///
+/// `os` takes the same "parameter, not `#[cfg(target_os)]`" shape as
+/// `paths::check_platform` (issue #25): the plist and menu-bar-plugin checks below are
+/// meaningless on a platform `install`/`uninstall` already refuse to touch (launchd,
+/// `~/Library`), so they report [`Check::skip`] there instead of a permanent, unactionable
+/// `fail` — CI compiles and tests this crate on Linux, and a compile-time gate would make
+/// the Linux branch untestable wherever this happens to build.
+pub fn checks(layout: &Layout, path_var: &str, os: &str) -> Vec<Check> {
     let mut out = Vec::new();
 
-    // 1. Binaries resolve, absolutely (D1/D2).
+    // 1. Binaries resolve, absolutely (D1/D2). Platform-independent: `swab`/`petri` run
+    //    on Linux too (issues #23/#24), so this stays a real check everywhere.
     for name in ["swab", "swab-hook", "petridish"] {
         out.push(match crate::paths::resolve_binary_in(name, path_var) {
             Ok(p) => Check::pass("binaries", format!("{name} -> {}", p.display())),
@@ -205,45 +233,54 @@ pub fn checks(layout: &Layout, path_var: &str) -> Vec<Check> {
         });
     }
 
-    // 2. The plist exists, and the binary it names still does.
-    //
-    // This is the stale-plist failure: `brew upgrade` (or a `cargo install`
-    // into a different prefix) can move `swab` out from under a plist that
-    // still points at the old location, and launchd then runs nothing at all
-    // while looking perfectly installed.
-    let plist_path = layout.plist_path();
-    match presence(&plist_path) {
-        Presence::Absent => out.push(Check::fail(
+    // 2. The plist exists, and the binary it names still does. launchd-only: nothing to
+    //    check on a platform `install` never wrote a plist for in the first place.
+    if os != "macos" {
+        out.push(Check::skip(
             "plist",
-            format!(
-                "missing: {} — run `petridish install`",
-                plist_path.display()
-            ),
-        )),
-        Presence::Unknown(why) => out.push(Check::fail(
-            "plist",
-            format!(
-                "cannot check {} — {why}. A permissions problem, not a broken install; re-running `petridish install` will not change it.",
-                plist_path.display()
-            ),
-        )),
-        Presence::Present => match std::fs::read_to_string(&plist_path) {
-            Ok(text) => match program_path_from_plist(&text) {
-                Some(prog) => match presence(Path::new(&prog)) {
-                    Presence::Present => out.push(Check::pass("plist", format!("runs {prog}"))),
-                    Presence::Absent => out.push(Check::fail(
-                        "plist",
-                        format!("points at {prog}, which no longer exists — re-run `petridish install`"),
-                    )),
-                    Presence::Unknown(why) => out.push(Check::fail(
-                        "plist",
-                        format!("points at {prog}, which could not be checked — {why}"),
-                    )),
+            "not applicable on this platform — launchd is macOS-only",
+        ));
+    } else {
+        // This is the stale-plist failure: `brew upgrade` (or a `cargo install`
+        // into a different prefix) can move `swab` out from under a plist that
+        // still points at the old location, and launchd then runs nothing at all
+        // while looking perfectly installed.
+        let plist_path = layout.plist_path();
+        match presence(&plist_path) {
+            Presence::Absent => out.push(Check::fail(
+                "plist",
+                format!(
+                    "missing: {} — run `petridish install`",
+                    plist_path.display()
+                ),
+            )),
+            Presence::Unknown(why) => out.push(Check::fail(
+                "plist",
+                format!(
+                    "cannot check {} — {why}. A permissions problem, not a broken install; re-running `petridish install` will not change it.",
+                    plist_path.display()
+                ),
+            )),
+            Presence::Present => match std::fs::read_to_string(&plist_path) {
+                Ok(text) => match program_path_from_plist(&text) {
+                    Some(prog) => match presence(Path::new(&prog)) {
+                        Presence::Present => {
+                            out.push(Check::pass("plist", format!("runs {prog}")))
+                        }
+                        Presence::Absent => out.push(Check::fail(
+                            "plist",
+                            format!("points at {prog}, which no longer exists — re-run `petridish install`"),
+                        )),
+                        Presence::Unknown(why) => out.push(Check::fail(
+                            "plist",
+                            format!("points at {prog}, which could not be checked — {why}"),
+                        )),
+                    },
+                    None => out.push(Check::fail("plist", "could not read ProgramArguments")),
                 },
-                None => out.push(Check::fail("plist", "could not read ProgramArguments")),
+                Err(e) => out.push(Check::fail("plist", e.to_string())),
             },
-            Err(e) => out.push(Check::fail("plist", e.to_string())),
-        },
+        }
     }
 
     // 3. Hook registration, per event — a machine installed before an event
@@ -282,14 +319,25 @@ pub fn checks(layout: &Layout, path_var: &str) -> Vec<Check> {
         " — run `petridish install`",
     ));
 
-    // 5. The menu-bar plugin, only when the user wants one.
+    // 5. The menu-bar plugin, only when the user wants one. xbar/SwiftBar-only: the
+    //    default plugin directory (`paths::default_menubar_plugins_dir`) is a macOS path
+    //    that never exists on Linux, so without this gate every Linux `doctor` run would
+    //    report a permanent, unfixable "missing" here even though menu-bar is a macOS-only
+    //    experiment (issue #25) that install never wrote a plugin for.
     if let Some(dir) = &layout.menubar_plugins_dir {
-        let plugin = dir.join(MENUBAR_PLUGIN_FILENAME);
-        out.push(check_path(
-            "menubar",
-            &plugin,
-            " — run `petridish install`, or `--no-menubar-plugin` if you do not want one",
-        ));
+        if os != "macos" {
+            out.push(Check::skip(
+                "menubar",
+                "not applicable on this platform — the xbar/SwiftBar menu bar is macOS-only",
+            ));
+        } else {
+            let plugin = dir.join(MENUBAR_PLUGIN_FILENAME);
+            out.push(check_path(
+                "menubar",
+                &plugin,
+                " — run `petridish install`, or `--no-menubar-plugin` if you do not want one",
+            ));
+        }
     }
 
     // 6. Every binary reports the same version as this build.
@@ -299,11 +347,19 @@ pub fn checks(layout: &Layout, path_var: &str) -> Vec<Check> {
 }
 
 /// Print the checks and return the process exit code.
-pub fn report(checks: &[Check], out: &mut dyn Write) -> i32 {
+///
+/// `os` gates the trailing `launchctl` hint the same way [`checks`] gates the plist/menubar
+/// checks themselves (issue #25) — printing a launchd command on a platform that has no
+/// launchd is not just unhelpful, it actively contradicts a `skip: plist` line two lines
+/// above it.
+pub fn report(checks: &[Check], out: &mut dyn Write, os: &str) -> i32 {
     let mut failed = false;
     let mut passed = 0;
+    let mut skipped = 0;
     for c in checks {
-        if c.ok {
+        if c.skipped {
+            skipped += 1;
+        } else if c.ok {
             passed += 1;
         } else {
             failed = true;
@@ -311,25 +367,41 @@ pub fn report(checks: &[Check], out: &mut dyn Write) -> i32 {
         let _ = writeln!(
             out,
             "{}: {} — {}",
-            if c.ok { "ok" } else { "fail" },
+            if c.skipped {
+                "skip"
+            } else if c.ok {
+                "ok"
+            } else {
+                "fail"
+            },
             c.key,
             c.detail
         );
     }
-    let total = checks.len();
-    let failed_count = total - passed;
+    // The denominator is checks that actually apply here — a skip is neither a pass nor a
+    // fail, and folding it into "N/M passed" would either inflate a Linux run's pass count
+    // or (worse) read as a failure. Reported separately instead.
+    let applicable = checks.len() - skipped;
+    let failed_count = applicable - passed;
+    let skip_suffix = if skipped == 0 {
+        String::new()
+    } else {
+        format!(", {skipped} not applicable")
+    };
     if failed_count == 0 {
-        let _ = writeln!(out, "{total}/{total} checks passed");
+        let _ = writeln!(out, "{applicable}/{applicable} checks passed{skip_suffix}");
     } else {
         let _ = writeln!(
             out,
-            "{passed}/{total} checks passed ({failed_count} failed)"
+            "{passed}/{applicable} checks passed ({failed_count} failed{skip_suffix})"
         );
     }
-    let _ = writeln!(
-        out,
-        "\nlaunchd job status: launchctl print gui/$(id -u)/{PLIST_LABEL}"
-    );
+    if os == "macos" {
+        let _ = writeln!(
+            out,
+            "\nlaunchd job status: launchctl print gui/$(id -u)/{PLIST_LABEL}"
+        );
+    }
     i32::from(failed)
 }
 
@@ -462,11 +534,12 @@ mod tests {
     #[test]
     fn report_exits_nonzero_when_any_check_failed() {
         let mut buf = Vec::new();
-        assert_eq!(report(&[Check::pass("a", "fine")], &mut buf), 0);
+        assert_eq!(report(&[Check::pass("a", "fine")], &mut buf, "macos"), 0);
         let mut buf = Vec::new();
         let code = report(
             &[Check::pass("a", "fine"), Check::fail("b", "broken")],
             &mut buf,
+            "macos",
         );
         assert_eq!(code, 1);
         let text = String::from_utf8(buf).unwrap();
@@ -482,12 +555,96 @@ mod tests {
             .map(|i| Check::pass("c", format!("ok {i}")))
             .collect();
         let mut buf = Vec::new();
-        assert_eq!(report(&checks, &mut buf), 0);
+        assert_eq!(report(&checks, &mut buf, "macos"), 0);
         let text = String::from_utf8(buf).unwrap();
         assert!(text.contains("5/5 checks passed"), "{text}");
         let summary = text.find("5/5 checks passed").unwrap();
         let launchd = text.find("launchd job status").unwrap();
         assert!(summary < launchd, "{text}");
+    }
+
+    // ═══ Issue #25: skip, not fail, for the plist/menubar checks on non-macOS. ═══
+
+    #[test]
+    fn report_omits_the_launchd_hint_on_non_macos() {
+        let mut buf = Vec::new();
+        report(&[Check::pass("a", "fine")], &mut buf, "linux");
+        let text = String::from_utf8(buf).unwrap();
+        assert!(
+            !text.contains("launchd job status"),
+            "a platform with no launchd must not be told to run launchctl: {text}"
+        );
+    }
+
+    #[test]
+    fn report_shows_skipped_checks_separately_from_the_pass_fail_count() {
+        let checks = vec![
+            Check::pass("a", "fine"),
+            Check::skip("plist", "not applicable on this platform"),
+        ];
+        let mut buf = Vec::new();
+        let code = report(&checks, &mut buf, "linux");
+        assert_eq!(code, 0, "a skip must never fail the install");
+        let text = String::from_utf8(buf).unwrap();
+        assert!(text.contains("skip: plist"), "{text}");
+        assert!(
+            text.contains("1/1 checks passed"),
+            "the skipped check must not count toward the applicable total: {text}"
+        );
+        assert!(text.contains("not applicable"), "{text}");
+    }
+
+    #[test]
+    fn checks_reports_plist_and_menubar_as_skip_not_fail_on_linux() {
+        let tmp = TempDir::new("doctor_linux_skip");
+        let layout = Layout {
+            home: tmp.path.clone(),
+            claude_dir: tmp.path.join(".claude"),
+            launch_agents_dir: tmp.path.join("Library").join("LaunchAgents"),
+            uid: 501,
+            menubar_plugins_dir: Some(tmp.path.join("xbar-plugins")),
+        };
+        let checks = checks(&layout, "", "linux");
+
+        let plist = checks.iter().find(|c| c.key == "plist").expect("plist");
+        assert!(
+            plist.skipped,
+            "plist must be skipped on Linux: {}",
+            plist.detail
+        );
+        assert!(plist.ok, "a skip must not fail the install");
+
+        let menubar = checks.iter().find(|c| c.key == "menubar").expect("menubar");
+        assert!(
+            menubar.skipped,
+            "menubar must be skipped on Linux, not report the macOS plugin path as missing: {}",
+            menubar.detail
+        );
+        assert!(menubar.ok, "a skip must not fail the install");
+    }
+
+    #[test]
+    fn checks_still_runs_plist_and_menubar_for_real_on_macos() {
+        let tmp = TempDir::new("doctor_macos_real");
+        let layout = Layout {
+            home: tmp.path.clone(),
+            claude_dir: tmp.path.join(".claude"),
+            launch_agents_dir: tmp.path.join("Library").join("LaunchAgents"),
+            uid: 501,
+            menubar_plugins_dir: Some(tmp.path.join("xbar-plugins")),
+        };
+        let checks = checks(&layout, "", "macos");
+
+        let plist = checks.iter().find(|c| c.key == "plist").expect("plist");
+        assert!(!plist.skipped, "plist must be a real check on macOS");
+        assert!(!plist.ok, "no plist was written in this scratch layout");
+
+        let menubar = checks.iter().find(|c| c.key == "menubar").expect("menubar");
+        assert!(!menubar.skipped, "menubar must be a real check on macOS");
+        assert!(
+            !menubar.ok,
+            "no plugin file was written in this scratch layout"
+        );
     }
 
     #[test]
