@@ -215,3 +215,38 @@ fn does_not_panic_at_tiny_geometry() {
     let state = BrowserState::new(&radar);
     let _ = rendered_lines(&radar, &state, 1, 1);
 }
+
+#[test]
+fn schema_drift_banner_rendered_when_schema_version_is_newer_than_this_build() {
+    // hostile.json carries schema_version 99 (from the future, per
+    // fixtures_test.rs's own pin) — no mutation needed.
+    let radar = load("hostile.json");
+    let state = BrowserState::new(&radar);
+    let lines = rendered_lines(&radar, &state, 80, 24);
+    let whole = lines.join("\n").to_lowercase();
+    assert!(
+        whole.contains("schema") && whole.contains("upgrade"),
+        "schema_version newer than this build's SCHEMA_VERSION must render a warning banner \
+         naming the mismatch and pointing at upgrading, got:\n{whole}"
+    );
+}
+
+#[test]
+fn a_current_schema_never_shows_the_drift_banner() {
+    let radar = load("normal.json");
+    let state = BrowserState::new(&radar);
+    let lines = rendered_lines(&radar, &state, 80, 24);
+    let whole = lines.join("\n").to_lowercase();
+    assert!(
+        !whole.contains("upgrade swab"),
+        "a current schema_version must never render the drift banner, got:\n{whole}"
+    );
+}
+
+#[test]
+fn schema_drift_banner_does_not_panic_at_tiny_geometry() {
+    let mut radar = load("minimal.json");
+    radar.schema_version = SCHEMA_VERSION + 1;
+    let state = BrowserState::new(&radar);
+    let _ = rendered_lines(&radar, &state, 1, 1);
+}

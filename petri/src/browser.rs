@@ -4,7 +4,9 @@
 
 use crate::theme;
 use petridish_core::present;
-use petridish_core::schema::{AgentActivity, GitState, Project, Radar, StatusBucket};
+use petridish_core::schema::{
+    AgentActivity, GitState, Project, Radar, SCHEMA_VERSION, StatusBucket,
+};
 use ratatui::{
     Frame,
     layout::{Constraint, Layout, Rect},
@@ -320,13 +322,15 @@ pub fn render(frame: &mut Frame, radar: &Radar, state: &BrowserState, nerd: bool
         return;
     }
 
-    // Layout: header (row 0) | heavy rule (row 1) | main | footer (last row).
-    // The rule matches the Dashboard's header chrome (dashboard.rs's
-    // header_lines) so Tab between the two screens doesn't feel like a jump
-    // to a differently-styled app.
+    // Layout: header (row 0) | heavy rule (row 1) | schema-drift banner (0 or 1
+    // rows) | main | footer (last row). The rule matches the Dashboard's header
+    // chrome (dashboard.rs's header_lines) so Tab between the two screens
+    // doesn't feel like a jump to a differently-styled app.
+    let schema_ahead = radar.schema_version > SCHEMA_VERSION;
     let chunks = Layout::vertical([
         Constraint::Length(1),
         Constraint::Length(1),
+        Constraint::Length(u16::from(schema_ahead)),
         Constraint::Min(0),
         Constraint::Length(1),
     ])
@@ -359,7 +363,21 @@ pub fn render(frame: &mut Frame, radar: &Radar, state: &BrowserState, nerd: bool
     )));
     frame.render_widget(rule, chunks[1]);
 
-    let main = chunks[2];
+    if schema_ahead {
+        let banner = Line::from(Span::styled(
+            format!(
+                " ▲ schema v{} > v{SCHEMA_VERSION} — upgrade swab/petri/petridish",
+                radar.schema_version
+            ),
+            Style::default()
+                .fg(Color::Black)
+                .bg(theme::DANGER)
+                .add_modifier(Modifier::BOLD),
+        ));
+        frame.render_widget(Paragraph::new(vec![banner]), chunks[2]);
+    }
+
+    let main = chunks[3];
     let placement = detail_placement(main);
 
     // Footer: the keymap (SPEC.md §5). The bar is "would a new user be misled?"
@@ -401,7 +419,7 @@ pub fn render(frame: &mut Frame, radar: &Radar, state: &BrowserState, nerd: bool
         Style::default().fg(theme::DIM),
     )))
     .wrap(Wrap { trim: false });
-    frame.render_widget(footer, chunks[3]);
+    frame.render_widget(footer, chunks[4]);
 
     // Main area: list plus detail pane, placed per `placement` — beside the
     // list when wide enough, below it when tall-but-narrow (issue #35), or
@@ -517,16 +535,19 @@ fn list_content_rows(block_height: u16) -> usize {
 /// Number of list rows a `PageUp`/`PageDown` press should jump by, given the
 /// full terminal size (not the list block's own size — callers outside this
 /// module, i.e. `lib.rs`'s key handler, only have `crossterm::terminal::size()`
-/// to work with). Mirrors `render`'s own layout exactly: 3 rows of screen
-/// chrome (header + heavy rule + footer, `render`'s `chunks`) surround the
-/// main area, whose full height becomes the list block's OUTER height —
-/// reduced further by `below_detail_height` when `detail_placement` says the
-/// detail pane stacks below the list rather than beside it (issue #35: the
-/// list/detail split isn't always horizontal-only any more, so `width` now
-/// matters here too). `list_content_rows` then reduces that by the list
-/// block's own border rows.
-pub fn page_size(terminal_width: u16, terminal_height: u16) -> usize {
-    let main_height = terminal_height.saturating_sub(3);
+/// to work with). Mirrors `render`'s own layout exactly: 3 fixed rows of screen
+/// chrome (header + heavy rule + footer, `render`'s `chunks`) plus one more when
+/// `schema_ahead` is set (the schema-drift banner, issue #54 part 2/3 — `render`
+/// reserves that row too, and a caller that doesn't know about it would compute
+/// a page-jump one row too tall while the banner is showing) surround the main
+/// area, whose full height becomes the list block's OUTER height — reduced
+/// further by `below_detail_height` when `detail_placement` says the detail pane
+/// stacks below the list rather than beside it (issue #35: the list/detail split
+/// isn't always horizontal-only any more, so `width` now matters here too).
+/// `list_content_rows` then reduces that by the list block's own border rows.
+pub fn page_size(terminal_width: u16, terminal_height: u16, schema_ahead: bool) -> usize {
+    let fixed_rows = 3 + usize::from(schema_ahead);
+    let main_height = terminal_height.saturating_sub(fixed_rows as u16);
     let main = Rect {
         x: 0,
         y: 0,
@@ -1763,13 +1784,24 @@ mod tests {
     #[test]
     fn page_size_accounts_for_screen_chrome_and_list_borders() {
         // 24-row terminal: 24 - 3 (header/rule/footer) - 2 (list borders) = 19.
-        assert_eq!(page_size(80, 24), 19);
+        assert_eq!(page_size(80, 24, false), 19);
         // 80x50: 50 - 5 = 45.
-        assert_eq!(page_size(80, 50), 45);
+        assert_eq!(page_size(80, 50, false), 45);
         // Degenerate terminals must floor at 1, never 0 (a 0-row page jump
         // would be a silent no-op) and must never underflow/panic.
-        assert_eq!(page_size(80, 3), 1);
-        assert_eq!(page_size(80, 0), 1);
+        assert_eq!(page_size(80, 3, false), 1);
+        assert_eq!(page_size(80, 0, false), 1);
+    }
+
+    /// When `schema_ahead` is set, `render` reserves one more row for the
+    /// schema-drift banner (issue #54 part 2/3) — `page_size` must reserve
+    /// it too, or a page jump would overshoot the list's real visible rows
+    /// by exactly one while the banner is showing.
+    #[test]
+    fn page_size_reserves_an_extra_row_for_the_schema_drift_banner() {
+        assert_eq!(page_size(80, 24, true), 18);
+        assert_eq!(page_size(80, 3, true), 1);
+        assert_eq!(page_size(80, 0, true), 1);
     }
 
     /// A narrow-but-tall terminal (issue #35) stacks the detail pane below
@@ -1786,11 +1818,11 @@ mod tests {
         // `DETAIL_PANE_BELOW_MIN_HEIGHT` (8) — the smallest terminal that
         // still qualifies for `Below` at all, so the detail pane sits at
         // its floor (8): list height = 13 - 8 = 5, minus 2 list borders = 3.
-        assert_eq!(page_size(40, 16), 3);
+        assert_eq!(page_size(40, 16, false), 3);
         // 40 wide x 30 tall: main height = 27, well past the floor, so the
         // detail pane grows to its cap (`DETAIL_PANE_BELOW_MAX_HEIGHT`, 11):
         // list height = 27 - 11 = 16, minus 2 list borders = 14.
-        assert_eq!(page_size(40, 30), 14);
+        assert_eq!(page_size(40, 30, false), 14);
     }
 
     /// Regression test for a second, related real bug found via human

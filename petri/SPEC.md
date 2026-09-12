@@ -665,12 +665,19 @@ and any `swab`/`petri` binary not yet rebuilt. If `schema_version` is *greater* 
 this build knows, render normally but show a banner in the same slot as the
 staleness banner. Never hard-fail on a readable file.
 
-Implemented (issue #54 part 2/3) on the Dashboard and in the `petridish menubar`
-plugin, the two readers issue #54 names — not on the Browser or `petri --mini`,
-which still silently ignore a from-the-future `schema_version`; closing that gap
-is unscoped follow-on, not this issue. On the Dashboard, the schema banner and the
-staleness banner are independent and stack (schema drift first) rather than one
-replacing the other, in the one row each reserves above the fleet.
+Implemented everywhere (issue #54 parts 2/3, closing the issue). On the
+Dashboard, the schema banner and the staleness banner are independent and
+stack (schema drift first) rather than one replacing the other, in the rows
+each reserves above the fleet. The Browser reserves one row for it below its
+header rule, same shape. `petridish menubar` prepends a warning section.
+`petri --mini` is the one reader with a real space budget conflict: the
+banner only grows once there is a whole row of slack past
+`MINI_CHROME_MIN_HEIGHT` (`focus.rs`) — that constant already guarantees
+chrome can never push the panel below its own `MIN_FOCUS_HEIGHT` floor, and a
+third chrome row for this banner would break that guarantee right at the
+boundary, so at the chrome floor the banner is silently omitted rather than
+stealing a row from an already-at-the-floor panel. That is a deliberate,
+narrower degrade than the other three readers get, not an oversight.
 
 ### 4.7 Terminal restoration
 

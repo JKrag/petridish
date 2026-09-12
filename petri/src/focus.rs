@@ -31,7 +31,7 @@
 
 use chrono::{DateTime, Utc};
 use petridish_core::present;
-use petridish_core::schema::{Project, Radar, StatusBucket};
+use petridish_core::schema::{Project, Radar, SCHEMA_VERSION, StatusBucket};
 use ratatui::layout::Rect;
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
@@ -1261,8 +1261,24 @@ pub fn render_mini(frame: &mut ratatui::Frame, area: Rect, ctx: &FocusCtx) {
     }
 
     let chrome = area.width >= MINI_CHROME_MIN_WIDTH && area.height >= MINI_CHROME_MIN_HEIGHT;
+    // Schema-drift banner (issue #54 part 2/3): only attempted when there is a whole row
+    // of genuine slack past what `MINI_CHROME_MIN_HEIGHT` already guarantees the panel
+    // (that constant's own doc comment: chrome can never push the panel below its
+    // `MIN_FOCUS_HEIGHT` floor — a third chrome row for this banner would break exactly
+    // that guarantee at the boundary, so it only fires one row higher). `--mini`'s whole
+    // design already degrades chrome away below a threshold (this function's doc comment
+    // quoting PROPOSAL-focus-panel.md §3.4), so skipping the banner at the smallest sizes
+    // is consistent with that, not a new failure mode.
+    let schema_ahead =
+        chrome && area.height > MINI_CHROME_MIN_HEIGHT && ctx.radar.schema_version > SCHEMA_VERSION;
+    let chrome_rows = 2 + u16::from(schema_ahead);
     let content = if chrome {
-        Rect::new(area.x, area.y + 2, area.width, area.height - 2)
+        Rect::new(
+            area.x,
+            area.y + chrome_rows,
+            area.width,
+            area.height - chrome_rows,
+        )
     } else {
         area
     };
@@ -1279,6 +1295,18 @@ pub fn render_mini(frame: &mut ratatui::Frame, area: Rect, ctx: &FocusCtx) {
             rule.repeat(area.width as usize),
             Style::default().fg(theme::DIMMER),
         )));
+        if schema_ahead {
+            lines.push(Line::from(Span::styled(
+                format!(
+                    " ▲ schema v{} > v{SCHEMA_VERSION} — upgrade swab/petri/petridish",
+                    ctx.radar.schema_version
+                ),
+                Style::default()
+                    .fg(ratatui::style::Color::Black)
+                    .bg(theme::DANGER)
+                    .add_modifier(Modifier::BOLD),
+            )));
+        }
     }
 
     let body = focus_lines(content, ctx);
@@ -1521,6 +1549,91 @@ mod mini_mount_tests {
     #[test]
     fn a_degenerate_frame_does_not_panic() {
         let radar = load_normal();
+        for (w, h) in [(1, 1), (1, 40), (40, 1)] {
+            let _ = rows(&radar, w, h);
+        }
+    }
+
+    /// Issue #54 part 2/3: a `schema_version` newer than this build's `SCHEMA_VERSION`
+    /// must render as a banner rather than being silently ignored, same as the
+    /// Dashboard and menubar readers.
+    #[test]
+    fn schema_drift_banner_rendered_on_a_roomy_pane() {
+        let mut radar = load_normal();
+        radar.schema_version = SCHEMA_VERSION + 1;
+        let out = rows(&radar, 60, 20);
+        assert!(
+            out[2].to_lowercase().contains("schema") && out[2].to_lowercase().contains("upgrade"),
+            "row 2, right after header+rule, must carry the schema banner, got {:?}",
+            out[2]
+        );
+        assert!(
+            out.iter().any(|r| r.contains(&radar.projects[0].name)),
+            "the panel itself must still render below the banner, got {out:?}"
+        );
+    }
+
+    #[test]
+    fn a_current_schema_never_shows_the_drift_banner() {
+        let radar = load_normal();
+        let out = rows(&radar, 60, 20);
+        let whole = out.join("\n").to_lowercase();
+        assert!(
+            !whole.contains("upgrade swab"),
+            "a current schema_version must never render the drift banner, got:\n{whole}"
+        );
+    }
+
+    #[test]
+    fn schema_drift_banner_still_leaves_the_panel_at_its_floor_one_row_above_the_chrome_floor() {
+        // The boundary case: at `MINI_CHROME_MIN_HEIGHT + 1` the banner is admitted (unlike
+        // the floor test below), which makes chrome 3 rows and content exactly
+        // `MIN_FOCUS_HEIGHT` — the smallest height where showing the banner at all is still
+        // correct. A roomy pane (used by the sibling test above) has enough slack that an
+        // off-by-one in this arithmetic wouldn't show up; this height has none.
+        let mut radar = load_normal();
+        radar.schema_version = SCHEMA_VERSION + 1;
+        let out = rows(&radar, 60, MINI_CHROME_MIN_HEIGHT + 1);
+        assert!(
+            out[2].to_lowercase().contains("schema"),
+            "banner must still render at the boundary height, got {:?}",
+            out[2]
+        );
+        assert!(
+            out.iter().any(|r| r.contains(&radar.projects[0].name)),
+            "the panel must render real content here, not fall through to the \
+             below-the-floor message, got {out:?}"
+        );
+        assert!(
+            !out.iter().any(|r| r.contains("needs")),
+            "must not show the below-the-floor \"petri --mini needs WxH\" message here, got {out:?}"
+        );
+    }
+
+    #[test]
+    fn schema_drift_banner_is_omitted_at_the_chrome_floor_to_protect_the_panel_floor() {
+        // `MINI_CHROME_MIN_HEIGHT` (8) already guarantees the panel never drops below
+        // `MIN_FOCUS_HEIGHT` (6) once chrome grows; a third chrome row for the schema
+        // banner would break that guarantee right at this boundary, so it must not
+        // appear here even though schema_version is ahead.
+        let mut radar = load_normal();
+        radar.schema_version = SCHEMA_VERSION + 1;
+        let out = rows(&radar, 60, MINI_CHROME_MIN_HEIGHT);
+        let whole = out.join("\n").to_lowercase();
+        assert!(
+            !whole.contains("upgrade swab"),
+            "banner must not steal a row from an already-at-the-floor panel, got:\n{whole}"
+        );
+        assert!(
+            out.iter().any(|r| r.contains(&radar.projects[0].name)),
+            "the panel itself must still render, got {out:?}"
+        );
+    }
+
+    #[test]
+    fn schema_drift_banner_does_not_panic_at_degenerate_geometry() {
+        let mut radar = load_normal();
+        radar.schema_version = SCHEMA_VERSION + 1;
         for (w, h) in [(1, 1), (1, 40), (40, 1)] {
             let _ = rows(&radar, w, h);
         }

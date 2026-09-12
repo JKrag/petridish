@@ -759,6 +759,12 @@ pub fn handle_key<B: ratatui::backend::Backend>(
     let mut help_open = *help_open_ref;
     let mut notice = notice_ref.take();
     let mut prefs = prefs_ref.clone();
+    // `page_size`'s layout math must agree with `browser::render`'s, which reserves an
+    // extra row for the schema-drift banner when the loaded state is ahead of what
+    // this build understands (issue #54 part 2/3).
+    let schema_ahead = last_good
+        .as_ref()
+        .is_some_and(|r| r.schema_version > petridish_core::schema::SCHEMA_VERSION);
 
     let handled = if help_open {
         // Any key closes the popup and nothing else happens this
@@ -1001,7 +1007,7 @@ pub fn handle_key<B: ratatui::backend::Backend>(
                 if let Some(ref mut state) = browser_state {
                     let step = terminal
                         .size()
-                        .map(|s| crate::browser::page_size(s.width, s.height) as i32)
+                        .map(|s| crate::browser::page_size(s.width, s.height, schema_ahead) as i32)
                         .unwrap_or(BROWSER_FAST_JUMP);
                     state.move_selection(-step);
                 }
@@ -1011,7 +1017,7 @@ pub fn handle_key<B: ratatui::backend::Backend>(
                 if let Some(ref mut state) = browser_state {
                     let step = terminal
                         .size()
-                        .map(|s| crate::browser::page_size(s.width, s.height) as i32)
+                        .map(|s| crate::browser::page_size(s.width, s.height, schema_ahead) as i32)
                         .unwrap_or(BROWSER_FAST_JUMP);
                     state.move_selection(step);
                 }
@@ -1146,7 +1152,9 @@ pub fn handle_key<B: ratatui::backend::Backend>(
                     if let Some(ref mut state) = browser_state {
                         let step = terminal
                             .size()
-                            .map(|s| crate::browser::page_size(s.width, s.height) as i32)
+                            .map(|s| {
+                                crate::browser::page_size(s.width, s.height, schema_ahead) as i32
+                            })
                             .unwrap_or(BROWSER_FAST_JUMP);
                         state.move_selection(-step);
                     }
@@ -1156,7 +1164,9 @@ pub fn handle_key<B: ratatui::backend::Backend>(
                     if let Some(ref mut state) = browser_state {
                         let step = terminal
                             .size()
-                            .map(|s| crate::browser::page_size(s.width, s.height) as i32)
+                            .map(|s| {
+                                crate::browser::page_size(s.width, s.height, schema_ahead) as i32
+                            })
                             .unwrap_or(BROWSER_FAST_JUMP);
                         state.move_selection(step);
                     }
