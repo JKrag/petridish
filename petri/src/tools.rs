@@ -239,18 +239,23 @@ pub fn registry() -> Vec<Action> {
             // default browser is -- the correct amount of opinion for petri
             // to have about it, and it stays first/unmodified as the
             // always-available baseline on macOS. `xdg-open` is the Linux
-            // equivalent (issue #24) -- every real Linux desktop has it, so
-            // it is the fallback that makes `browse` work there at all;
-            // resolution order between it and `open` doesn't matter
-            // functionally since only one will ever be present on a given
-            // machine. The named-app entries below are `open -a "<App>"`,
-            // each given a distinct id/probe via `as_app` since they all
-            // share program "open" -- see `Candidate::as_app`'s doc comment
-            // for why that matters. Only apps with direct evidence of being
+            // equivalent (issue #24) and is marked `as_fallback()`, same as
+            // gitlog's plain `git log --graph`: it must never count toward
+            // `resolve`'s ambiguity tally (rule 4 in this module's doc
+            // comment), or a machine where both `open` and `xdg-open`
+            // resolve `installed` -- unlikely, but `resolve` has no OS gate
+            // to rule it out -- would turn `browse` `Ambiguous` instead of
+            // just picking `open`. As a fallback it still launches silently
+            // when it is the only thing installed (the real Linux case), and
+            // still shows up in the picker's menu once something else opens
+            // it. The named-app entries below are `open -a "<App>"`, each
+            // given a distinct id/probe via `as_app` since they all share
+            // program "open" -- see `Candidate::as_app`'s doc comment for
+            // why that matters. Only apps with direct evidence of being
             // installed on the machine this was written for are listed.
             candidates: vec![
                 Candidate::new("open", &["{url}"], ExecMode::Background),
-                Candidate::new("xdg-open", &["{url}"], ExecMode::Background),
+                Candidate::new("xdg-open", &["{url}"], ExecMode::Background).as_fallback(),
                 Candidate::new("open", &["-a", "Safari", "{url}"], ExecMode::Background)
                     .as_app("safari", "Safari"),
                 Candidate::new(
