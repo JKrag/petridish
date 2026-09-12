@@ -10,11 +10,13 @@ filesystem and no idea which ones are alive, which have uncommitted work, and wh
 is currently waiting on you.
 
 **`swab`** (the scanner) and **`petri`** (the terminal dashboard) are cross-platform — no
-native-macOS dependency. **`petridish`** — the installer, health-check and menu-bar
-renderer (`install`/`uninstall`/`doctor`/`menubar`) — is macOS-only by design: launchd and
-`~/Library` are load-bearing there. On Linux, skip `petridish` and run `swab`/`petri`
-directly; see [Linux](#linux) below for the manual setup that replaces what `petridish
-install` does on macOS.
+native-macOS dependency. **`petridish`**'s `install`/`uninstall` are macOS-only by design
+and refuse to run elsewhere: launchd and `~/Library` are load-bearing there. `doctor` and
+`menubar` are macOS-only in the same sense but don't yet refuse on other platforms (issue
+#25) — expect a `doctor` run on Linux to report install-related checks as failed rather than
+"not applicable" for now. On Linux, skip `petridish` and run `swab`/`petri` directly; see
+[Linux](#linux) below for the manual setup that replaces what `petridish install` does on
+macOS.
 
 ## Install
 
@@ -113,12 +115,14 @@ up where you left off.
 
 ## Linux
 
-`petridish install`/`uninstall`/`doctor`/`menubar` are macOS-only (launchd, `~/Library`) and
-refuse to run on other platforms — see ARCHITECTURE.md §8.3 D5. `swab` and `petri` carry no
-such dependency, so on Linux you build and run them directly and provide launchd's two jobs
-(periodic scanning, and the Claude Code hook registration) yourself. There is no
-`petridish`-equivalent installer for Linux yet (tracked in issue #26); this is the manual
-path in the meantime.
+`petridish install`/`uninstall` are macOS-only (launchd, `~/Library`) and actively refuse to
+run on other platforms — see ARCHITECTURE.md §8.3 D5. `doctor`/`menubar` are macOS-only in
+the same sense but don't yet call the same guard, so today they run on Linux without
+refusing and `doctor` reports its launchd/plist checks as failed rather than "not
+applicable" there (issue #25). `swab` and `petri` carry no macOS dependency at all, so on
+Linux you build and run them directly and provide launchd's two jobs (periodic scanning,
+and the Claude Code hook registration) yourself. There is no `petridish`-equivalent
+installer for Linux yet (tracked in issue #26); this is the manual path in the meantime.
 
 **1. Build.**
 
@@ -166,11 +170,23 @@ systemctl --user enable --now petridish-scan.timer
 journalctl --user -u petridish-scan -f   # logs, in place of launchd's daemon.log
 ```
 
+A user systemd manager normally stops when your last login session ends, unlike launchd's
+always-on daemon — so the timer above only scans while you're logged in unless you also
+enable lingering:
+
+```sh
+loginctl enable-linger "$USER"
+```
+
 No systemd session (or you'd rather not use it)? A user crontab entry does the same job,
-logging to the same file `petridish install` would have used on macOS:
+logging to the same file `petridish install` would have used on macOS. Guard it with
+`flock` — cron has no notion of "skip this tick if the last one is still running", and an
+overlapping `swab scan` racing itself is a real hazard here: `write_scan` reads state before
+its atomic rename and hook-event processing truncates `events.ndjson`, so two concurrent
+ticks can lose events or clobber each other's state:
 
 ```
-* * * * * $HOME/.cargo/bin/swab scan >> $HOME/.petridish/daemon.log 2>&1
+* * * * * flock -n /tmp/petridish-scan.lock $HOME/.cargo/bin/swab scan >> $HOME/.petridish/daemon.log 2>&1
 ```
 
 **3. Register the Claude Code hook.** `petridish install` normally does this step —
@@ -178,24 +194,26 @@ appending marked entries to `~/.claude/settings.json` without disturbing any oth
 consumer already configured there (see "Uninstall semantics" above). Without it, `swab-hook`
 is never invoked and `agent_activity` sensing (`waiting_since`, the "waiting on you"
 indicator) never populates; git/agent-transcript-based facts still work. Add this by hand,
-substituting the real absolute path to your `swab-hook` binary (e.g. from `which swab-hook`)
-in place of `~/.cargo/bin/swab-hook`, merging it into whatever `hooks` object is already
-there rather than overwriting the file:
+substituting the real absolute path from `which swab-hook` in place of the
+`/home/you/.cargo/bin/swab-hook` placeholder below — it must be a real absolute path, not a
+literal `~`: the path is single-quoted in the command string precisely so a space in it
+can't break the shell, and single quotes disable `~`-expansion along with everything else.
+Merge this into whatever `hooks` object is already there rather than overwriting the file:
 
 ```json
 {
   "hooks": {
     "PreToolUse": [
-      { "hooks": [ { "type": "command", "command": "'~/.cargo/bin/swab-hook' # petridish" } ] }
+      { "hooks": [ { "type": "command", "command": "'/home/you/.cargo/bin/swab-hook' # petridish" } ] }
     ],
     "Stop": [
-      { "hooks": [ { "type": "command", "command": "'~/.cargo/bin/swab-hook' # petridish" } ] }
+      { "hooks": [ { "type": "command", "command": "'/home/you/.cargo/bin/swab-hook' # petridish" } ] }
     ],
     "Notification": [
-      { "hooks": [ { "type": "command", "command": "'~/.cargo/bin/swab-hook' # petridish" } ] }
+      { "hooks": [ { "type": "command", "command": "'/home/you/.cargo/bin/swab-hook' # petridish" } ] }
     ],
     "PermissionRequest": [
-      { "hooks": [ { "type": "command", "command": "'~/.cargo/bin/swab-hook' # petridish" } ] }
+      { "hooks": [ { "type": "command", "command": "'/home/you/.cargo/bin/swab-hook' # petridish" } ] }
     ]
   }
 }
