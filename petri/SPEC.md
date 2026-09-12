@@ -909,14 +909,19 @@ Four layers. Full reasoning: ADR-0003. This work is intended for unattended
 
    Issue #61 did that generic-over-`Backend` refactor: `poll_loop`'s dispatch
    logic is now `handle_key<B: Backend>` (public, mirroring `exec::run`'s own
-   bound), and four of the flagged tests have moved to
+   bound), and eleven of the flagged tests have moved to
    `s61_key_dispatch.rs` against `ratatui::backend::TestBackend` —
-   `s6_pty.rs`'s `enter_on_a_row_switches_from_dashboard_to_browser`,
-   `s13_pty_dashboard_actions.rs`'s two tests (that file, now empty, was
-   deleted), and `s8_pty_help.rs`'s `help_popup_opens_and_closes_on_any_key`
-   (same reason — now empty, deleted). The rest are tracked as follow-up
-   migration work under the same issue, not done all at once here. Two
-   wrinkles #61 surfaced along the way:
+   `s6_pty.rs`'s `enter_on_a_row_switches_from_dashboard_to_browser`;
+   `s13_pty_dashboard_actions.rs`'s two tests; `s8_pty_help.rs`'s
+   `help_popup_opens_and_closes_on_any_key`; `s11_pty_focus.rs`'s five
+   state/rendering tests (that file's own module doc comment called them
+   "lifecycle and wiring" checks added only because there was nowhere else to
+   put them); and `s8_pty_actions.rs`'s two tests. Every one of those five
+   files is now either fully migrated and deleted (`s13_pty_dashboard_actions.rs`,
+   `s8_pty_help.rs`, `s8_pty_actions.rs`) or trimmed to only its genuinely
+   terminal-only test (`s6_pty.rs`'s crash guard, `s11_pty_focus.rs`'s exit-code
+   check). The rest are tracked as follow-up migration work under the same
+   issue, not done all at once here. Two wrinkles #61 surfaced along the way:
    - `exec::run`'s original `where io::Error: From<B::Error>` bound could
      never have been satisfied by `TestBackend` (its `Error` is `Infallible`,
      which has no such `From` impl) — fixed by dropping the bound entirely

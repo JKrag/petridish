@@ -17,6 +17,16 @@
 //! - `s13_pty_dashboard_actions.rs`'s
 //!   `an_action_still_fires_while_the_focus_popup_is_open`
 //! - `s8_pty_help.rs`'s `help_popup_opens_and_closes_on_any_key`
+//! - `s11_pty_focus.rs`'s five state/rendering tests (`space_on_a_project_row_opens_the_focus_popup`,
+//!   `esc_closes_the_focus_popup`, `space_twice_on_a_row_closes_what_it_opened`,
+//!   `space_on_a_header_still_collapses_the_section`,
+//!   `a_small_terminal_renders_the_panel_full_screen_instead_of_a_popup`) — that file's
+//!   own module doc comment called itself "lifecycle and wiring" checks added only because
+//!   there was no other way to drive `press_space`/`close_focus` before #61; its sixth test,
+//!   `q_still_exits_zero_after_the_focus_gesture`, is a real lifecycle check (raw
+//!   mode/terminal restore on exit) and stays PTY.
+//! - `s8_pty_actions.rs`'s two tests (`action_keys_do_not_fire_while_the_filter_has_focus`,
+//!   `an_action_on_a_project_with_no_remote_reports_it`) — that file is now empty, deleted.
 //!
 //! What stays PTY (not migrated, and not attempted here): anything that
 //! actually launches a program (MECH-2/MECH-3) or asserts a real process's
@@ -418,5 +428,437 @@ fn help_popup_opens_and_closes_on_any_key() {
     assert!(
         !help_open,
         "any key, including one with its own binding, must close the help popup"
+    );
+}
+
+/// Shared setup for the focus-popup tests below: a Dashboard with three
+/// RUNNING (`StatusBucket::Active`) projects, so a header collapse has
+/// visible rows to remove and `j` lands the cursor on a real project row.
+/// Returns `(radar, screen, dashboard_state)`, with `screen`/`dashboard_state`
+/// already the `Dashboard` starting point every PTY original assumed.
+fn focus_test_state() -> (Radar, Screen, Option<DashboardState>) {
+    let radar = radar_of(vec![
+        project("alpha-01", "alpha-01"),
+        project("alpha-02", "alpha-02"),
+        project("alpha-03", "alpha-03"),
+    ]);
+    let dashboard_state = Some(DashboardState::with_collapsed(
+        &radar,
+        Prefs::default().collapsed,
+    ));
+    (radar, Screen::Dashboard, dashboard_state)
+}
+
+/// Replaces `s11_pty_focus.rs`'s `space_on_a_project_row_opens_the_focus_popup`.
+#[test]
+fn space_on_a_project_row_opens_the_focus_popup() {
+    let (radar, mut screen, mut dashboard_state) = focus_test_state();
+    let mut browser_state: Option<petri::browser::BrowserState> = None;
+    let mut picker = None;
+    let mut picker_action = None;
+    let mut help_open = false;
+    let mut notice = None;
+    let mut prefs = Prefs::default();
+    let prefs_path = scratch_prefs_path("focus_open");
+    let last_good = Some(radar);
+    let mut terminal =
+        Terminal::new(TestBackend::new(80, 24)).expect("TestBackend terminal must construct");
+
+    assert!(
+        !dashboard_state.as_ref().unwrap().focus_open,
+        "precondition: no popup before any keystroke"
+    );
+
+    // `j` first: the cursor lands on the RUNNING header, and `Space` there is
+    // the unchanged collapse binding — a project row needs one `j`.
+    handle_key(
+        key(KeyCode::Char('j')),
+        &mut terminal,
+        &mut screen,
+        &mut dashboard_state,
+        &mut browser_state,
+        &mut picker,
+        &mut picker_action,
+        &mut help_open,
+        &mut notice,
+        &last_good,
+        &mut prefs,
+        &prefs_path,
+    );
+    handle_key(
+        key(KeyCode::Char(' ')),
+        &mut terminal,
+        &mut screen,
+        &mut dashboard_state,
+        &mut browser_state,
+        &mut picker,
+        &mut picker_action,
+        &mut help_open,
+        &mut notice,
+        &last_good,
+        &mut prefs,
+        &prefs_path,
+    );
+
+    assert!(
+        dashboard_state.as_ref().unwrap().focus_open,
+        "Space on a project row must open the focus popup (issue #30)"
+    );
+}
+
+/// Replaces `s11_pty_focus.rs`'s `esc_closes_the_focus_popup`.
+#[test]
+fn esc_closes_the_focus_popup() {
+    let (radar, mut screen, mut dashboard_state) = focus_test_state();
+    let mut browser_state: Option<petri::browser::BrowserState> = None;
+    let mut picker = None;
+    let mut picker_action = None;
+    let mut help_open = false;
+    let mut notice = None;
+    let mut prefs = Prefs::default();
+    let prefs_path = scratch_prefs_path("focus_esc");
+    let last_good = Some(radar);
+    let mut terminal =
+        Terminal::new(TestBackend::new(80, 24)).expect("TestBackend terminal must construct");
+
+    for k in [KeyCode::Char('j'), KeyCode::Char(' ')] {
+        handle_key(
+            key(k),
+            &mut terminal,
+            &mut screen,
+            &mut dashboard_state,
+            &mut browser_state,
+            &mut picker,
+            &mut picker_action,
+            &mut help_open,
+            &mut notice,
+            &last_good,
+            &mut prefs,
+            &prefs_path,
+        );
+    }
+    assert!(
+        dashboard_state.as_ref().unwrap().focus_open,
+        "precondition: the popup must be open"
+    );
+
+    handle_key(
+        key(KeyCode::Esc),
+        &mut terminal,
+        &mut screen,
+        &mut dashboard_state,
+        &mut browser_state,
+        &mut picker,
+        &mut picker_action,
+        &mut help_open,
+        &mut notice,
+        &last_good,
+        &mut prefs,
+        &prefs_path,
+    );
+    assert!(
+        !dashboard_state.as_ref().unwrap().focus_open,
+        "Esc must close the focus popup"
+    );
+    assert_eq!(
+        screen,
+        Screen::Dashboard,
+        "Esc must leave the Dashboard as the active screen"
+    );
+}
+
+/// Replaces `s11_pty_focus.rs`'s `space_twice_on_a_row_closes_what_it_opened`.
+#[test]
+fn space_twice_on_a_row_closes_what_it_opened() {
+    let (radar, mut screen, mut dashboard_state) = focus_test_state();
+    let mut browser_state: Option<petri::browser::BrowserState> = None;
+    let mut picker = None;
+    let mut picker_action = None;
+    let mut help_open = false;
+    let mut notice = None;
+    let mut prefs = Prefs::default();
+    let prefs_path = scratch_prefs_path("focus_toggle");
+    let last_good = Some(radar);
+    let mut terminal =
+        Terminal::new(TestBackend::new(80, 24)).expect("TestBackend terminal must construct");
+
+    for k in [KeyCode::Char('j'), KeyCode::Char(' ')] {
+        handle_key(
+            key(k),
+            &mut terminal,
+            &mut screen,
+            &mut dashboard_state,
+            &mut browser_state,
+            &mut picker,
+            &mut picker_action,
+            &mut help_open,
+            &mut notice,
+            &last_good,
+            &mut prefs,
+            &prefs_path,
+        );
+    }
+    assert!(
+        dashboard_state.as_ref().unwrap().focus_open,
+        "precondition: the popup must be open"
+    );
+
+    handle_key(
+        key(KeyCode::Char(' ')),
+        &mut terminal,
+        &mut screen,
+        &mut dashboard_state,
+        &mut browser_state,
+        &mut picker,
+        &mut picker_action,
+        &mut help_open,
+        &mut notice,
+        &last_good,
+        &mut prefs,
+        &prefs_path,
+    );
+    assert!(
+        !dashboard_state.as_ref().unwrap().focus_open,
+        "a second Space on a row must close the popup it opened"
+    );
+}
+
+/// Replaces `s11_pty_focus.rs`'s `space_on_a_header_still_collapses_the_section`.
+#[test]
+fn space_on_a_header_still_collapses_the_section() {
+    let (radar, mut screen, mut dashboard_state) = focus_test_state();
+    let mut browser_state: Option<petri::browser::BrowserState> = None;
+    let mut picker = None;
+    let mut picker_action = None;
+    let mut help_open = false;
+    let mut notice = None;
+    let mut prefs = Prefs::default();
+    let prefs_path = scratch_prefs_path("focus_header_collapse");
+    let last_good = Some(radar);
+    let mut terminal =
+        Terminal::new(TestBackend::new(80, 24)).expect("TestBackend terminal must construct");
+
+    // No `j`: the cursor starts on the RUNNING header (`DashboardState::rebuild`'s
+    // first stop), so `Space` here targets the header, not a row.
+    let rows_before = dashboard_state
+        .as_ref()
+        .unwrap()
+        .visible
+        .iter()
+        .filter(|r| matches!(r, petri::dashboard::DashRow::Project(_)))
+        .count();
+    assert!(rows_before > 0, "precondition: RUNNING has project rows");
+
+    handle_key(
+        key(KeyCode::Char(' ')),
+        &mut terminal,
+        &mut screen,
+        &mut dashboard_state,
+        &mut browser_state,
+        &mut picker,
+        &mut picker_action,
+        &mut help_open,
+        &mut notice,
+        &last_good,
+        &mut prefs,
+        &prefs_path,
+    );
+
+    let state = dashboard_state.as_ref().unwrap();
+    let rows_after = state
+        .visible
+        .iter()
+        .filter(|r| matches!(r, petri::dashboard::DashRow::Project(_)))
+        .count();
+    assert!(
+        rows_after < rows_before,
+        "Space on the RUNNING header must still collapse it: before {rows_before}, after {rows_after}"
+    );
+    assert!(
+        !state.focus_open,
+        "collapsing a header must NOT open the focus popup"
+    );
+}
+
+/// Replaces `s11_pty_focus.rs`'s
+/// `a_small_terminal_renders_the_panel_full_screen_instead_of_a_popup`.
+///
+/// At 48x14 `focus_placement` (graded as arithmetic by `s11_focus_mount.rs`)
+/// decides the panel takes the whole frame rather than overlaying a popup —
+/// this proves the mount actually honours that decision when driven through
+/// real dispatch, the same property the PTY original proved through a real
+/// terminal resize.
+#[test]
+fn a_small_terminal_renders_the_panel_full_screen_instead_of_a_popup() {
+    const W: u16 = 48;
+    const H: u16 = 14;
+    let (radar, mut screen, mut dashboard_state) = focus_test_state();
+    let mut browser_state: Option<petri::browser::BrowserState> = None;
+    let mut picker = None;
+    let mut picker_action = None;
+    let mut help_open = false;
+    let mut notice = None;
+    let mut prefs = Prefs::default();
+    let prefs_path = scratch_prefs_path("focus_fullscreen");
+    let last_good = Some(radar);
+    let feed = petri::feed::FeedState::default();
+    let mut terminal =
+        Terminal::new(TestBackend::new(W, H)).expect("TestBackend terminal must construct");
+
+    for k in [KeyCode::Char('j'), KeyCode::Char(' ')] {
+        handle_key(
+            key(k),
+            &mut terminal,
+            &mut screen,
+            &mut dashboard_state,
+            &mut browser_state,
+            &mut picker,
+            &mut picker_action,
+            &mut help_open,
+            &mut notice,
+            &last_good,
+            &mut prefs,
+            &prefs_path,
+        );
+    }
+    assert!(dashboard_state.as_ref().unwrap().focus_open);
+
+    render_current(
+        &mut terminal,
+        &last_good,
+        screen,
+        &dashboard_state,
+        &browser_state,
+        &picker,
+        help_open,
+        &notice,
+        &feed,
+        &prefs,
+    );
+    let text = rendered_text(&terminal);
+    let row0 = text.lines().next().unwrap_or("");
+    assert!(
+        !row0.contains("dashboard"),
+        "at 48x14 the panel must take the whole frame, not overlay it — the Dashboard's own \
+         header must be gone from row 0, got: {row0:?}"
+    );
+    assert!(
+        !text.contains("Focus"),
+        "the full-screen render must carry no popup border/title, got:\n{text}"
+    );
+    assert!(
+        text.contains("alpha-"),
+        "the panel itself must have rendered its project, got:\n{text}"
+    );
+}
+
+/// Replaces `s8_pty_actions.rs`'s `action_keys_do_not_fire_while_the_filter_has_focus`.
+///
+/// `g` is bound to git history in normal mode. Typed into the `/` filter it must be a
+/// filter character and nothing else — `lib.rs` keeps the two key branches structurally
+/// separate so a printable action key can never be stolen while the user is typing.
+#[test]
+fn action_keys_do_not_fire_while_the_filter_has_focus() {
+    let radar = radar_of(vec![project("alpha-01", "alpha-01")]);
+    let mut screen = Screen::Browser;
+    let mut dashboard_state: Option<DashboardState> = None;
+    let mut browser_state = Some(petri::browser::BrowserState::new(&radar));
+    let mut picker = None;
+    let mut picker_action = None;
+    let mut help_open = false;
+    let mut notice = None;
+    let mut prefs = Prefs::default();
+    let prefs_path = scratch_prefs_path("filter_swallows_action");
+    let last_good = Some(radar);
+    let mut terminal =
+        Terminal::new(TestBackend::new(80, 24)).expect("TestBackend terminal must construct");
+
+    handle_key(
+        key(KeyCode::Char('/')),
+        &mut terminal,
+        &mut screen,
+        &mut dashboard_state,
+        &mut browser_state,
+        &mut picker,
+        &mut picker_action,
+        &mut help_open,
+        &mut notice,
+        &last_good,
+        &mut prefs,
+        &prefs_path,
+    );
+    assert!(
+        browser_state.as_ref().unwrap().filter_input,
+        "precondition: '/' must open filter input mode"
+    );
+
+    handle_key(
+        key(KeyCode::Char('g')),
+        &mut terminal,
+        &mut screen,
+        &mut dashboard_state,
+        &mut browser_state,
+        &mut picker,
+        &mut picker_action,
+        &mut help_open,
+        &mut notice,
+        &last_good,
+        &mut prefs,
+        &prefs_path,
+    );
+
+    let state = browser_state.as_ref().unwrap();
+    assert_eq!(
+        state.filter_query, "g",
+        "'g' typed while the filter has focus must append to the query, not dispatch the \
+         git-history action"
+    );
+    assert!(
+        state.visible.is_empty(),
+        "no fixture project name contains 'g', so the filter must have emptied the visible \
+         list — a 'g' stolen by the action dispatch would leave it unfiltered"
+    );
+    assert_eq!(
+        notice, None,
+        "the action dispatch must never have fired — no notice should be set"
+    );
+}
+
+/// Replaces `s8_pty_actions.rs`'s `an_action_on_a_project_with_no_remote_reports_it`.
+#[test]
+fn an_action_on_a_project_with_no_remote_reports_it() {
+    let radar = radar_of(vec![project("alpha-02", "alpha-02")]);
+    let mut screen = Screen::Browser;
+    let mut dashboard_state: Option<DashboardState> = None;
+    let mut browser_state = Some(petri::browser::BrowserState::new(&radar));
+    let mut picker = None;
+    let mut picker_action = None;
+    let mut help_open = false;
+    let mut notice = None;
+    let mut prefs = Prefs::default();
+    let prefs_path = scratch_prefs_path("browser_no_remote_notice");
+    let last_good = Some(radar);
+    let mut terminal =
+        Terminal::new(TestBackend::new(80, 24)).expect("TestBackend terminal must construct");
+
+    let outcome = handle_key(
+        key(KeyCode::Char('o')),
+        &mut terminal,
+        &mut screen,
+        &mut dashboard_state,
+        &mut browser_state,
+        &mut picker,
+        &mut picker_action,
+        &mut help_open,
+        &mut notice,
+        &last_good,
+        &mut prefs,
+        &prefs_path,
+    );
+    assert_eq!(outcome, KeyOutcome::Continue(true));
+    assert_eq!(
+        notice.as_deref(),
+        Some("alpha-02 has no remote"),
+        "ACT-9's per-project availability axis must produce a notice naming the project"
     );
 }

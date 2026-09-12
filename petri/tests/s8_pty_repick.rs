@@ -164,7 +164,8 @@ fn shift_g_opens_the_repick_popup_even_when_the_choice_already_resolves() {
 
 #[test]
 fn shift_g_does_not_fire_while_the_filter_has_focus() {
-    // The same trap `s8_pty_actions.rs` guards for the lowercase keys. `G` is
+    // The same trap `s61_key_dispatch.rs`'s
+    // `action_keys_do_not_fire_while_the_filter_has_focus` guards for the lowercase keys. `G` is
     // an ordinary printable character, so a binding placed in the wrong branch
     // would pop a modal over a user who was typing a project name.
     let (home, _prefs_path) = seeded_home("filter");

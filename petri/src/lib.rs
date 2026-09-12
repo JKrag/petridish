@@ -1208,7 +1208,8 @@ pub fn handle_key<B: ratatui::backend::Backend>(
                 // both, typing `g` into the `/` filter would launch a
                 // git browser instead of filtering. The two branches
                 // being structurally separate is what makes that safe;
-                // `s8_pty_actions.rs` gates it regardless.
+                // `s61_key_dispatch.rs`'s `action_keys_do_not_fire_while_the_filter_has_focus`
+                // gates it regardless.
                 crossterm::event::KeyCode::Char(c) => {
                     let registry = crate::tools::registry();
                     // The lowercase key runs the action; the SHIFTED
