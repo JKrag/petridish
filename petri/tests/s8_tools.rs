@@ -45,6 +45,22 @@ fn browse_fixture() -> Action {
     }
 }
 
+/// Mirrors the real registry's `browse` action's macOS/Linux pair (issue #24):
+/// `open` first, `xdg-open` as the fallback that makes the action work at all
+/// on a machine with no `open`.
+fn browse_with_xdg_open_fixture() -> Action {
+    Action {
+        id: "browse",
+        key: 'o',
+        label: "open remote",
+        target: Target::Url,
+        candidates: vec![
+            Candidate::new("open", &["{url}"], ExecMode::Background),
+            Candidate::new("xdg-open", &["{url}"], ExecMode::Background),
+        ],
+    }
+}
+
 const PROJECT: Facts<'static> = Facts {
     path: "/Users/x/repos/thing",
     url: Some("https://github.com/x/thing"),
@@ -175,6 +191,27 @@ fn unknown_configured_program_defaults_to_terminal_mode_not_background() {
         ),
         other => panic!("expected Ready, got {other:?}"),
     }
+}
+
+#[test]
+fn xdg_open_wins_on_a_machine_with_no_open() {
+    // Issue #24: `open` doesn't exist on Linux, so on a synthetic PATH where
+    // only `xdg-open` is present the browse action must still resolve
+    // unambiguously to it rather than becoming NoTool.
+    let got = tools::resolve(
+        &browse_with_xdg_open_fixture(),
+        &PROJECT,
+        None,
+        &only(&["xdg-open"]),
+    );
+    assert_eq!(
+        got,
+        Resolution::Ready(Launch {
+            program: "xdg-open".to_string(),
+            args: vec!["https://github.com/x/thing".to_string()],
+            mode: ExecMode::Background,
+        })
+    );
 }
 
 // ---------------------------------------------------------------- rule 3 --

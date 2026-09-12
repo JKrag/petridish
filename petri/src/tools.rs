@@ -235,17 +235,22 @@ pub fn registry() -> Vec<Action> {
             key: 'o',
             label: "open remote",
             target: Target::Url,
-            // macOS only, matching the rest of petridish. Plain `open` hands
-            // the URL to whatever the user's default browser is -- the
-            // correct amount of opinion for petri to have about it, and it
-            // stays first/unmodified as the always-available baseline. The
-            // named-app entries below are `open -a "<App>"`, each given a
-            // distinct id/probe via `as_app` since they all share program
-            // "open" -- see `Candidate::as_app`'s doc comment for why that
-            // matters. Only apps with direct evidence of being installed on
-            // the machine this was written for are listed.
+            // Plain `open` (macOS) hands the URL to whatever the user's
+            // default browser is -- the correct amount of opinion for petri
+            // to have about it, and it stays first/unmodified as the
+            // always-available baseline on macOS. `xdg-open` is the Linux
+            // equivalent (issue #24) -- every real Linux desktop has it, so
+            // it is the fallback that makes `browse` work there at all;
+            // resolution order between it and `open` doesn't matter
+            // functionally since only one will ever be present on a given
+            // machine. The named-app entries below are `open -a "<App>"`,
+            // each given a distinct id/probe via `as_app` since they all
+            // share program "open" -- see `Candidate::as_app`'s doc comment
+            // for why that matters. Only apps with direct evidence of being
+            // installed on the machine this was written for are listed.
             candidates: vec![
                 Candidate::new("open", &["{url}"], ExecMode::Background),
+                Candidate::new("xdg-open", &["{url}"], ExecMode::Background),
                 Candidate::new("open", &["-a", "Safari", "{url}"], ExecMode::Background)
                     .as_app("safari", "Safari"),
                 Candidate::new(
