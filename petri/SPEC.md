@@ -636,9 +636,12 @@ input from the user — a section they collapsed reopens, and the cursor jumps t
 mid-navigation. Both were live bugs, reported from real use. The cursor anchors on the
 selected project's **name**, never its index into `radar.projects`: the scanner re-sorts
 on every tick, so an index-based restore silently lands the cursor on a different
-project, which is worse than losing it. `petri/tests/s10_pty_reload.rs` is the gate, and
-it has to be a PTY test — the defect was at the poll loop's call site, so every
-pure-state test passed while it was live.
+project, which is worse than losing it. `petri/tests/s61_key_dispatch.rs`'s
+`a_state_file_reload_does_not_reopen_a_collapsed_section` is the gate. The defect was at
+the poll loop's call site, so every pure-state test passed while it was live — which is
+why this had to be a PTY test (`s10_pty_reload.rs`, since deleted) until issue #61
+extracted that call site into `reload_if_changed`, a function this test now calls
+directly against a real scratch state file with no terminal and no polling involved.
 
 ### 4.4 Missing state file
 
@@ -899,15 +902,72 @@ Four layers. Full reasoning: ADR-0003. This work is intended for unattended
    `initial_frame_shows_the_dashboard_header_and_a_populated_section_label` vs.
    `s6_snapshot.rs`'s `header_identifies_the_dashboard_screen_at_80x24` +
    `running_label_rendered_for_loaded_json_which_has_agents_present`) — both
-   removed. Most of the remaining PTY tests, though, are key-dispatch/state-
+   removed. Most of the remaining PTY tests, though, were key-dispatch/state-
    transition assertions (`Enter`→screen switch, `Space`→popup, filter typing,
    mtime-reload calling `.refresh()` not `DashboardState::new()`) that are
    conceptually pure-state tests wearing rendered content as their only
-   observable — they stay in this layer for now because `poll_loop`/
-   `mini_poll_loop` give them nowhere else to go, not because the property they
-   assert is actually terminal-only. The generic-over-`Backend` refactor that
-   would unblock moving them is its own piece of work, tracked separately
-   (issue #61) rather than done as part of this audit.
+   observable — they stayed in this layer only because `poll_loop`/
+   `mini_poll_loop` gave them nowhere else to go, not because the property they
+   assert is actually terminal-only.
+
+   Issue #61 did that generic-over-`Backend` refactor: `poll_loop`'s dispatch
+   logic is now `handle_key<B: Backend>` (public, mirroring `exec::run`'s own
+   bound), and its mtime-reload branch is now `reload_if_changed` the same
+   way. Nineteen of the flagged tests moved to `s61_key_dispatch.rs` against
+   `ratatui::backend::TestBackend`, across ten source files:
+   - `s6_pty.rs`'s `enter_on_a_row_switches_from_dashboard_to_browser`
+   - `s13_pty_dashboard_actions.rs`'s two tests
+   - `s8_pty_help.rs`'s `help_popup_opens_and_closes_on_any_key`
+   - `s11_pty_focus.rs`'s five state/rendering tests (that file's own module
+     doc comment called them "lifecycle and wiring" checks added only because
+     there was nowhere else to put them)
+   - `s8_pty_actions.rs`'s two tests
+   - `s10_pty_reload.rs`'s single test — the suite's slowest at 7.7s (a real
+     sleep to wait out `poll_loop`'s own poll interval), whose
+     reload-preserves-collapse property lives entirely in `reload_if_changed`,
+     so the migrated test calls that directly against a real scratch state
+     file and needs only a ~1s sleep for a distinguishable mtime, not
+     `poll_loop`'s interval
+   - `s8_pty_filter.rs`'s two tests
+   - `s8_pty_repick.rs`'s three tests, plus `s8_pty_prefs.rs`'s one — both
+     regressions (`Esc` in re-pick mode must not write `petri.toml`; a screen
+     switch must not empty `prefs.tools`) provable in-process the same way
+     they were over a real subprocess, once `prefs_path` became a parameter:
+     seed a scratch file, press the key, diff the bytes
+   - the dispatch half of `s7_pty.rs`'s `tab_switches_dashboard_to_browser_and_back`
+     (`Tab` round-tripping Dashboard↔Browser and persisting each switch); that
+     file's other two tests pin `run`'s own startup sequence, not
+     `handle_key`'s, and stay PTY
+
+   Seven of those ten files are now fully migrated and deleted
+   (`s13_pty_dashboard_actions.rs`, `s8_pty_help.rs`, `s8_pty_actions.rs`,
+   `s10_pty_reload.rs`, `s8_pty_filter.rs`, `s8_pty_repick.rs`,
+   `s8_pty_prefs.rs`); the other three (`s6_pty.rs`, `s11_pty_focus.rs`,
+   `s7_pty.rs`) are trimmed to only their genuinely terminal-only tests:
+   `s6_pty.rs`'s crash guard, `s11_pty_focus.rs`'s exit-code check, `s7_pty.rs`'s
+   two startup-sequence tests. What remains PTY across the whole suite is
+   real subprocess launches/hand-offs, real terminal geometry and mode
+   transitions, real exit codes, and `run`'s own startup wiring — exactly the
+   properties the #48 audit's rule says belong there. Two wrinkles #61
+   surfaced along the way:
+   - `exec::run`'s original `where io::Error: From<B::Error>` bound could
+     never have been satisfied by `TestBackend` (its `Error` is `Infallible`,
+     which has no such `From` impl) — fixed by dropping the bound entirely
+     and formatting `B::Error` directly via its `Display` impl (guaranteed by
+     `Backend::Error: core::error::Error`), which is all `resume`'s one call
+     site ever actually needed.
+   - `handle_key`'s `Tab`/`Enter` screen-switch persistence called
+     `prefs::save(&prefs::default_prefs_path(), ...)` directly, and
+     `default_prefs_path()` reads the real `$HOME`. A PTY test never hit this
+     (it spawns the real binary as a subprocess with its own scratch `$HOME`
+     env var), but a `TestBackend` test calling `handle_key` in-process has
+     no subprocess boundary to hide behind — the first version of
+     `enter_on_a_dashboard_row_switches_to_browser` wrote straight to this
+     machine's real `~/.petridish/petri.toml`. Fixed by threading
+     `prefs_path` through `handle_key`/`poll_loop` as an explicit parameter
+     (`run` computes it once via `default_prefs_path()` and passes it down),
+     the same "parameter over an environment read" convention `CLAUDE.md`
+     already states for `swab`/`petridish-cli`.
 4. **Human smoke test** — but as confirmation, not as the gate. "It works, and I
    have an idea for a change" is the expected shape of it.
 

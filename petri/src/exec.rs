@@ -72,10 +72,7 @@ pub fn run<B: Backend>(
     terminal: &mut Terminal<B>,
     launch: &Launch,
     cwd: &Path,
-) -> io::Result<Outcome>
-where
-    io::Error: From<B::Error>,
-{
+) -> io::Result<Outcome> {
     match launch.mode {
         ExecMode::Terminal => run_in_terminal(terminal, launch, cwd),
         ExecMode::Background => Ok(spawn_detached(launch, cwd)),
@@ -90,10 +87,7 @@ pub fn run_in_terminal<B: Backend>(
     terminal: &mut Terminal<B>,
     launch: &Launch,
     cwd: &Path,
-) -> io::Result<Outcome>
-where
-    io::Error: From<B::Error>,
-{
+) -> io::Result<Outcome> {
     suspend()?;
 
     // Deliberately `.status()`: the child inherits our stdin/stdout/stderr, so
@@ -158,10 +152,7 @@ fn suspend() -> io::Result<()> {
 }
 
 /// Take the terminal back and force a full repaint.
-fn resume<B: Backend>(terminal: &mut Terminal<B>) -> io::Result<()>
-where
-    io::Error: From<B::Error>,
-{
+fn resume<B: Backend>(terminal: &mut Terminal<B>) -> io::Result<()> {
     crossterm::terminal::enable_raw_mode()
         .map_err(|e| io::Error::other(format!("enable_raw_mode: {e}")))?;
     let mut out = io::stdout();
@@ -186,12 +177,17 @@ where
     // Re-reading the size on the way through is a bonus rather than a cost:
     // the window may genuinely have been resized while the child owned it, and
     // `size()` is an ioctl, not a terminal round-trip.
+    // `e` is formatted directly, not converted via `io::Error::from(e)`: that
+    // conversion needs `io::Error: From<B::Error>`, a bound `ratatui::backend::TestBackend`
+    // cannot satisfy (its `Error` is `Infallible`, which has no such impl) — and
+    // `Backend::Error: core::error::Error` already guarantees `Display`, so the
+    // conversion was never load-bearing, only the formatting was.
     let area = terminal
         .size()
-        .map_err(|e| io::Error::other(format!("Terminal::size: {}", io::Error::from(e))))?;
+        .map_err(|e| io::Error::other(format!("Terminal::size: {e}")))?;
     terminal
         .resize(area.into())
-        .map_err(|e| io::Error::other(format!("Terminal::resize: {}", io::Error::from(e))))?;
+        .map_err(|e| io::Error::other(format!("Terminal::resize: {e}")))?;
     Ok(())
 }
 
