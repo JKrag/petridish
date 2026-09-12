@@ -714,14 +714,14 @@ pub enum KeyOutcome {
 ///
 /// Every piece of `poll_loop`'s per-tick state is threaded through by mutable
 /// reference (renamed `..._ref` here, shadowed by an owned local of the
-/// original name so the dispatch body below is unchanged from `poll_loop`) and
-/// written back before returning. `Quit` is the one path that skips the
-/// write-back — safe only because a quit propagates straight out of
-/// `poll_loop` too, so nothing reads this tick's state again. `last_good` is
-/// passed and used as a plain reference throughout, never owned or written
-/// back: `Radar` can hold on the order of a hundred projects, and cloning it
-/// per keystroke would be real waste for a value the dispatch body only ever
-/// reads.
+/// original name so the dispatch body below is unchanged from `poll_loop`)
+/// and written back before every return, `Quit` included — `poll_loop` itself
+/// never reads this tick's state again once it quits, but `handle_key` is
+/// public and reusable, so a caller that does keep the `Option`s around must
+/// not find them emptied out. `last_good` is passed and used as a plain
+/// reference throughout, never owned or written back: `Radar` can hold on the
+/// order of a hundred projects, and cloning it per keystroke would be real
+/// waste for a value the dispatch body only ever reads.
 ///
 /// Public so an integration test can reach it: `lib.rs` has no unit-test
 /// module, and this is the seam issue #61 exists to open — proving key
@@ -817,7 +817,19 @@ pub fn handle_key<B: ratatui::backend::Backend>(
         }
         true
     } else if key.code == crossterm::event::KeyCode::Char('q') {
-        // `q` always quits, even in filter input mode.
+        // `q` always quits, even in filter input mode. `poll_loop` returns
+        // straight out on `Quit` without reading this tick's state again, but
+        // `handle_key` is public and reusable, so write the taken-out state
+        // back before returning rather than leaving the caller's `Option`s
+        // emptied out from under it.
+        *screen_ref = screen;
+        *dashboard_state_ref = dashboard_state;
+        *browser_state_ref = browser_state;
+        *picker_ref = picker;
+        *picker_action_ref = picker_action;
+        *help_open_ref = help_open;
+        *notice_ref = notice;
+        *prefs_ref = prefs;
         return KeyOutcome::Quit(0);
     } else if screen == Screen::Dashboard {
         // `Tab` switches Dashboard → Browser (petri/SPEC.md §5).
@@ -987,8 +999,9 @@ pub fn handle_key<B: ratatui::backend::Backend>(
             // they could otherwise type.
             crossterm::event::KeyCode::PageUp => {
                 if let Some(ref mut state) = browser_state {
-                    let step = crossterm::terminal::size()
-                        .map(|(w, h)| crate::browser::page_size(w, h) as i32)
+                    let step = terminal
+                        .size()
+                        .map(|s| crate::browser::page_size(s.width, s.height) as i32)
                         .unwrap_or(BROWSER_FAST_JUMP);
                     state.move_selection(-step);
                 }
@@ -996,8 +1009,9 @@ pub fn handle_key<B: ratatui::backend::Backend>(
             }
             crossterm::event::KeyCode::PageDown => {
                 if let Some(ref mut state) = browser_state {
-                    let step = crossterm::terminal::size()
-                        .map(|(w, h)| crate::browser::page_size(w, h) as i32)
+                    let step = terminal
+                        .size()
+                        .map(|s| crate::browser::page_size(s.width, s.height) as i32)
                         .unwrap_or(BROWSER_FAST_JUMP);
                     state.move_selection(step);
                 }
@@ -1130,8 +1144,9 @@ pub fn handle_key<B: ratatui::backend::Backend>(
                 // be read.
                 crossterm::event::KeyCode::PageUp => {
                     if let Some(ref mut state) = browser_state {
-                        let step = crossterm::terminal::size()
-                            .map(|(w, h)| crate::browser::page_size(w, h) as i32)
+                        let step = terminal
+                            .size()
+                            .map(|s| crate::browser::page_size(s.width, s.height) as i32)
                             .unwrap_or(BROWSER_FAST_JUMP);
                         state.move_selection(-step);
                     }
@@ -1139,8 +1154,9 @@ pub fn handle_key<B: ratatui::backend::Backend>(
                 }
                 crossterm::event::KeyCode::PageDown => {
                     if let Some(ref mut state) = browser_state {
-                        let step = crossterm::terminal::size()
-                            .map(|(w, h)| crate::browser::page_size(w, h) as i32)
+                        let step = terminal
+                            .size()
+                            .map(|s| crate::browser::page_size(s.width, s.height) as i32)
                             .unwrap_or(BROWSER_FAST_JUMP);
                         state.move_selection(step);
                     }
@@ -1263,13 +1279,6 @@ pub fn handle_key<B: ratatui::backend::Backend>(
     KeyOutcome::Continue(handled)
 }
 
-/// The main poll loop: draw the current state once, then only redraw on
-/// meaningful events (keyboard input, resize, mtime change). `q` breaks.
-///
-/// `last_good` and `prefs` are read by the caller (`run`) BEFORE the
-/// alternate screen is entered, not here — see `run`'s Step 1.5 doc comment
-/// for why a warning from either must never fire once the alt screen is
-/// live.
 /// Reload `state_path` into `last_good`/`feed`/`browser_state`/`dashboard_state` if its
 /// mtime has changed since `last_mtime`. Returns the mtime to remember next tick and
 /// whether a reload actually happened (the caller's redraw-this-tick decision).
@@ -1373,6 +1382,13 @@ pub fn reload_if_changed(
     (new_mtime, mtime_changed)
 }
 
+/// The main poll loop: draw the current state once, then only redraw on
+/// meaningful events (keyboard input, resize, mtime change). `q` breaks.
+///
+/// `last_good` and `prefs` are read by the caller (`run`) BEFORE the
+/// alternate screen is entered, not here — see `run`'s Step 1.5 doc comment
+/// for why a warning from either must never fire once the alt screen is
+/// live.
 fn poll_loop<B: ratatui::backend::Backend>(
     state_path: &std::path::Path,
     terminal: &mut ratatui::Terminal<B>,

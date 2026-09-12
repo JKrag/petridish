@@ -1,7 +1,7 @@
 //! Issue #61: `handle_key`'s Dashboard/Browser dispatch, proven against
 //! `ratatui::backend::TestBackend` instead of a real terminal.
 //!
-//! These are three of the ~16 PTY tests the #48 audit flagged as conceptually
+//! These are the 19 PTY tests the #48 audit flagged as conceptually
 //! pure-state assertions ("key dispatch/state-transition assertions...
 //! wearing rendered content as their only observable") blocked only by
 //! `poll_loop`/`mini_poll_loop` being hardcoded to
