@@ -177,6 +177,46 @@ fn unknown_configured_program_defaults_to_terminal_mode_not_background() {
     }
 }
 
+#[test]
+fn xdg_open_wins_on_a_machine_with_no_open() {
+    // Issue #24: `open` doesn't exist on Linux, so on a synthetic PATH where
+    // only `xdg-open` is present the *production* browse action (not a local
+    // fixture, so a later edit to the real candidate list would break this
+    // test rather than leaving it green) must still resolve unambiguously to
+    // it rather than becoming NoTool.
+    let reg = tools::registry();
+    let browse = reg.iter().find(|a| a.id == "browse").expect("browse");
+    let got = tools::resolve(browse, &PROJECT, None, &only(&["xdg-open"]));
+    assert_eq!(
+        got,
+        Resolution::Ready(Launch {
+            program: "xdg-open".to_string(),
+            args: vec!["https://github.com/x/thing".to_string()],
+            mode: ExecMode::Background,
+        })
+    );
+}
+
+#[test]
+fn xdg_open_is_a_fallback_so_open_and_xdg_open_together_are_not_ambiguous() {
+    // Copilot review on #72: `resolve` has no OS gate, so if `xdg-open` were an
+    // ordinary candidate, a machine where both `open` and `xdg-open` resolve
+    // `installed` would make browse Ambiguous instead of just picking `open`.
+    // `xdg-open` is marked `as_fallback()` precisely so it never counts toward
+    // that tally (mirrors gitlog's plain `git log --graph` fallback).
+    let reg = tools::registry();
+    let browse = reg.iter().find(|a| a.id == "browse").expect("browse");
+    let got = tools::resolve(browse, &PROJECT, None, &only(&["open", "xdg-open"]));
+    assert_eq!(
+        got,
+        Resolution::Ready(Launch {
+            program: "open".to_string(),
+            args: vec!["https://github.com/x/thing".to_string()],
+            mode: ExecMode::Background,
+        })
+    );
+}
+
 // ---------------------------------------------------------------- rule 3 --
 
 #[test]

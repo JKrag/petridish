@@ -11,7 +11,9 @@ use std::collections::HashMap;
 use std::path::Path;
 
 /// Walks `workspace_storage_dir` (`~/Library/Application Support/Code/User/workspaceStorage/`
-/// on macOS). Per hash directory: skip if no `chatSessions/` subdir, skip if no
+/// on macOS, `~/.config/Code/User/workspaceStorage/` on Linux — `ScanPaths::for_home_os`
+/// picks the OS-appropriate one; see issue #23). Per hash directory: skip if no
+/// `chatSessions/` subdir, skip if no
 /// `workspace.json`, skip multi-root workspaces (v1 limitation — `workspace.json` has more
 /// than one folder), skip on malformed JSON (never raise), skip if the newest chat session
 /// mtime is older than `cold_cutoff_hours` (default 1440h/60 days in the real Python
