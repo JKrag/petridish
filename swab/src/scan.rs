@@ -44,15 +44,36 @@ impl ScanPaths {
     /// `production_defaults()` so tests can exercise the exact real path composition against
     /// a tmp dir without mutating the process-wide `HOME` env var (`unsafe` under the 2024
     /// edition, and racy under parallel tests regardless of edition).
+    ///
+    /// Delegates to [`Self::for_home_os`] with the real `std::env::consts::OS` — see that
+    /// function for why the OS is a parameter rather than a `#[cfg(target_os = ...)]` gate.
     pub fn for_home(home: &Path) -> Self {
-        ScanPaths {
-            claude_projects_dir: home.join(".claude").join("projects"),
-            workspace_storage_dir: home
-                .join("Library")
+        Self::for_home_os(home, std::env::consts::OS)
+    }
+
+    /// Same as [`Self::for_home`], but takes the OS name as a parameter (mirroring
+    /// `petridish-cli::paths::check_platform`) so both branches of the Copilot
+    /// `workspace_storage_dir` default are unit-testable on a single machine (issue #23),
+    /// without a `#[cfg(target_os = "macos")]` gate that would make the Linux branch untestable
+    /// wherever `swab` happens to be compiled.
+    pub fn for_home_os(home: &Path, os: &str) -> Self {
+        let workspace_storage_dir = if os == "linux" {
+            home.join(".config")
+                .join("Code")
+                .join("User")
+                .join("workspaceStorage")
+        } else {
+            // macOS is the default, matching `for_home`'s pre-#23 behaviour for every other
+            // OS name (including "macos" itself and anything unrecognized).
+            home.join("Library")
                 .join("Application Support")
                 .join("Code")
                 .join("User")
-                .join("workspaceStorage"),
+                .join("workspaceStorage")
+        };
+        ScanPaths {
+            claude_projects_dir: home.join(".claude").join("projects"),
+            workspace_storage_dir,
             events_path: home.join(".petridish").join("events.ndjson"),
             quota_path: home.join(".claude").join("last-status.json"),
         }
@@ -1521,6 +1542,37 @@ mod tests {
             paths.quota_path.ends_with(".claude/last-status.json"),
             "quota_path must end in `.claude/last-status.json`, got {:?}",
             paths.quota_path
+        );
+    }
+
+    // ═══ Test 12b: for_home_os picks the right Copilot workspaceStorage path per OS (#23). ══
+
+    #[test]
+    fn for_home_os_uses_the_macos_workspace_storage_path_on_macos() {
+        let fake_home = std::path::Path::new("/fake/tmp/home");
+        let paths = ScanPaths::for_home_os(fake_home, "macos");
+        assert_eq!(
+            paths.workspace_storage_dir,
+            fake_home
+                .join("Library")
+                .join("Application Support")
+                .join("Code")
+                .join("User")
+                .join("workspaceStorage")
+        );
+    }
+
+    #[test]
+    fn for_home_os_uses_the_linux_workspace_storage_path_on_linux() {
+        let fake_home = std::path::Path::new("/fake/tmp/home");
+        let paths = ScanPaths::for_home_os(fake_home, "linux");
+        assert_eq!(
+            paths.workspace_storage_dir,
+            fake_home
+                .join(".config")
+                .join("Code")
+                .join("User")
+                .join("workspaceStorage")
         );
     }
 

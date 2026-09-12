@@ -402,9 +402,13 @@ nothing a user sees changes. See ADR-0004.
   `#[cfg(target_os)]` gate. CI compiles this crate on Linux to verify the rest of the
   workspace is not macOS-bound, and a compile-time gate would make its tests unrunnable
   there. The scanner is deliberately *not* platform-gated at all: its sensors degrade to
-  `null`/empty per CLAUDE.md invariant 5 (the Copilot sensor finding no `workspaceStorage/`
-  on Linux is that invariant working, not a bug), so gating the whole CLI would reject
-  strictly more than necessary.
+  `null`/empty per CLAUDE.md invariant 5, which is real and load-bearing elsewhere, but the
+  Copilot sensor specifically finding no `workspaceStorage/` on Linux was a real gap, not
+  that invariant working — it hardcoded the macOS VS Code path with no Linux equivalent, so
+  a Linux user actually running VS Code + Copilot was silently reported as inactive
+  (issue #23). `ScanPaths::for_home_os` (`swab/src/scan.rs`) now switches on the OS name —
+  same parameter-not-`#[cfg]` shape as `check_platform`, for the same testability reason —
+  between the macOS path and `~/.config/Code/User/workspaceStorage` on Linux.
 - **D6 — Respect user-data separation.** User state (`config.toml`, `projects.json`,
   `events.ndjson`, the settings backup) lives in `~/.petridish/` and must survive
   uninstall/reinstall untouched. Only the binaries are managed by the package manager.
