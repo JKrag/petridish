@@ -1270,6 +1270,109 @@ pub fn handle_key<B: ratatui::backend::Backend>(
 /// alternate screen is entered, not here — see `run`'s Step 1.5 doc comment
 /// for why a warning from either must never fire once the alt screen is
 /// live.
+/// Reload `state_path` into `last_good`/`feed`/`browser_state`/`dashboard_state` if its
+/// mtime has changed since `last_mtime`. Returns the mtime to remember next tick and
+/// whether a reload actually happened (the caller's redraw-this-tick decision).
+///
+/// Extracted from `poll_loop` (issue #61) for the same reason `handle_key` was: a test
+/// proving "a reload preserves the user's collapsed sections"
+/// (`s10_pty_reload.rs`'s regression) needs no terminal and no poll-interval wait, only a
+/// real state-file mtime change — which this function alone touches. Every piece of
+/// `poll_loop`'s per-tick state is threaded through by mutable reference (renamed
+/// `..._ref` here, shadowed by an owned local of the original name, same convention
+/// `handle_key` uses) and written back before returning.
+pub fn reload_if_changed(
+    state_path: &std::path::Path,
+    last_mtime: Option<std::time::SystemTime>,
+    last_good_ref: &mut Option<petridish_core::schema::Radar>,
+    dashboard_state_ref: &mut Option<crate::dashboard::DashboardState>,
+    browser_state_ref: &mut Option<crate::browser::BrowserState>,
+    feed_ref: &mut crate::feed::FeedState,
+    prefs: &Prefs,
+) -> (Option<std::time::SystemTime>, bool) {
+    let mut last_good = last_good_ref.take();
+    let mut dashboard_state = dashboard_state_ref.take();
+    let mut browser_state = browser_state_ref.take();
+    let mut feed = std::mem::take(feed_ref);
+
+    // Re-read and re-render only when the mtime changed (petri/SPEC.md
+    // §4 "Auto-poll: stat the state file's mtime on a short timer and
+    // re-read + re-render only when it changed.").
+    let new_mtime = std::fs::metadata(state_path)
+        .ok()
+        .and_then(|m| m.modified().ok());
+
+    let mtime_changed = match (&last_mtime, new_mtime) {
+        (Some(prev), Some(now)) => *prev != now,
+        _ => false,
+    };
+
+    if mtime_changed {
+        match read_state_file(state_path) {
+            Ok(r) => {
+                // The Dashboard's selection anchor has to be read here, against the
+                // OUTGOING radar, because `DashRow::Project` holds an index into
+                // `radar.projects` and `absorb_snapshot` is about to replace that list.
+                // Resolving the index afterwards would name whichever project happens to
+                // occupy that slot in the new scan — the exact silent cursor-drift the
+                // anchor exists to prevent.
+                let dash_anchor = match (&dashboard_state, &last_good) {
+                    (Some(d), Some(previous)) => d.selection_anchor(previous),
+                    _ => None,
+                };
+                // Feed first, by construction: `absorb_snapshot` owns both snapshots, so
+                // the previous one cannot be dropped before it has been diffed.
+                last_good = absorb_snapshot(&mut feed, last_good.take(), r);
+                // Re-derive browser state from the new Radar, preserving the
+                // current filter query. Selection follows the previously-
+                // selected project when it survives, else resets to first row
+                // (per spec §3.1 — `apply_filter` guarantees this). We take a
+                // snapshot of the filter query first so we don't hold two
+                // borrows on `browser_state` at once.
+                let query_snapshot: Option<String> =
+                    browser_state.as_ref().map(|s| s.filter_query.clone());
+                if let (Some(radar), Some(q)) = (&last_good, query_snapshot)
+                    && let Some(ref mut state) = browser_state
+                {
+                    state.apply_filter(radar, &q);
+                }
+                // Re-derive DashboardState too, regardless of which screen
+                // is currently active, so a reload while viewing the
+                // Browser still leaves a fresh Dashboard behind it.
+                //
+                // `refresh`, not `DashboardState::new`: the latter rebuilt
+                // with the hardcoded spec defaults, so every reload reopened
+                // sections the user had collapsed and threw the cursor back
+                // to the top. On a machine `swab` is actively scanning that
+                // is every few seconds, i.e. the screen rearranging itself
+                // under the user's hands with no input from them. The
+                // `dash_anchor` was captured above, against the outgoing
+                // radar, for the reason given there.
+                if let Some(ref radar) = last_good {
+                    match dashboard_state {
+                        Some(ref mut d) => d.refresh(radar, dash_anchor),
+                        None => {
+                            dashboard_state =
+                                Some(crate::dashboard::DashboardState::with_collapsed(
+                                    radar,
+                                    prefs.collapsed,
+                                ))
+                        }
+                    }
+                }
+            }
+            Err(e) => eprintln!("petri S5 mid-loop state read failed: {e}"),
+        }
+    }
+
+    *last_good_ref = last_good;
+    *dashboard_state_ref = dashboard_state;
+    *browser_state_ref = browser_state;
+    *feed_ref = feed;
+
+    (new_mtime, mtime_changed)
+}
+
 fn poll_loop<B: ratatui::backend::Backend>(
     state_path: &std::path::Path,
     terminal: &mut ratatui::Terminal<B>,
@@ -1393,75 +1496,15 @@ fn poll_loop<B: ratatui::backend::Backend>(
             }
         }
 
-        // Re-read and re-render only when the mtime changed (petri/SPEC.md
-        // §4 "Auto-poll: stat the state file's mtime on a short timer and
-        // re-read + re-render only when it changed.").
-        let new_mtime = std::fs::metadata(state_path)
-            .ok()
-            .and_then(|m| m.modified().ok());
-
-        let mtime_changed = match (&last_mtime, new_mtime) {
-            (Some(prev), Some(now)) => *prev != now,
-            _ => false,
-        };
-
-        if mtime_changed {
-            match read_state_file(state_path) {
-                Ok(r) => {
-                    // The Dashboard's selection anchor has to be read here, against the
-                    // OUTGOING radar, because `DashRow::Project` holds an index into
-                    // `radar.projects` and `absorb_snapshot` is about to replace that list.
-                    // Resolving the index afterwards would name whichever project happens to
-                    // occupy that slot in the new scan — the exact silent cursor-drift the
-                    // anchor exists to prevent.
-                    let dash_anchor = match (&dashboard_state, &last_good) {
-                        (Some(d), Some(previous)) => d.selection_anchor(previous),
-                        _ => None,
-                    };
-                    // Feed first, by construction: `absorb_snapshot` owns both snapshots, so
-                    // the previous one cannot be dropped before it has been diffed.
-                    last_good = absorb_snapshot(&mut feed, last_good.take(), r);
-                    // Re-derive browser state from the new Radar, preserving the
-                    // current filter query. Selection follows the previously-
-                    // selected project when it survives, else resets to first row
-                    // (per spec §3.1 — `apply_filter` guarantees this). We take a
-                    // snapshot of the filter query first so we don't hold two
-                    // borrows on `browser_state` at once.
-                    let query_snapshot: Option<String> =
-                        browser_state.as_ref().map(|s| s.filter_query.clone());
-                    if let (Some(radar), Some(q)) = (&last_good, query_snapshot)
-                        && let Some(ref mut state) = browser_state
-                    {
-                        state.apply_filter(radar, &q);
-                    }
-                    // Re-derive DashboardState too, regardless of which screen
-                    // is currently active, so a reload while viewing the
-                    // Browser still leaves a fresh Dashboard behind it.
-                    //
-                    // `refresh`, not `DashboardState::new`: the latter rebuilt
-                    // with the hardcoded spec defaults, so every reload reopened
-                    // sections the user had collapsed and threw the cursor back
-                    // to the top. On a machine `swab` is actively scanning that
-                    // is every few seconds, i.e. the screen rearranging itself
-                    // under the user's hands with no input from them. The
-                    // `dash_anchor` was captured above, against the outgoing
-                    // radar, for the reason given there.
-                    if let Some(ref radar) = last_good {
-                        match dashboard_state {
-                            Some(ref mut d) => d.refresh(radar, dash_anchor),
-                            None => {
-                                dashboard_state =
-                                    Some(crate::dashboard::DashboardState::with_collapsed(
-                                        radar,
-                                        prefs.collapsed,
-                                    ))
-                            }
-                        }
-                    }
-                }
-                Err(e) => eprintln!("petri S5 mid-loop state read failed: {e}"),
-            }
-        }
+        let (new_mtime, mtime_changed) = reload_if_changed(
+            state_path,
+            last_mtime,
+            &mut last_good,
+            &mut dashboard_state,
+            &mut browser_state,
+            &mut feed,
+            &prefs,
+        );
 
         // Redraw only when something actually happened this tick: a crossterm
         // event (resize gets picked up here) or an mtime change. On quiet

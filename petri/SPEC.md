@@ -636,9 +636,12 @@ input from the user — a section they collapsed reopens, and the cursor jumps t
 mid-navigation. Both were live bugs, reported from real use. The cursor anchors on the
 selected project's **name**, never its index into `radar.projects`: the scanner re-sorts
 on every tick, so an index-based restore silently lands the cursor on a different
-project, which is worse than losing it. `petri/tests/s10_pty_reload.rs` is the gate, and
-it has to be a PTY test — the defect was at the poll loop's call site, so every
-pure-state test passed while it was live.
+project, which is worse than losing it. `petri/tests/s61_key_dispatch.rs`'s
+`a_state_file_reload_does_not_reopen_a_collapsed_section` is the gate. The defect was at
+the poll loop's call site, so every pure-state test passed while it was live — which is
+why this had to be a PTY test (`s10_pty_reload.rs`, since deleted) until issue #61
+extracted that call site into `reload_if_changed`, a function this test now calls
+directly against a real scratch state file with no terminal and no polling involved.
 
 ### 4.4 Missing state file
 
@@ -909,16 +912,23 @@ Four layers. Full reasoning: ADR-0003. This work is intended for unattended
 
    Issue #61 did that generic-over-`Backend` refactor: `poll_loop`'s dispatch
    logic is now `handle_key<B: Backend>` (public, mirroring `exec::run`'s own
-   bound), and eleven of the flagged tests have moved to
+   bound), and twelve of the flagged tests have moved to
    `s61_key_dispatch.rs` against `ratatui::backend::TestBackend` —
    `s6_pty.rs`'s `enter_on_a_row_switches_from_dashboard_to_browser`;
    `s13_pty_dashboard_actions.rs`'s two tests; `s8_pty_help.rs`'s
    `help_popup_opens_and_closes_on_any_key`; `s11_pty_focus.rs`'s five
    state/rendering tests (that file's own module doc comment called them
    "lifecycle and wiring" checks added only because there was nowhere else to
-   put them); and `s8_pty_actions.rs`'s two tests. Every one of those five
-   files is now either fully migrated and deleted (`s13_pty_dashboard_actions.rs`,
-   `s8_pty_help.rs`, `s8_pty_actions.rs`) or trimmed to only its genuinely
+   put them); `s8_pty_actions.rs`'s two tests; and `s10_pty_reload.rs`'s single
+   test, the suite's slowest at 7.7s (a real sleep to wait out `poll_loop`'s
+   own poll interval) — its reload-preserves-collapse property lives entirely
+   in `reload_if_changed` (extracted from `poll_loop`'s mtime-changed branch
+   the same way `handle_key` was extracted from its key-dispatch branch), so
+   the migrated test calls that directly against a real scratch state file
+   and needs only a ~1s sleep for a distinguishable mtime, not `poll_loop`'s
+   interval. Every one of those six files is now either fully migrated and
+   deleted (`s13_pty_dashboard_actions.rs`, `s8_pty_help.rs`,
+   `s8_pty_actions.rs`, `s10_pty_reload.rs`) or trimmed to only its genuinely
    terminal-only test (`s6_pty.rs`'s crash guard, `s11_pty_focus.rs`'s exit-code
    check). The rest are tracked as follow-up migration work under the same
    issue, not done all at once here. Two wrinkles #61 surfaced along the way:

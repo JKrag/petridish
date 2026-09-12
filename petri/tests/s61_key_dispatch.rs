@@ -27,6 +27,12 @@
 //!   mode/terminal restore on exit) and stays PTY.
 //! - `s8_pty_actions.rs`'s two tests (`action_keys_do_not_fire_while_the_filter_has_focus`,
 //!   `an_action_on_a_project_with_no_remote_reports_it`) — that file is now empty, deleted.
+//! - `s10_pty_reload.rs`'s `a_state_file_reload_does_not_reopen_a_collapsed_section` — the
+//!   suite's single slowest test (7.7s: a real 7s sleep to wait out `poll_loop`'s poll
+//!   interval before asserting on the reload). Its actual property — that a reload
+//!   preserves the user's collapsed sections — lives entirely in `reload_if_changed`
+//!   (extracted from `poll_loop` the same way `handle_key` was), which this file now calls
+//!   directly against a real scratch state file: no terminal, no polling, no 7s wait.
 //!
 //! What stays PTY (not migrated, and not attempted here): anything that
 //! actually launches a program (MECH-2/MECH-3) or asserts a real process's
@@ -49,7 +55,7 @@
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use petri::dashboard::DashboardState;
 use petri::prefs::Prefs;
-use petri::{KeyOutcome, Screen, handle_key, render_current};
+use petri::{KeyOutcome, Screen, handle_key, reload_if_changed, render_current};
 use petridish_core::schema::{AgentState, GitState, Project, Radar, SCHEMA_VERSION, StatusBucket};
 use ratatui::Terminal;
 use ratatui::backend::TestBackend;
@@ -76,6 +82,13 @@ fn project(id: &str, name: &str) -> Project {
         last_activity_at: None,
         status_bucket: StatusBucket::Active,
         agent_activity: Vec::new(),
+    }
+}
+
+fn project_in(id: &str, name: &str, bucket: StatusBucket) -> Project {
+    Project {
+        status_bucket: bucket,
+        ..project(id, name)
     }
 }
 
@@ -861,4 +874,130 @@ fn an_action_on_a_project_with_no_remote_reports_it() {
         Some("alpha-02 has no remote"),
         "ACT-9's per-project availability axis must produce a notice naming the project"
     );
+}
+
+/// Replaces `s10_pty_reload.rs`'s
+/// `a_state_file_reload_does_not_reopen_a_collapsed_section`.
+///
+/// The regression: `poll_loop` used to rebuild the Dashboard with
+/// `DashboardState::new` on every mtime change, which hardcodes the spec's
+/// *default* collapse state — so a user's own collapsed section reopened
+/// itself on the next scan, with no input from them. The fix was `refresh`
+/// preserving the caller's existing `collapsed` state instead; this test
+/// pins that property directly against `reload_if_changed`, the function
+/// `poll_loop`'s reload branch was extracted into (issue #61).
+///
+/// IN FLIGHT is seeded collapsed alongside the two that ship collapsed by
+/// default, so it is the ONLY thing distinguishing this from
+/// `DashboardState::with_collapsed`'s own defaults — if a reload reset to
+/// `[false, false, true, true]`, index 1 would flip back and this is the
+/// property that would go undetected. `scan_duration_ms` changing between
+/// the two writes is this test's proof the reload actually read the new
+/// file rather than silently no-op'ing on a stale one.
+#[test]
+fn a_state_file_reload_does_not_reopen_a_collapsed_section() {
+    // Whether any IN FLIGHT project's row is visible in `dashboard_state.visible` — a
+    // collapsed section keeps its header row but drops its `DashRow::Project` rows, so
+    // this is what actually distinguishes collapsed from expanded.
+    fn in_flight_rows_visible(radar: &Radar, state: &DashboardState) -> bool {
+        state.visible.iter().any(|r| match r {
+            petri::dashboard::DashRow::Project(i) => {
+                radar.projects[*i].status_bucket == StatusBucket::InFlight
+            }
+            petri::dashboard::DashRow::Header(_) => false,
+        })
+    }
+
+    let dir = std::env::temp_dir().join(format!("petri_s61_reload_{}", std::process::id()));
+    std::fs::create_dir_all(&dir).expect("scratch dir must be creatable");
+    let state_path = dir.join("radar.json");
+
+    let in_flight_members = vec![
+        project_in("ember-core", "ember-core", StatusBucket::InFlight),
+        project_in("forest-net", "forest-net", StatusBucket::InFlight),
+    ];
+    let before_radar = Radar {
+        schema_version: SCHEMA_VERSION,
+        updated_at: chrono::Utc::now(),
+        scan_duration_ms: 312,
+        projects: in_flight_members.clone(),
+        quota: None,
+    };
+    std::fs::write(
+        &state_path,
+        serde_json::to_string(&before_radar).expect("serialize"),
+    )
+    .expect("initial state write must succeed");
+    let last_mtime = std::fs::metadata(&state_path)
+        .expect("state file must exist")
+        .modified()
+        .ok();
+
+    // IN FLIGHT collapsed alongside the two that ship collapsed — the seeded
+    // starting point a real session would have after the user pressed Space
+    // on it once, persisted to petri.toml, and restarted.
+    let collapsed = [false, true, true, true];
+    let mut dashboard_state = Some(DashboardState::with_collapsed(&before_radar, collapsed));
+    assert!(
+        !in_flight_rows_visible(&before_radar, dashboard_state.as_ref().unwrap()),
+        "precondition: IN FLIGHT must start collapsed, so none of its rows are visible"
+    );
+
+    let mut last_good = Some(before_radar);
+    let mut browser_state: Option<petri::browser::BrowserState> = None;
+    let mut feed = petri::feed::FeedState::default();
+    let prefs = Prefs {
+        collapsed,
+        ..Prefs::default()
+    };
+
+    // A real mtime change needs real, distinguishable filesystem time — not this
+    // function's problem to work around, just a fact of the fixture. Far cheaper
+    // than the 7s the PTY original slept to also wait out poll_loop's own poll
+    // interval, which reload_if_changed has none of: called directly, there is no
+    // interval to wait out.
+    std::thread::sleep(std::time::Duration::from_millis(1100));
+
+    let after_radar = Radar {
+        schema_version: SCHEMA_VERSION,
+        updated_at: chrono::Utc::now(),
+        scan_duration_ms: 9900,
+        projects: in_flight_members,
+        quota: None,
+    };
+    std::fs::write(
+        &state_path,
+        serde_json::to_string(&after_radar).expect("serialize"),
+    )
+    .expect("state rewrite must succeed");
+
+    let (_new_mtime, mtime_changed) = reload_if_changed(
+        &state_path,
+        last_mtime,
+        &mut last_good,
+        &mut dashboard_state,
+        &mut browser_state,
+        &mut feed,
+        &prefs,
+    );
+
+    assert!(mtime_changed, "the mtime change must have been detected");
+    let last_good = last_good.expect("a successful reload must leave last_good populated");
+    let dashboard_state =
+        dashboard_state.expect("a successful reload must not clear dashboard_state");
+    assert_eq!(
+        last_good.scan_duration_ms, 9900,
+        "the reload never landed, so this test proves nothing about collapse"
+    );
+    assert_eq!(
+        dashboard_state.collapsed, collapsed,
+        "a reload must preserve the user's collapsed sections, not reset to defaults"
+    );
+    assert!(
+        !in_flight_rows_visible(&last_good, &dashboard_state),
+        "a reload reopened the collapsed IN FLIGHT section — its rows are back, i.e. the \
+         user's layout changed with no input from them"
+    );
+
+    let _ = std::fs::remove_dir_all(&dir);
 }
