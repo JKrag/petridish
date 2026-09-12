@@ -10,15 +10,28 @@ filesystem and no idea which ones are alive, which have uncommitted work, and wh
 is currently waiting on you.
 
 **`swab`** (the scanner) and **`petri`** (the terminal dashboard) are cross-platform — no
-native-macOS dependency. **`petridish`**'s `install`/`uninstall` are macOS-only by design
-and refuse to run elsewhere: launchd and `~/Library` are load-bearing there. `doctor` and
-`menubar` are macOS-only in the same sense; `doctor` reports its launchd/plist/menu-bar
-checks as "not applicable" rather than a permanent failure elsewhere, and `menubar` refuses
-with an explicit message instead of printing plugin text nothing will read. On Linux, skip
-`petridish` and run `swab`/`petri` directly; see [Linux](#linux) below for the manual setup
-that replaces what `petridish install` does on macOS.
+native-macOS dependency. **`petridish`** wires the other two into launchd, the menu bar,
+and the Claude Code hook: `install`/`uninstall` only support macOS today (they use launchd
+and `~/Library`, and exit with an error on other platforms) — there's no Linux equivalent
+yet, see [#75](https://github.com/JKrag/petridish/issues/75). `doctor` and `menubar` already
+run cross-platform: `doctor` reports its launchd/plist/menu-bar checks as "not applicable"
+where they don't apply instead of failing, and `menubar` prints an explicit message instead
+of plugin text nothing will read.
 
-## Install
+| | macOS | Linux |
+| --- | --- | --- |
+| `swab` (scanner), `petri` (dashboard) | ✅ | ✅ |
+| `petridish install` / `uninstall` | ✅ | ❌ — no Linux support yet ([#75](https://github.com/JKrag/petridish/issues/75)); do it by hand, see [Linux](#linux) |
+| `petridish doctor` | ✅ full checks | ✅ — macOS-only checks report "not applicable" |
+| `petridish menubar` | ✅ | ❌ — prints a "macOS-only" message and exits 0 |
+
+**On Linux, start at the [Linux](#linux) section below** — it covers the manual setup (a
+systemd timer or cron, plus a one-time hook registration) that replaces what `petridish
+install` does on macOS. The rest of this README up to that point is macOS-flavored.
+
+## Install (macOS)
+
+> On Linux, `petridish install` doesn't apply — skip to [Linux](#linux) instead.
 
 ```sh
 brew install jkrag/tap/petridish
@@ -37,7 +50,7 @@ petridish install
 
 It backs up `~/.claude/settings.json` once, to `~/.petridish/settings.json.backup`, before
 touching it. That backup is a safety artifact for you — uninstall never reads it back
-automatically. See [Uninstall semantics](#uninstall-semantics).
+automatically. See [Uninstall semantics (macOS)](#uninstall-semantics-macos).
 
 Re-running `petridish install` is safe and is the right move after any upgrade that
 relocates the binaries.
@@ -65,18 +78,18 @@ pass it.
 
 Four binaries, each with one job:
 
-| Binary | Role |
-| --- | --- |
-| `petridish` | Install, uninstall, health-check, and render the menu bar |
-| `swab` | The scanner. The **only** thing that writes `projects.json` |
-| `swab-hook` | The Claude Code hook. Appends one line to `events.ndjson`, nothing else |
-| `petri` | The terminal dashboard |
+| Binary | Role | Platform |
+| --- | --- | --- |
+| `petridish` | Install, uninstall, health-check, and render the menu bar | macOS (`doctor` also runs on Linux, degraded — see [Linux](#linux)) |
+| `swab` | The scanner. The **only** thing that writes `projects.json` | Cross-platform |
+| `swab-hook` | The Claude Code hook. Appends one line to `events.ndjson`, nothing else | Cross-platform |
+| `petri` | The terminal dashboard | Cross-platform |
 
 ```sh
-petridish install       # wire up launchd + the Claude Code hook + the menu bar
-petridish uninstall     # remove all of that, leaving ~/.petridish intact
-petridish doctor        # is the install intact?
-petridish menubar       # print xbar plugin text for the current state
+petridish install       # macOS only — wire up launchd + the Claude Code hook + the menu bar
+petridish uninstall     # macOS only — remove all of that, leaving ~/.petridish intact
+petridish doctor        # is the install intact? (macOS/plist checks skip on Linux)
+petridish menubar       # macOS only — print xbar plugin text for the current state
 
 swab scan               # run one tick, write ~/.petridish/projects.json
 swab list [--bucket B] [--all] [--json]
@@ -102,7 +115,7 @@ Two `doctor` commands, deliberately: `swab doctor` answers "is the scanner healt
 install intact" (binaries resolve, the plist points somewhere real, every hook event is
 registered).
 
-### Uninstall semantics
+### Uninstall semantics (macOS)
 
 `petridish uninstall` unloads the launchd job, deletes its plist, and **structurally
 removes only the hook entries carrying the `# petridish` marker** from `settings.json`. It
@@ -115,29 +128,20 @@ up where you left off.
 
 ## Linux
 
-`petridish install`/`uninstall` are macOS-only (launchd, `~/Library`) and actively refuse to
-run on other platforms — see ARCHITECTURE.md §8.3 D5. `doctor`/`menubar` are macOS-only in
-the same sense; `doctor` reports its launchd/plist/menu-bar checks as `skip: ... not
-applicable on this platform` rather than a permanent `fail` there, and `menubar` prints an
-explicit "macOS-only" message and exits 0 rather than plugin text nothing will read (issue
-#25). `swab` and `petri` carry no macOS dependency at all, so on Linux you build and run them
-directly and provide launchd's two jobs (periodic scanning, and the Claude Code hook
-registration) yourself. There is no `petridish`-equivalent installer for Linux yet (tracked
-in issue #26); this is the manual path in the meantime.
+`swab` (the scanner) and `petri` (the dashboard) work fully on Linux. There's no installer
+yet, so the four steps below — build, schedule the scan, register the Claude Code hook, run
+`petri` — are what `petridish install` would otherwise do for you. Each is a one-time setup.
 
-**1. Build.**
+**1. Install the binaries.**
 
 ```sh
-cargo install --path swab --locked    # swab, swab-hook
-cargo install --path petri --locked   # petri
+cargo install --path swab --locked            # swab, swab-hook
+cargo install --path petri --locked           # petri
+cargo install --path petridish-cli --locked   # petridish (for `doctor`, step 4)
 ```
 
-(`cargo install` from crates.io works too, once published, or use a prebuilt Linux binary
-from a release once one exists.)
-
-**2. Schedule `swab scan`.** `swab scan` needs to run periodically — macOS uses a launchd
-job at a 60-second interval (`petridish-cli/resources/com.petridish.daemon.plist`); a
-systemd user timer is the closest Linux equivalent:
+**2. Schedule `swab scan` to run every 60 seconds.** A systemd user timer is the
+recommended way:
 
 `~/.config/systemd/user/petridish-scan.service`:
 
@@ -168,38 +172,28 @@ WantedBy=timers.target
 ```sh
 systemctl --user daemon-reload
 systemctl --user enable --now petridish-scan.timer
-journalctl --user -u petridish-scan -f   # logs, in place of launchd's daemon.log
+journalctl --user -u petridish-scan -f   # tail the logs
 ```
 
-A user systemd manager normally stops when your last login session ends, unlike launchd's
-always-on daemon — so the timer above only scans while you're logged in unless you also
-enable lingering:
+By default this only scans while you're logged in. To also have it run before login (e.g.
+after a reboot with no interactive session), enable lingering:
 
 ```sh
 loginctl enable-linger "$USER"
 ```
 
-No systemd session (or you'd rather not use it)? A user crontab entry does the same job,
-logging to the same file `petridish install` would have used on macOS. Guard it with
-`flock` — cron has no notion of "skip this tick if the last one is still running", and an
-overlapping `swab scan` racing itself is a real hazard here: `write_scan` reads state before
-its atomic rename and hook-event processing truncates `events.ndjson`, so two concurrent
-ticks can lose events or clobber each other's state:
+No systemd? A cron entry works too — wrap it in `flock` so two ticks can never overlap and
+corrupt each other's state:
 
 ```
 * * * * * flock -n /tmp/petridish-scan.lock $HOME/.cargo/bin/swab scan >> $HOME/.petridish/daemon.log 2>&1
 ```
 
-**3. Register the Claude Code hook.** `petridish install` normally does this step —
-appending marked entries to `~/.claude/settings.json` without disturbing any other hook
-consumer already configured there (see "Uninstall semantics" above). Without it, `swab-hook`
-is never invoked and `agent_activity` sensing (`waiting_since`, the "waiting on you"
-indicator) never populates; git/agent-transcript-based facts still work. Add this by hand,
-substituting the real absolute path from `which swab-hook` in place of the
-`/home/you/.cargo/bin/swab-hook` placeholder below — it must be a real absolute path, not a
-literal `~`: the path is single-quoted in the command string precisely so a space in it
-can't break the shell, and single quotes disable `~`-expansion along with everything else.
-Merge this into whatever `hooks` object is already there rather than overwriting the file:
+**3. Register the Claude Code hook.** This is what lets petridish sense when an agent is
+running or waiting on you — without it, git-based facts (branch, dirty state) still work,
+but agent activity won't show up. Add the following to `~/.claude/settings.json`, merging it
+into whatever `hooks` object is already there (don't overwrite the file). Replace
+`/home/you/.cargo/bin/swab-hook` with the real path from `which swab-hook`:
 
 ```json
 {
@@ -220,22 +214,19 @@ Merge this into whatever `hooks` object is already there rather than overwriting
 }
 ```
 
-The trailing `# petridish` marker and the four event names (`PreToolUse`/`Stop`/
-`Notification`/`PermissionRequest`) must match `petridish-core::schema::{HOOK_MARKER,
-HOOK_EVENTS}` exactly, since `swab doctor` checks for them by name when it verifies hook
-wiring.
+Keep the path quoted exactly like that (single quotes, no `~`) and the four event names
+spelled exactly as shown — `swab doctor` checks for them by name to confirm the hook is
+wired up correctly.
 
-**4. Run `petri`.** Same binary, same behaviour as macOS — it only ever reads
-`~/.petridish/projects.json`. `swab doctor` is available too, and is not macOS-gated, so use
-it to check config/roots/state freshness the same way you would on macOS. `petridish doctor`
-also runs on Linux — its launchd/plist/menu-bar checks report `skip: ... not applicable` there
-instead of a permanent failure, so it's still useful for the binaries/hook/config/version
-checks it shares with macOS.
+**4. Run it.**
 
-The systemd unit files above are documented here, not shipped in the repo — no
-`.plist`-style template to keep in sync yet. If Linux usage gets real traction, packaging
-this properly (a `petridish`-equivalent installer, or shipped unit files) is the natural
-follow-up; out of scope for this manual path.
+```sh
+petri             # the dashboard
+swab doctor       # sanity-check config, roots, and state freshness
+petridish doctor  # sanity-check the hook + binaries (macOS-only checks report "not applicable")
+```
+
+That's it — `petri` and `swab` behave identically to macOS from here on.
 
 ## Frontends
 

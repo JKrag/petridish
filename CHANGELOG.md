@@ -7,6 +7,49 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.0.0-beta.6] — 2026-09-12
+
+### Added
+
+- `petri`/`petridish menubar`: a schema-drift warning. The Dashboard, the
+  Browser, `petri --mini`, and `petridish menubar` now compare
+  `projects.json`'s `schema_version` against the build's own
+  `SCHEMA_VERSION` and render a banner (or, for the menubar, a warning
+  section) when the file was written by a newer, incompatible `swab` —
+  previously this was silently ignored. Never a hard failure: a readable
+  file always renders, per the "degrade, never abort" sensor invariant.
+  `petri --mini`'s banner only grows once there is a full spare row past
+  its chrome floor, so it can never push the single-project panel below
+  its own minimum height. Closes #54 (beta.4 added the `SCHEMA_VERSION`
+  constant this reads).
+- `petri`: tool-shortcut keys (`e`/`o`/`g`/etc.) now work from the
+  Dashboard's focus popup and from `petri --mini`, not just the Browser
+  (#64).
+- `swab`: a Linux VS Code Copilot activity sensor, matching the existing
+  macOS one (#23).
+- `petri`: an `xdg-open` fallback for the browse action on Linux, where
+  the macOS-only `open` command isn't available (#24).
+
+### Fixed
+
+- `petridish-cli`: `doctor` and `menubar` now report "not applicable"
+  on non-macOS platforms instead of failing outright (#25).
+- `petri`: fixed the git-log action's fallback path leaking into the
+  user's shell instead of running the intended command (#62).
+
+### Changed
+
+- `petri`: the PTY-based test suite has been migrated to a
+  `TestBackend`-driven harness — `handle_key` was extracted and made
+  generic over `Backend` so pure state/key-handling coverage no longer
+  needs a real pseudo-terminal, removing the flakiness that came with it
+  (#61).
+- Docs: a new "Linux" section in the README walking through running
+  `swab`/`petri` without `launchd` (#26).
+- Build: dev-profile debuginfo trimmed to line-tables-only, for a
+  smaller `target/` and faster cold builds (panic backtraces still
+  resolve to file:line).
+
 ## [1.0.0-beta.5] — 2026-09-11
 
 ### Changed
