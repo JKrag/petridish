@@ -1,7 +1,7 @@
 # petridish
 
-A local monitoring daemon for macOS. It crawls your project roots every minute, tracks git
-state, senses which AI coding agents are actually working, and aggregates it all into
+A local monitoring daemon. It crawls your project roots every minute, tracks git state,
+senses which AI coding agents are actually working, and aggregates it all into
 `~/.petridish/projects.json` — which a terminal dashboard, a menu-bar plugin and a Raycast
 extension then read.
 
@@ -9,7 +9,12 @@ Built for the situation where you have dozens of small experiments scattered acr
 filesystem and no idea which ones are alive, which have uncommitted work, and which agent
 is currently waiting on you.
 
-macOS only, by nature: launchd and `~/Library` are load-bearing.
+**`swab`** (the scanner) and **`petri`** (the terminal dashboard) are cross-platform — no
+native-macOS dependency. **`petridish`** — the installer, health-check and menu-bar
+renderer (`install`/`uninstall`/`doctor`/`menubar`) — is macOS-only by design: launchd and
+`~/Library` are load-bearing there. On Linux, skip `petridish` and run `swab`/`petri`
+directly; see [Linux](#linux) below for the manual setup that replaces what `petridish
+install` does on macOS.
 
 ## Install
 
@@ -105,6 +110,112 @@ edit.
 
 `~/.petridish/` — config, state, the backup — is never deleted, so a later reinstall picks
 up where you left off.
+
+## Linux
+
+`petridish install`/`uninstall`/`doctor`/`menubar` are macOS-only (launchd, `~/Library`) and
+refuse to run on other platforms — see ARCHITECTURE.md §8.3 D5. `swab` and `petri` carry no
+such dependency, so on Linux you build and run them directly and provide launchd's two jobs
+(periodic scanning, and the Claude Code hook registration) yourself. There is no
+`petridish`-equivalent installer for Linux yet (tracked in issue #26); this is the manual
+path in the meantime.
+
+**1. Build.**
+
+```sh
+cargo install --path swab --locked    # swab, swab-hook
+cargo install --path petri --locked   # petri
+```
+
+(`cargo install` from crates.io works too, once published, or use a prebuilt Linux binary
+from a release once one exists.)
+
+**2. Schedule `swab scan`.** `swab scan` needs to run periodically — macOS uses a launchd
+job at a 60-second interval (`petridish-cli/resources/com.petridish.daemon.plist`); a
+systemd user timer is the closest Linux equivalent:
+
+`~/.config/systemd/user/petridish-scan.service`:
+
+```ini
+[Unit]
+Description=petridish scan
+
+[Service]
+Type=oneshot
+ExecStart=%h/.cargo/bin/swab scan
+```
+
+`~/.config/systemd/user/petridish-scan.timer`:
+
+```ini
+[Unit]
+Description=Run petridish scan every 60 seconds
+
+[Timer]
+OnBootSec=10
+OnUnitActiveSec=60
+AccuracySec=1
+
+[Install]
+WantedBy=timers.target
+```
+
+```sh
+systemctl --user daemon-reload
+systemctl --user enable --now petridish-scan.timer
+journalctl --user -u petridish-scan -f   # logs, in place of launchd's daemon.log
+```
+
+No systemd session (or you'd rather not use it)? A user crontab entry does the same job,
+logging to the same file `petridish install` would have used on macOS:
+
+```
+* * * * * $HOME/.cargo/bin/swab scan >> $HOME/.petridish/daemon.log 2>&1
+```
+
+**3. Register the Claude Code hook.** `petridish install` normally does this step —
+appending marked entries to `~/.claude/settings.json` without disturbing any other hook
+consumer already configured there (see "Uninstall semantics" above). Without it, `swab-hook`
+is never invoked and `agent_activity` sensing (`waiting_since`, the "waiting on you"
+indicator) never populates; git/agent-transcript-based facts still work. Add this by hand,
+substituting the real absolute path to your `swab-hook` binary (e.g. from `which swab-hook`)
+in place of `~/.cargo/bin/swab-hook`, merging it into whatever `hooks` object is already
+there rather than overwriting the file:
+
+```json
+{
+  "hooks": {
+    "PreToolUse": [
+      { "hooks": [ { "type": "command", "command": "'~/.cargo/bin/swab-hook' # petridish" } ] }
+    ],
+    "Stop": [
+      { "hooks": [ { "type": "command", "command": "'~/.cargo/bin/swab-hook' # petridish" } ] }
+    ],
+    "Notification": [
+      { "hooks": [ { "type": "command", "command": "'~/.cargo/bin/swab-hook' # petridish" } ] }
+    ],
+    "PermissionRequest": [
+      { "hooks": [ { "type": "command", "command": "'~/.cargo/bin/swab-hook' # petridish" } ] }
+    ]
+  }
+}
+```
+
+The trailing `# petridish` marker and the four event names (`PreToolUse`/`Stop`/
+`Notification`/`PermissionRequest`) must match `petridish-core::schema::{HOOK_MARKER,
+HOOK_EVENTS}` exactly, since `swab doctor` checks for them by name when it verifies hook
+wiring.
+
+**4. Run `petri`.** Same binary, same behaviour as macOS — it only ever reads
+`~/.petridish/projects.json`. `swab doctor` is available too, and is not macOS-gated, so use
+it to check config/roots/state freshness the same way you would on macOS (`petridish
+doctor`'s launchd/plist checks are the macOS-specific half; see issue #25 for making that
+distinction clearer instead of reporting a bare failure on Linux).
+
+The systemd unit files above are documented here, not shipped in the repo — no
+`.plist`-style template to keep in sync yet. If Linux usage gets real traction, packaging
+this properly (a `petridish`-equivalent installer, or shipped unit files) is the natural
+follow-up; out of scope for this manual path.
 
 ## Frontends
 

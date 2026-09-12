@@ -334,13 +334,17 @@ Rejected alternatives:
 
 ### 8.2 Release channels
 
-1. **Homebrew tap — primary.** The tool is macOS-only by nature (launchd, `~/Library`), so
-   brew is the natural fit for discoverability and upgrades. A personal tap
-   (`brew install jkrag/tap/petridish`) rather than `homebrew-core`, which imposes
-   notability requirements and ongoing maintenance obligations.
+1. **Homebrew tap — primary.** `petridish-cli`'s install/doctor/menubar surface is
+   macOS-only by nature (launchd, `~/Library` — D5 below), so brew is the natural fit for
+   discoverability and upgrades there. A personal tap (`brew install jkrag/tap/petridish`)
+   rather than `homebrew-core`, which imposes notability requirements and ongoing
+   maintenance obligations. `swab` and `petri` themselves carry no such dependency (issue
+   #23/#24); Linux has no equivalent packaged channel yet, only the manual `cargo install`
+   + systemd/cron path README.md's "Linux" section documents (issue #26). A real Linux
+   installer/package is a future follow-up, not yet built.
 2. **Shell installer — secondary.** A `curl | sh` script for people who do not use brew.
 3. **`cargo install` — for Rust users**, from crates.io once published, or from a git
-   checkout at any time.
+   checkout at any time. The only channel that currently reaches Linux.
 
 **PyPI is no longer a channel.** It was named the primary, source-of-truth channel here
 when the package was Python; there is nothing left to publish there (ADR-0004).
