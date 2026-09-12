@@ -1,7 +1,12 @@
 # petridish
 
-Local monitoring daemon for macOS: crawls project roots, tracks git state, senses AI agent
-activity, and aggregates into `~/.petridish/projects.json`.
+Local monitoring daemon: crawls project roots, tracks git state, senses AI agent activity,
+and aggregates into `~/.petridish/projects.json`. `swab` (the scanner) and `petri` (the
+terminal dashboard) are cross-platform — no native-macOS dependency. `petridish-cli`'s
+`install`/`uninstall` are macOS-only by design (launchd, `~/Library`) and actively refuse
+elsewhere; `doctor`/`menubar` are macOS-only in the same sense but do not yet enforce it on
+Linux (issue #25). See issue #26 and README.md's "Linux" section for the manual,
+launchd-free way to run `swab`/`petri` there.
 
 **One toolchain, four crates, split by role:**
 
@@ -21,7 +26,10 @@ activity, and aggregates into `~/.petridish/projects.json`.
 - **`petridish-cli/`** (Rust, published as `petri-dish`, binary **`petridish`**) is the
   installer and menu-bar renderer: `install`, `uninstall`, `doctor`, `menubar`. It replaced
   the Python `installer.py`/`menubar.py` (ADR-0004). Like `petridish-core`, it does not
-  depend on `swab` — it wires the daemon up, it never writes state itself.
+  depend on `swab` — it wires the daemon up, it never writes state itself. `install`/
+  `uninstall` are macOS-only by design and refuse elsewhere (launchd, `~/Library` —
+  ARCHITECTURE.md §8.3 D5); `doctor`/`menubar` are macOS-only in intent but don't yet call
+  the same guard (issue #25). `swab` and `petri` are not macOS-bound at all.
 
 **The Python read-side is gone** (ADR-0004). `petripy`, `schema.py`, `menubar.py` and
 `installer.py` were deleted once `petri` had earned trust and the installer had been
