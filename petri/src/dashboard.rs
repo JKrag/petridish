@@ -28,7 +28,9 @@
 //!   selected).
 
 use petridish_core::present;
-use petridish_core::schema::{AgentActivity, Project, QuotaState, Radar, StatusBucket};
+use petridish_core::schema::{
+    AgentActivity, Project, QuotaState, Radar, SCHEMA_VERSION, StatusBucket,
+};
 use ratatui::{
     layout::{Constraint, Layout, Rect},
     style::{Color, Modifier, Style},
@@ -788,22 +790,42 @@ fn no_worse_than(
             .all(|(a, b)| a.items_shown >= b.items_shown && a.truncated_remaining.is_none())
 }
 
-/// The compact-tier decision and the fleet's own row budget — shared by both planning passes
-/// so they cannot disagree about how much room there is.
-fn tier_and_rows(area: Rect, radar: &Radar) -> (bool, usize) {
+/// `radar.updated_at` older than 24h — the scan is stale, not just the render.
+fn is_stale(radar: &Radar) -> bool {
     let elapsed_secs = chrono::Utc::now()
         .signed_duration_since(radar.updated_at)
         .num_seconds()
         .max(0);
-    let is_stale = elapsed_secs > 86400;
+    elapsed_secs > 86400
+}
 
+/// `projects.json` was written by a `swab` whose schema is newer than this build
+/// understands (issue #54 part 2/3). Per invariant 5 ("degrade, never abort") and
+/// SPEC.md §4.6, this renders normally with a banner rather than refusing — the file
+/// is still readable (`#[serde(default)]` covers every additive field), so a hard
+/// failure here would be strictly worse than what it's warning about.
+fn is_schema_ahead(radar: &Radar) -> bool {
+    radar.schema_version > SCHEMA_VERSION
+}
+
+/// How many banner rows the Dashboard reserves above the fleet, in render order
+/// (schema drift first — it's the rarer, more actionable warning — then staleness).
+/// Both planning (`tier_and_rows`) and rendering (`render`) call this so they cannot
+/// disagree about how much room the banners need.
+fn banner_row_count(radar: &Radar) -> usize {
+    usize::from(is_schema_ahead(radar)) + usize::from(is_stale(radar))
+}
+
+/// The compact-tier decision and the fleet's own row budget — shared by both planning passes
+/// so they cannot disagree about how much room there is.
+fn tier_and_rows(area: Rect, radar: &Radar) -> (bool, usize) {
     // 2 header rows (title + heavy rule) + 2 footer rows (light rule + keymap) + 1 reserved row
     // for the cross-section "not shown" summary — see the pre-grid version's comment (now
     // folded in here) for why that reservation is unconditional rather than added only when
     // needed: a real 80-project fleet in a 16-row corner split showed STALE/COLD can fail to
     // fit even their own header, and without an always-reserved row they vanished with zero
     // indication, which is exactly the silent-truncation failure mode SPEC.md §3.2 rules out.
-    let fixed_rows = 2 + 2 + usize::from(is_stale);
+    let fixed_rows = 2 + 2 + banner_row_count(radar);
     let fleet_rows = (area.height as usize)
         .saturating_sub(fixed_rows)
         .saturating_sub(1);
@@ -1103,7 +1125,9 @@ fn focus_too_small_lines(area: Rect) -> Vec<Line<'static>> {
 /// - **Overflow: truncate, never scroll.** If a section's own rows exceed its share of the
 ///   height, it stops with a required `… +N more` marker; sections with no room even for their
 ///   header are named in one summary row instead of disappearing.
-/// - Staleness banner when `radar.updated_at` is older than 24h.
+/// - Staleness banner when `radar.updated_at` is older than 24h, and a schema-drift
+///   banner when `radar.schema_version` is newer than this build's `SCHEMA_VERSION`
+///   (issue #54 part 2/3) — both stack in the same reserved slot, schema drift first.
 /// - Must not panic on an empty `radar.projects`, nor at 0×0 or 1×1.
 ///
 /// Worktree nesting/rollup (indented children, `name · N worktrees` rollup counts in compact
@@ -1129,7 +1153,6 @@ pub fn render(
         .signed_duration_since(radar.updated_at)
         .num_seconds()
         .max(0);
-    let is_stale = elapsed_secs > 86400;
 
     let now = chrono::Utc::now();
     let scan_secs = radar.scan_duration_ms as f64 / 1000.0;
@@ -1138,7 +1161,7 @@ pub fn render(
 
     let [header_area, banner_area, fleet_area, footer_area] = Layout::vertical([
         Constraint::Length(2),
-        Constraint::Length(u16::from(is_stale)),
+        Constraint::Length(banner_row_count(radar) as u16),
         Constraint::Min(0),
         Constraint::Length(2),
     ])
@@ -1149,14 +1172,30 @@ pub fn render(
         header_area,
     );
 
-    if is_stale {
-        // `▲`, not `⚠` — the latter (U+26A0, Unicode 4.0) is the exact
-        // codepoint that rendered as a blank cell on the macOS 14 CI runner
-        // under ncurses/wcwidth (petri/SPEC.md §4.2's founding incident). This
-        // banner exists specifically so a stale scan can't fail silently;
-        // reusing the one glyph proven to do exactly that here would be
-        // ironic at best.
-        let banner = Line::from(Span::styled(
+    // `▲`, not `⚠` — the latter (U+26A0, Unicode 4.0) is the exact codepoint that
+    // rendered as a blank cell on the macOS 14 CI runner under ncurses/wcwidth
+    // (petri/SPEC.md §4.2's founding incident). These banners exist specifically so a
+    // stale scan or a schema mismatch can't fail silently; reusing the one glyph proven
+    // to do exactly that here would be ironic at best.
+    let mut banners: Vec<Line> = Vec::new();
+    if is_schema_ahead(radar) {
+        // Kept as short as the staleness banner below (~30 chars) rather than spelling
+        // the fix out in full — at 80 cols a longer message truncates past its
+        // actionable half with no wrap, and at narrower widths (the Browser's detail
+        // popup gates as low as 60) it would drop the word "upgrade" entirely.
+        banners.push(Line::from(Span::styled(
+            format!(
+                " ▲ schema v{} > v{SCHEMA_VERSION} — upgrade swab/petri/petridish",
+                radar.schema_version
+            ),
+            Style::default()
+                .fg(Color::Black)
+                .bg(theme::DANGER)
+                .add_modifier(Modifier::BOLD),
+        )));
+    }
+    if is_stale(radar) {
+        banners.push(Line::from(Span::styled(
             format!(
                 " ▲ Data stale (updated {} ago)",
                 humanize_secs(elapsed_secs as u64)
@@ -1165,8 +1204,10 @@ pub fn render(
                 .fg(Color::Black)
                 .bg(theme::DANGER)
                 .add_modifier(Modifier::BOLD),
-        ));
-        frame.render_widget(Paragraph::new(vec![banner]), banner_area);
+        )));
+    }
+    if !banners.is_empty() {
+        frame.render_widget(Paragraph::new(banners), banner_area);
     }
 
     frame.render_widget(

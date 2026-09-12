@@ -665,6 +665,13 @@ and any `swab`/`petri` binary not yet rebuilt. If `schema_version` is *greater* 
 this build knows, render normally but show a banner in the same slot as the
 staleness banner. Never hard-fail on a readable file.
 
+Implemented (issue #54 part 2/3) on the Dashboard and in the `petridish menubar`
+plugin, the two readers issue #54 names — not on the Browser or `petri --mini`,
+which still silently ignore a from-the-future `schema_version`; closing that gap
+is unscoped follow-on, not this issue. On the Dashboard, the schema banner and the
+staleness banner are independent and stack (schema drift first) rather than one
+replacing the other, in the one row each reserves above the fleet.
+
 ### 4.7 Terminal restoration
 
 On every exit path, including panic — install a panic hook that leaves the

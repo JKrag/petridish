@@ -22,7 +22,7 @@
 //!
 //! An empty radar keeps the same shape with a `No projects` placeholder.
 
-use petridish_core::schema::{AgentActivity, Project, Radar, StatusBucket};
+use petridish_core::schema::{AgentActivity, Project, Radar, SCHEMA_VERSION, StatusBucket};
 
 /// Buckets in render order, with the labels this frontend uses.
 const BUCKET_SECTIONS: [(StatusBucket, &str); 4] = [
@@ -104,6 +104,18 @@ pub fn render_menubar(radar: &Radar) -> String {
         .collect();
 
     let mut lines: Vec<String> = vec![format!("🧫 {}/{}", working.len(), total), "---".into()];
+
+    // Schema-drift warning (issue #54 part 2/3): render normally rather than refuse —
+    // per invariant 5 and SPEC.md §4.6, a readable-but-newer file degrades with a
+    // banner, it doesn't hard-fail. Same "render, don't refuse" call petri's Dashboard
+    // makes for the same field.
+    if radar.schema_version > SCHEMA_VERSION {
+        lines.push(format!(
+            "projects.json schema (v{}) is newer than this build supports (v{SCHEMA_VERSION}); upgrade petridish/swab/petri together | color=#ff0000",
+            radar.schema_version
+        ));
+        lines.push("---".into());
+    }
 
     if total == 0 {
         lines.push("No projects | color=#888888".into());
@@ -248,6 +260,26 @@ mod tests {
                 "Refresh | refresh=true"
             )
         );
+    }
+
+    #[test]
+    fn a_schema_from_the_future_renders_a_warning_instead_of_failing() {
+        let mut r = radar(vec![project("a", "active-one", StatusBucket::Active)]);
+        r.schema_version = SCHEMA_VERSION + 1;
+        let out = render_menubar(&r);
+        let future = SCHEMA_VERSION + 1;
+        assert_eq!(
+            out,
+            format!(
+                "🧫 0/1\n---\nprojects.json schema (v{future}) is newer than this build supports (v{SCHEMA_VERSION}); upgrade petridish/swab/petri together | color=#ff0000\n---\nActive\n--active-one · main | href=\"file:///Users/x/repos/active-one\"\n---\nRefresh | refresh=true"
+            )
+        );
+    }
+
+    #[test]
+    fn a_current_schema_never_shows_the_warning() {
+        let out = render_menubar(&radar(vec![]));
+        assert!(!out.contains("newer than this build supports"));
     }
 
     #[test]

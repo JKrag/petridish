@@ -204,6 +204,69 @@ fn staleness_banner_rendered_when_updated_at_is_older_than_24h() {
 }
 
 #[test]
+fn schema_drift_banner_rendered_when_schema_version_is_newer_than_this_build() {
+    let mut radar = radar_of(vec![project("p1", "one", StatusBucket::Cold)]);
+    radar.schema_version = SCHEMA_VERSION + 1;
+    let state = DashboardState::new(&radar);
+    let lines = rendered_lines(&radar, &state, 80, 24);
+    let whole = lines.join("\n").to_lowercase();
+    assert!(
+        whole.contains("schema") && whole.contains("upgrade"),
+        "schema_version newer than this build's SCHEMA_VERSION must render a warning banner \
+         naming the mismatch and pointing at upgrading, got:\n{whole}"
+    );
+}
+
+#[test]
+fn schema_drift_and_staleness_banners_stack_rather_than_replace_each_other() {
+    // hostile.json already carries schema_version 99 (from the future, per
+    // fixtures_test.rs's own pin) and an updated_at ~6 days old — no mutation
+    // needed, both conditions are the fixture's actual point (ADR-0003).
+    let radar = load("hostile.json");
+    let state = DashboardState::new(&radar);
+    let lines = rendered_lines(&radar, &state, 80, 24);
+    let whole = lines.join("\n").to_lowercase();
+    assert!(
+        whole.contains("schema"),
+        "schema banner must still render:\n{whole}"
+    );
+    assert!(
+        whole.contains("stale"),
+        "staleness banner must still render:\n{whole}"
+    );
+}
+
+#[test]
+fn both_banners_reserve_their_own_row_even_under_height_pressure() {
+    // Two banner rows means `tier_and_rows` and `render` must agree on
+    // `banner_row_count`, or one under-reserves and the other over-renders —
+    // a mismatch that only shows up when both banners fire together AND the
+    // terminal is short enough for row budget errors to matter. loaded.json's
+    // RUNNING (25) + IN FLIGHT (18) already overflow a 15-row terminal on
+    // their own (see `overflow_truncates_with_a_more_marker_instead_of_scrolling`);
+    // bumping its schema_version stacks the schema banner on top of its
+    // existing staleness (updated_at 2026-08-20, well past 24h).
+    let mut radar = load("loaded.json");
+    radar.schema_version = SCHEMA_VERSION + 1;
+    let state = DashboardState::new(&radar);
+    let lines = rendered_lines(&radar, &state, 80, 15);
+    let whole = lines.join("\n").to_lowercase();
+    assert!(
+        whole.contains("schema"),
+        "schema banner must still render under height pressure, got:\n{whole}"
+    );
+    assert!(
+        whole.contains("stale"),
+        "staleness banner must still render under height pressure, got:\n{whole}"
+    );
+    assert!(
+        whole.contains("more"),
+        "the fleet must still truncate with a \"+N more\" marker rather than being silently \
+         clipped by a banner/fleet row-budget disagreement, got:\n{whole}"
+    );
+}
+
+#[test]
 fn does_not_panic_on_empty_radar() {
     let radar = radar_of(vec![]);
     let state = DashboardState::new(&radar);
