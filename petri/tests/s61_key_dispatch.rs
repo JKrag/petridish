@@ -33,6 +33,19 @@
 //!   preserves the user's collapsed sections — lives entirely in `reload_if_changed`
 //!   (extracted from `poll_loop` the same way `handle_key` was), which this file now calls
 //!   directly against a real scratch state file: no terminal, no polling, no 7s wait.
+//! - `s8_pty_filter.rs`'s two tests (`the_typed_query_appears_on_screen_and_survives_enter`,
+//!   `backspace_deletes_the_last_character_and_refilters`) — that file is now empty, deleted.
+//! - `s8_pty_repick.rs`'s three tests (`shift_g_opens_the_repick_popup_even_when_the_choice_already_resolves`,
+//!   `shift_g_does_not_fire_while_the_filter_has_focus`,
+//!   `a_shifted_key_on_an_action_with_no_target_reports_it_instead_of_popping`) — that file
+//!   is now empty, deleted. The regression it guards (`Esc` in re-pick mode must not write
+//!   `petri.toml`) is provable in-process the same way it was over a real subprocess: seed a
+//!   scratch prefs file, press `G` then `Esc`, and diff the bytes.
+//! - `s8_pty_prefs.rs`'s `switching_screens_preserves_stored_tool_choices` — that file is now
+//!   empty, deleted.
+//! - The dispatch half of `s7_pty.rs`'s `tab_switches_dashboard_to_browser_and_back` (`Tab`
+//!   round-tripping Dashboard→Browser→Dashboard and persisting each switch). That file's
+//!   other two tests pin `run`'s own startup sequence, not `handle_key`'s, and stay PTY.
 //!
 //! What stays PTY (not migrated, and not attempted here): anything that
 //! actually launches a program (MECH-2/MECH-3) or asserts a real process's
@@ -88,6 +101,19 @@ fn project(id: &str, name: &str) -> Project {
 fn project_in(id: &str, name: &str, bucket: StatusBucket) -> Project {
     Project {
         status_bucket: bucket,
+        ..project(id, name)
+    }
+}
+
+/// A project that IS a git repository (but still has no `github_url`) — for `gitlog`
+/// (`Target::GitRepo`) dispatch, which `project`'s plain `GitState::not_a_repo()` would
+/// always report as `NoTarget` for, popup or no popup.
+fn project_repo(id: &str, name: &str) -> Project {
+    Project {
+        git: GitState {
+            is_repo: true,
+            ..GitState::not_a_repo()
+        },
         ..project(id, name)
     }
 }
@@ -1000,4 +1026,479 @@ fn a_state_file_reload_does_not_reopen_a_collapsed_section() {
     );
 
     let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// Shared per-test dispatch state for the Browser-screen tests below, bundled into a
+/// struct only so `press` can take `&mut self` instead of eleven separate `&mut`
+/// parameters repeated at every call site — see `render_current`'s own doc comment for
+/// why the rest of this file doesn't do this: those functions have no natural grouping,
+/// but this one struct exists only inside a handful of tests and dies with them.
+struct BrowserHarness {
+    screen: Screen,
+    dashboard_state: Option<DashboardState>,
+    browser_state: Option<petri::browser::BrowserState>,
+    picker: Option<petri::picker::PickerState>,
+    picker_action: Option<petri::tools::Action>,
+    help_open: bool,
+    notice: Option<String>,
+    prefs: Prefs,
+    prefs_path: std::path::PathBuf,
+    last_good: Option<Radar>,
+}
+
+impl BrowserHarness {
+    fn browser(radar: Radar, tag: &str) -> Self {
+        Self::browser_with_prefs(radar, tag, Prefs::default())
+    }
+
+    /// Same as [`Self::browser`], but with a caller-supplied starting `Prefs` — for tests
+    /// that need a stored tool choice already in place (`prefs.tools`) before the first
+    /// keystroke, the same shape `seeded_home` gave the PTY originals.
+    fn browser_with_prefs(radar: Radar, tag: &str, prefs: Prefs) -> Self {
+        let browser_state = Some(petri::browser::BrowserState::new(&radar));
+        let prefs_path = scratch_prefs_path(tag);
+        petri::prefs::save(&prefs_path, &prefs).expect("seed prefs must be writable");
+        BrowserHarness {
+            screen: Screen::Browser,
+            dashboard_state: None,
+            browser_state,
+            picker: None,
+            picker_action: None,
+            help_open: false,
+            notice: None,
+            prefs,
+            prefs_path,
+            last_good: Some(radar),
+        }
+    }
+
+    fn press(&mut self, terminal: &mut Terminal<TestBackend>, code: KeyCode) -> KeyOutcome {
+        handle_key(
+            key(code),
+            terminal,
+            &mut self.screen,
+            &mut self.dashboard_state,
+            &mut self.browser_state,
+            &mut self.picker,
+            &mut self.picker_action,
+            &mut self.help_open,
+            &mut self.notice,
+            &self.last_good,
+            &mut self.prefs,
+            &self.prefs_path,
+        )
+    }
+
+    fn render(&self, terminal: &mut Terminal<TestBackend>) -> String {
+        let feed = petri::feed::FeedState::default();
+        render_current(
+            terminal,
+            &self.last_good,
+            self.screen,
+            &self.dashboard_state,
+            &self.browser_state,
+            &self.picker,
+            self.help_open,
+            &self.notice,
+            &feed,
+            &self.prefs,
+        );
+        rendered_text(terminal)
+    }
+
+    fn filter_query(&self) -> &str {
+        &self.browser_state.as_ref().unwrap().filter_query
+    }
+}
+
+/// Replaces `s8_pty_filter.rs`'s `the_typed_query_appears_on_screen_and_survives_enter`.
+///
+/// ACT-10: `/` opens the filter, typed characters both narrow `visible` and stay legible
+/// on screen (the block cursor glyph marks the input as open), `Enter` closes the input
+/// but keeps the query, and `Esc` in normal mode is a no-op — so the test re-opens the
+/// filter and clears it there, where the chip must disappear entirely.
+#[test]
+fn the_typed_query_appears_on_screen_and_survives_enter() {
+    const INPUT_CURSOR: char = '\u{2588}';
+    let radar = radar_of(vec![
+        project("alpha-01", "alpha-01"),
+        project("beta-02", "beta-02"),
+    ]);
+    let mut h = BrowserHarness::browser(radar, "filter_query_visible");
+    let mut terminal =
+        Terminal::new(TestBackend::new(90, 24)).expect("TestBackend terminal must construct");
+
+    h.press(&mut terminal, KeyCode::Char('/'));
+    for c in "beta".chars() {
+        h.press(&mut terminal, KeyCode::Char(c));
+    }
+    assert_eq!(h.filter_query(), "beta");
+
+    let typing = h.render(&mut terminal);
+    assert!(
+        typing.contains("/beta"),
+        "the query typed into the `/` filter must be visible, got:\n{typing}"
+    );
+    assert!(
+        typing.contains(INPUT_CURSOR),
+        "the block cursor must mark the filter as open, got:\n{typing}"
+    );
+
+    h.press(&mut terminal, KeyCode::Enter);
+    assert!(
+        !h.browser_state.as_ref().unwrap().filter_input,
+        "Enter must close the filter input"
+    );
+    assert_eq!(
+        h.filter_query(),
+        "beta",
+        "Enter must keep the query, not discard it (petri/SPEC.md §3.1)"
+    );
+
+    let kept = h.render(&mut terminal);
+    assert!(
+        kept.contains("/beta"),
+        "the query must remain visible after Enter closes the input, got:\n{kept}"
+    );
+    assert!(
+        !kept.contains(INPUT_CURSOR),
+        "the block cursor must be gone once the input is closed, got:\n{kept}"
+    );
+
+    // Esc in normal mode is a no-op, so re-open the filter and clear it there.
+    h.press(&mut terminal, KeyCode::Char('/'));
+    h.press(&mut terminal, KeyCode::Esc);
+    assert_eq!(
+        h.filter_query(),
+        "",
+        "Esc must clear the query, taking the chip with it"
+    );
+}
+
+/// Replaces `s8_pty_filter.rs`'s `backspace_deletes_the_last_character_and_refilters`.
+///
+/// Backspace arrives as a real terminal byte (0x7f, DEL) in a real terminal, but the
+/// dispatch it triggers — drop the last character and re-apply the filter — is plain
+/// state, provable directly against `handle_key` without one.
+#[test]
+fn backspace_deletes_the_last_character_and_refilters() {
+    let radar = radar_of(vec![project("bravo-01", "bravo-01")]);
+    let mut h = BrowserHarness::browser(radar, "filter_backspace");
+    let mut terminal =
+        Terminal::new(TestBackend::new(90, 24)).expect("TestBackend terminal must construct");
+
+    h.press(&mut terminal, KeyCode::Char('/'));
+    for c in "bravoX".chars() {
+        h.press(&mut terminal, KeyCode::Char(c));
+    }
+    assert_eq!(h.filter_query(), "bravoX");
+    assert!(
+        h.browser_state.as_ref().unwrap().visible.is_empty(),
+        "setup: \"bravoX\" must match nothing, or the delete proves nothing"
+    );
+
+    h.press(&mut terminal, KeyCode::Backspace);
+    assert_eq!(
+        h.filter_query(),
+        "bravo",
+        "Backspace must drop exactly the last character"
+    );
+    assert!(
+        !h.browser_state.as_ref().unwrap().visible.is_empty(),
+        "the list must re-filter on Backspace, not just redraw the query — \"bravo\" \
+         matches bravo-01"
+    );
+
+    // Backspacing past the start is a no-op, not a panic or an underflow.
+    for _ in 0..8 {
+        h.press(&mut terminal, KeyCode::Backspace);
+    }
+    assert_eq!(
+        h.filter_query(),
+        "",
+        "Backspace past the start of the query must not underflow"
+    );
+    assert_eq!(
+        h.screen,
+        Screen::Browser,
+        "petri must survive Backspace on an empty query"
+    );
+}
+
+/// Replaces `s8_pty_repick.rs`'s
+/// `shift_g_opens_the_repick_popup_even_when_the_choice_already_resolves`.
+///
+/// **Inverts `ACT-8`'s "tests must never see the picker"** on purpose: the picker *is*
+/// the feature here, since a shifted key must open the re-pick popup even when the
+/// lowercase key would resolve cleanly (this test seeds `tools.gitlog = "serie"` so it
+/// would). `Esc` is specified to launch nothing and change nothing — the strongest
+/// available assertion, so this diffs the seeded prefs file byte-for-byte across the
+/// press. The PTY original needed a real subprocess only to prove `lib.rs` actually
+/// honoured `persist: false` before touching the file; `prefs_path` being an explicit
+/// parameter now (see this module's doc comment) makes that provable directly.
+#[test]
+fn shift_g_opens_the_repick_popup_even_when_the_choice_already_resolves() {
+    let radar = radar_of(vec![project_repo("alpha-01", "alpha-01")]);
+    let mut prefs = Prefs::default();
+    prefs
+        .tools
+        .insert("gitlog".to_string(), "serie".to_string());
+    let mut h = BrowserHarness::browser_with_prefs(radar, "repick_opens", prefs);
+    let mut terminal =
+        Terminal::new(TestBackend::new(90, 24)).expect("TestBackend terminal must construct");
+
+    let before = std::fs::read(&h.prefs_path).expect("seeded prefs must exist");
+
+    h.press(&mut terminal, KeyCode::Char('G'));
+    assert!(
+        h.picker.is_some(),
+        "G must open the re-pick popup even though gitlog already resolves"
+    );
+
+    let opened = h.render(&mut terminal);
+    assert!(
+        opened.contains("git history"),
+        "the popup must be titled with the action, got:\n{opened}"
+    );
+    assert!(
+        opened.contains("this time"),
+        "the popup must frame itself as a one-off, not a settings dialog:\n{opened}"
+    );
+    assert!(
+        opened.contains("run once"),
+        "the popup must advertise the one-off verb:\n{opened}"
+    );
+    assert!(
+        opened.contains("D set default"),
+        "the popup must advertise the re-default verb:\n{opened}"
+    );
+
+    h.press(&mut terminal, KeyCode::Esc);
+    assert!(h.picker.is_none(), "Esc must close the popup");
+
+    let after = std::fs::read(&h.prefs_path).expect("prefs must still exist");
+    assert_eq!(
+        after, before,
+        "opening and cancelling the re-pick popup must not touch petri.toml"
+    );
+    assert!(
+        String::from_utf8_lossy(&after).contains("gitlog = \"serie\""),
+        "the stored default must survive the popup verbatim"
+    );
+}
+
+/// Replaces `s8_pty_repick.rs`'s `shift_g_does_not_fire_while_the_filter_has_focus`.
+///
+/// The same trap `action_keys_do_not_fire_while_the_filter_has_focus` guards for the
+/// lowercase keys. `G` is an ordinary printable character, so a binding placed in the
+/// wrong branch would pop a modal over a user who was typing a project name.
+#[test]
+fn shift_g_does_not_fire_while_the_filter_has_focus() {
+    let radar = radar_of(vec![project("alpha-01", "alpha-01")]);
+    let mut prefs = Prefs::default();
+    prefs
+        .tools
+        .insert("gitlog".to_string(), "serie".to_string());
+    let mut h = BrowserHarness::browser_with_prefs(radar, "repick_filter", prefs);
+    let mut terminal =
+        Terminal::new(TestBackend::new(90, 24)).expect("TestBackend terminal must construct");
+
+    h.press(&mut terminal, KeyCode::Char('/'));
+    h.press(&mut terminal, KeyCode::Char('G'));
+
+    assert_eq!(
+        h.filter_query(),
+        "G",
+        "typing G into the filter must append to the query, not dispatch the re-pick popup"
+    );
+    assert!(
+        h.picker.is_none(),
+        "typing G into the filter must not open the re-pick popup"
+    );
+}
+
+/// Replaces `s8_pty_repick.rs`'s
+/// `a_shifted_key_on_an_action_with_no_target_reports_it_instead_of_popping`.
+///
+/// Exercises the other arm of `begin_repick`: `browse` (`O`) is `Target::Url`, so on a
+/// project with no `github_url` there is nothing to re-pick and the answer is `ACT-9`'s
+/// per-project notice, not an empty popup. `gitlog` (`G`) on the same row still opens,
+/// because it's `Target::Path` and every project has one — asserting both is what shows
+/// the difference is the action's target, not the row.
+#[test]
+fn a_shifted_key_on_an_action_with_no_target_reports_it_instead_of_popping() {
+    let radar = radar_of(vec![project_repo("alpha-02", "alpha-02")]);
+    let mut h = BrowserHarness::browser(radar, "repick_no_target");
+    let mut terminal =
+        Terminal::new(TestBackend::new(90, 24)).expect("TestBackend terminal must construct");
+
+    h.press(&mut terminal, KeyCode::Char('O'));
+    assert_eq!(
+        h.notice.as_deref(),
+        Some("alpha-02 has no remote"),
+        "O on a project with no remote must explain itself instead of opening a popup"
+    );
+    assert!(
+        h.picker.is_none(),
+        "there is nothing to re-pick, so no popup"
+    );
+
+    // Same row, Target::Path action: the popup does open.
+    h.press(&mut terminal, KeyCode::Char('G'));
+    assert!(
+        h.picker.is_some(),
+        "G must still open on the same project — every project has a path"
+    );
+}
+
+/// Replaces `s8_pty_prefs.rs`'s `switching_screens_preserves_stored_tool_choices`.
+///
+/// A real bug, not a hypothetical one: adding `tools` to `Prefs` forced every
+/// `Prefs { .. }` struct literal in `lib.rs` to name the new field, and each of the
+/// three did so as an empty map — so every `Tab` press wrote a preferences file with
+/// `[tools]` emptied. No pure test could catch it: `prefs::save` was called correctly
+/// with exactly the struct it was handed; only a real key press, writing a real file,
+/// shows a screen switch destroying a sibling field it never touched. Provable
+/// in-process the same way, now that `prefs_path` is a parameter: seed a scratch file,
+/// press Tab, read it back.
+#[test]
+fn switching_screens_preserves_stored_tool_choices() {
+    let radar = radar_of(vec![project("alpha-01", "alpha-01")]);
+    let mut screen = Screen::Dashboard;
+    let mut dashboard_state: Option<DashboardState> = None;
+    let mut browser_state: Option<petri::browser::BrowserState> = None;
+    let mut picker = None;
+    let mut picker_action = None;
+    let mut help_open = false;
+    let mut notice = None;
+    let mut prefs = Prefs::default();
+    prefs.tools.insert("edit".to_string(), "code".to_string());
+    prefs
+        .tools
+        .insert("gitlog".to_string(), "serie".to_string());
+    let prefs_path = scratch_prefs_path("tools_survive_tab");
+    petri::prefs::save(&prefs_path, &prefs).expect("seed prefs must be writable");
+    let last_good = Some(radar);
+    let mut terminal =
+        Terminal::new(TestBackend::new(80, 24)).expect("TestBackend terminal must construct");
+
+    handle_key(
+        key(KeyCode::Tab),
+        &mut terminal,
+        &mut screen,
+        &mut dashboard_state,
+        &mut browser_state,
+        &mut picker,
+        &mut picker_action,
+        &mut help_open,
+        &mut notice,
+        &last_good,
+        &mut prefs,
+        &prefs_path,
+    );
+    assert_eq!(
+        screen,
+        Screen::Browser,
+        "precondition: Tab must switch screens"
+    );
+
+    let written = std::fs::read_to_string(&prefs_path).expect("prefs file must still exist");
+    assert!(
+        written.contains("[tools]"),
+        "the [tools] table was destroyed by a screen switch:\n{written}"
+    );
+    assert!(
+        written.contains("edit = \"code\""),
+        "the stored editor choice was lost:\n{written}"
+    );
+    assert!(
+        written.contains("gitlog = \"serie\""),
+        "the stored git-history choice was lost:\n{written}"
+    );
+    assert!(
+        written.contains("last_screen = \"browser\""),
+        "the Tab switch itself must still have been persisted:\n{written}"
+    );
+}
+
+/// Replaces the dispatch half of `s7_pty.rs`'s
+/// `tab_switches_dashboard_to_browser_and_back` — `Tab` round-tripping
+/// Dashboard→Browser→Dashboard and persisting each switch. That file's other
+/// two tests (`valid_petri_toml_is_applied_on_startup`,
+/// `corrupt_petri_toml_does_not_prevent_startup`) stay PTY: they pin `run`'s
+/// own startup sequence (`prefs::load` before the alternate screen is
+/// entered), which is `run`'s code, not `handle_key`'s, and has no
+/// `TestBackend` equivalent. This test also drops the original's trailing
+/// `'q' must exit 0` assertion — a real exit code is exactly the kind of
+/// property this file leaves to PTY tests elsewhere (`s4_pty.rs` already
+/// covers plain `q` after startup), not something Tab's own dispatch adds.
+#[test]
+fn tab_switches_dashboard_to_browser_and_back() {
+    let radar = radar_of(vec![project("alpha-01", "alpha-01")]);
+    let mut screen = Screen::Dashboard;
+    let mut dashboard_state: Option<DashboardState> = None;
+    let mut browser_state: Option<petri::browser::BrowserState> = None;
+    let mut picker = None;
+    let mut picker_action = None;
+    let mut help_open = false;
+    let mut notice = None;
+    let mut prefs = Prefs::default();
+    let prefs_path = scratch_prefs_path("tab_round_trip");
+    let last_good = Some(radar);
+    let mut terminal =
+        Terminal::new(TestBackend::new(80, 24)).expect("TestBackend terminal must construct");
+
+    handle_key(
+        key(KeyCode::Tab),
+        &mut terminal,
+        &mut screen,
+        &mut dashboard_state,
+        &mut browser_state,
+        &mut picker,
+        &mut picker_action,
+        &mut help_open,
+        &mut notice,
+        &last_good,
+        &mut prefs,
+        &prefs_path,
+    );
+    assert_eq!(
+        screen,
+        Screen::Browser,
+        "Tab from the Dashboard must switch to the Browser (petri/SPEC.md §5)"
+    );
+    assert!(
+        browser_state.is_some(),
+        "the Browser's state must be built on the first Tab switch"
+    );
+    let after_first = std::fs::read_to_string(&prefs_path).expect("prefs file must exist");
+    assert!(
+        after_first.contains("last_screen = \"browser\""),
+        "the first Tab switch must be persisted:\n{after_first}"
+    );
+
+    handle_key(
+        key(KeyCode::Tab),
+        &mut terminal,
+        &mut screen,
+        &mut dashboard_state,
+        &mut browser_state,
+        &mut picker,
+        &mut picker_action,
+        &mut help_open,
+        &mut notice,
+        &last_good,
+        &mut prefs,
+        &prefs_path,
+    );
+    assert_eq!(
+        screen,
+        Screen::Dashboard,
+        "Tab from the Browser must switch back to the Dashboard"
+    );
+    let after_second = std::fs::read_to_string(&prefs_path).expect("prefs file must exist");
+    assert!(
+        after_second.contains("last_screen = \"dashboard\""),
+        "the second Tab switch must also be persisted:\n{after_second}"
+    );
 }

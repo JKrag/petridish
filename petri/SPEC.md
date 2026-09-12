@@ -912,26 +912,44 @@ Four layers. Full reasoning: ADR-0003. This work is intended for unattended
 
    Issue #61 did that generic-over-`Backend` refactor: `poll_loop`'s dispatch
    logic is now `handle_key<B: Backend>` (public, mirroring `exec::run`'s own
-   bound), and twelve of the flagged tests have moved to
-   `s61_key_dispatch.rs` against `ratatui::backend::TestBackend` —
-   `s6_pty.rs`'s `enter_on_a_row_switches_from_dashboard_to_browser`;
-   `s13_pty_dashboard_actions.rs`'s two tests; `s8_pty_help.rs`'s
-   `help_popup_opens_and_closes_on_any_key`; `s11_pty_focus.rs`'s five
-   state/rendering tests (that file's own module doc comment called them
-   "lifecycle and wiring" checks added only because there was nowhere else to
-   put them); `s8_pty_actions.rs`'s two tests; and `s10_pty_reload.rs`'s single
-   test, the suite's slowest at 7.7s (a real sleep to wait out `poll_loop`'s
-   own poll interval) — its reload-preserves-collapse property lives entirely
-   in `reload_if_changed` (extracted from `poll_loop`'s mtime-changed branch
-   the same way `handle_key` was extracted from its key-dispatch branch), so
-   the migrated test calls that directly against a real scratch state file
-   and needs only a ~1s sleep for a distinguishable mtime, not `poll_loop`'s
-   interval. Every one of those six files is now either fully migrated and
-   deleted (`s13_pty_dashboard_actions.rs`, `s8_pty_help.rs`,
-   `s8_pty_actions.rs`, `s10_pty_reload.rs`) or trimmed to only its genuinely
-   terminal-only test (`s6_pty.rs`'s crash guard, `s11_pty_focus.rs`'s exit-code
-   check). The rest are tracked as follow-up migration work under the same
-   issue, not done all at once here. Two wrinkles #61 surfaced along the way:
+   bound), and its mtime-reload branch is now `reload_if_changed` the same
+   way. Nineteen of the flagged tests moved to `s61_key_dispatch.rs` against
+   `ratatui::backend::TestBackend`, across ten source files:
+   - `s6_pty.rs`'s `enter_on_a_row_switches_from_dashboard_to_browser`
+   - `s13_pty_dashboard_actions.rs`'s two tests
+   - `s8_pty_help.rs`'s `help_popup_opens_and_closes_on_any_key`
+   - `s11_pty_focus.rs`'s five state/rendering tests (that file's own module
+     doc comment called them "lifecycle and wiring" checks added only because
+     there was nowhere else to put them)
+   - `s8_pty_actions.rs`'s two tests
+   - `s10_pty_reload.rs`'s single test — the suite's slowest at 7.7s (a real
+     sleep to wait out `poll_loop`'s own poll interval), whose
+     reload-preserves-collapse property lives entirely in `reload_if_changed`,
+     so the migrated test calls that directly against a real scratch state
+     file and needs only a ~1s sleep for a distinguishable mtime, not
+     `poll_loop`'s interval
+   - `s8_pty_filter.rs`'s two tests
+   - `s8_pty_repick.rs`'s three tests, plus `s8_pty_prefs.rs`'s one — both
+     regressions (`Esc` in re-pick mode must not write `petri.toml`; a screen
+     switch must not empty `prefs.tools`) provable in-process the same way
+     they were over a real subprocess, once `prefs_path` became a parameter:
+     seed a scratch file, press the key, diff the bytes
+   - the dispatch half of `s7_pty.rs`'s `tab_switches_dashboard_to_browser_and_back`
+     (`Tab` round-tripping Dashboard↔Browser and persisting each switch); that
+     file's other two tests pin `run`'s own startup sequence, not
+     `handle_key`'s, and stay PTY
+
+   Seven of those ten files are now fully migrated and deleted
+   (`s13_pty_dashboard_actions.rs`, `s8_pty_help.rs`, `s8_pty_actions.rs`,
+   `s10_pty_reload.rs`, `s8_pty_filter.rs`, `s8_pty_repick.rs`,
+   `s8_pty_prefs.rs`); the other three (`s6_pty.rs`, `s11_pty_focus.rs`,
+   `s7_pty.rs`) are trimmed to only their genuinely terminal-only tests:
+   `s6_pty.rs`'s crash guard, `s11_pty_focus.rs`'s exit-code check, `s7_pty.rs`'s
+   two startup-sequence tests. What remains PTY across the whole suite is
+   real subprocess launches/hand-offs, real terminal geometry and mode
+   transitions, real exit codes, and `run`'s own startup wiring — exactly the
+   properties the #48 audit's rule says belong there. Two wrinkles #61
+   surfaced along the way:
    - `exec::run`'s original `where io::Error: From<B::Error>` bound could
      never have been satisfied by `TestBackend` (its `Error` is `Infallible`,
      which has no such `From` impl) — fixed by dropping the bound entirely

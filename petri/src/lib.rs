@@ -1839,7 +1839,8 @@ fn begin_repick(
 /// in scope, this function *cannot* consult a stored answer even by accident,
 /// which is a stronger guarantee than a test that a later refactor could
 /// silently stop exercising. The event loop's half — persist only when the
-/// picker says so — is covered by `s8_pty_repick.rs`.
+/// picker says so — is covered by `s61_key_dispatch.rs`'s
+/// `shift_g_opens_the_repick_popup_even_when_the_choice_already_resolves`.
 /// The notice to show *instead of* launching, when this project cannot supply what the
 /// action needs. `None` means go ahead.
 ///
