@@ -153,6 +153,17 @@ pub fn render_unavailable(state_path: &str) -> String {
     )
 }
 
+/// What `petridish menubar` prints on a platform with no macOS menu bar to render
+/// into (issue #25). Distinct from [`render_unavailable`] — that is a broken *install* on
+/// a platform where this is supposed to work; this is "this command doesn't apply here"
+/// regardless of install state. Kept as plugin-shaped text (not an error) since the
+/// command still exits 0 either way — see `main.rs`'s call site for why.
+pub fn render_unsupported_platform(os: &str) -> String {
+    format!(
+        "menubar is a macOS-only feature (xbar/SwiftBar); {os} is not supported. The cross-platform UI is `petri`."
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -351,5 +362,18 @@ mod tests {
         assert_eq!(lines.len(), 5);
         assert_eq!(lines[0], "🧫 ?/?");
         assert_eq!(lines[4], "Refresh | refresh=true");
+    }
+
+    #[test]
+    fn unsupported_platform_names_the_os_and_the_real_ui() {
+        // Issue #25: distinct from render_unavailable — this is "menubar doesn't apply
+        // here", not "the install is broken".
+        let out = render_unsupported_platform("linux");
+        assert!(out.contains("linux"), "{out}");
+        assert!(out.contains("macOS-only"), "{out}");
+        assert!(
+            out.contains("petri"),
+            "must point at the real cross-platform UI: {out}"
+        );
     }
 }

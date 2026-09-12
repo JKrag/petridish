@@ -12,11 +12,11 @@ is currently waiting on you.
 **`swab`** (the scanner) and **`petri`** (the terminal dashboard) are cross-platform — no
 native-macOS dependency. **`petridish`**'s `install`/`uninstall` are macOS-only by design
 and refuse to run elsewhere: launchd and `~/Library` are load-bearing there. `doctor` and
-`menubar` are macOS-only in the same sense but don't yet refuse on other platforms (issue
-#25) — expect a `doctor` run on Linux to report install-related checks as failed rather than
-"not applicable" for now. On Linux, skip `petridish` and run `swab`/`petri` directly; see
-[Linux](#linux) below for the manual setup that replaces what `petridish install` does on
-macOS.
+`menubar` are macOS-only in the same sense; `doctor` reports its launchd/plist/menu-bar
+checks as "not applicable" rather than a permanent failure elsewhere, and `menubar` refuses
+with an explicit message instead of printing plugin text nothing will read. On Linux, skip
+`petridish` and run `swab`/`petri` directly; see [Linux](#linux) below for the manual setup
+that replaces what `petridish install` does on macOS.
 
 ## Install
 
@@ -117,12 +117,13 @@ up where you left off.
 
 `petridish install`/`uninstall` are macOS-only (launchd, `~/Library`) and actively refuse to
 run on other platforms — see ARCHITECTURE.md §8.3 D5. `doctor`/`menubar` are macOS-only in
-the same sense but don't yet call the same guard, so today they run on Linux without
-refusing and `doctor` reports its launchd/plist checks as failed rather than "not
-applicable" there (issue #25). `swab` and `petri` carry no macOS dependency at all, so on
-Linux you build and run them directly and provide launchd's two jobs (periodic scanning,
-and the Claude Code hook registration) yourself. There is no `petridish`-equivalent
-installer for Linux yet (tracked in issue #26); this is the manual path in the meantime.
+the same sense; `doctor` reports its launchd/plist/menu-bar checks as `skip: ... not
+applicable on this platform` rather than a permanent `fail` there, and `menubar` prints an
+explicit "macOS-only" message and exits 0 rather than plugin text nothing will read (issue
+#25). `swab` and `petri` carry no macOS dependency at all, so on Linux you build and run them
+directly and provide launchd's two jobs (periodic scanning, and the Claude Code hook
+registration) yourself. There is no `petridish`-equivalent installer for Linux yet (tracked
+in issue #26); this is the manual path in the meantime.
 
 **1. Build.**
 
@@ -226,9 +227,10 @@ wiring.
 
 **4. Run `petri`.** Same binary, same behaviour as macOS — it only ever reads
 `~/.petridish/projects.json`. `swab doctor` is available too, and is not macOS-gated, so use
-it to check config/roots/state freshness the same way you would on macOS (`petridish
-doctor`'s launchd/plist checks are the macOS-specific half; see issue #25 for making that
-distinction clearer instead of reporting a bare failure on Linux).
+it to check config/roots/state freshness the same way you would on macOS. `petridish doctor`
+also runs on Linux — its launchd/plist/menu-bar checks report `skip: ... not applicable` there
+instead of a permanent failure, so it's still useful for the binaries/hook/config/version
+checks it shares with macOS.
 
 The systemd unit files above are documented here, not shipped in the repo — no
 `.plist`-style template to keep in sync yet. If Linux usage gets real traction, packaging

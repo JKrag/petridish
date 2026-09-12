@@ -137,14 +137,27 @@ fn run() -> Result<i32, InstallError> {
         } => {
             let layout = layout(menubar_plugins_dir, no_menubar_plugin);
             let path_var = std::env::var("PATH").unwrap_or_default();
-            let checks = doctor::checks(&layout, &path_var);
+            let os = std::env::consts::OS;
+            let checks = doctor::checks(&layout, &path_var, os);
             if json {
                 println!("{}", doctor::checks_to_json(&checks));
                 return Ok(i32::from(checks.iter().any(|c| !c.ok)));
             }
-            Ok(doctor::report(&checks, &mut std::io::stdout()))
+            Ok(doctor::report(&checks, &mut std::io::stdout(), os))
         }
         Command::Menubar { state } => {
+            let os = std::env::consts::OS;
+            if os != "macos" {
+                // Issue #25: menubar is an xbar/SwiftBar-only experiment, meaningless
+                // without a macOS menu bar to render into. Refuse with an explicit
+                // message rather than silently printing plugin text nothing will ever
+                // read — still exits 0, matching the "always exits 0" contract that
+                // exists so a caller (xbar itself, on macOS) never sees this command
+                // fail; a curious direct invocation on Linux gets a clear answer
+                // instead of a cryptic "unavailable" state-file message.
+                println!("{}", menubar::render_unsupported_platform(os));
+                return Ok(0);
+            }
             let path = state.unwrap_or_else(|| home().join(".petridish").join("projects.json"));
             let text = std::fs::read_to_string(&path)
                 .ok()
