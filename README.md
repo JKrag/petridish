@@ -23,6 +23,14 @@ brew install jkrag/tap/petridish
 petridish install
 ```
 
+Homebrew may refuse the first attempt with "untrusted tap" — newer Homebrew versions
+gate personal taps behind an explicit, one-time opt-in. If so:
+
+```sh
+brew trust jkrag/tap
+brew install jkrag/tap/petridish
+```
+
 **Linux on other architectures (e.g. arm64)** — no prebuilt binary yet, only `cargo install`
 from a checkout (needs a Rust toolchain): clone this repo, then follow
 [Installing from a checkout instead](#installing-from-a-checkout-instead) below, and finish

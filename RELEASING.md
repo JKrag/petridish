@@ -114,6 +114,8 @@ On a machine that has never had petridish installed:
 
 ```sh
 brew install jkrag/tap/petridish
+# newer Homebrew may refuse with "untrusted tap" the first time — run
+# `brew trust jkrag/tap` once, then repeat the install
 petridish install
 petridish doctor          # every check should pass
 launchctl list | grep petridish     # macOS
