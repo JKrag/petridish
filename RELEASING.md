@@ -58,7 +58,19 @@ dist init --yes                     # updates cargo-dist-version, regenerates
 
 1. Bump `version` in `[workspace.package]` in the root `Cargo.toml`. All crates
    inherit it — they ship as one product from one tag, so they move together.
+   `Cargo.lock` pins the same string for each workspace member (e.g.
+   `petridish-core`'s own version entries) — run `cargo check --workspace
+   --offline` after the bump so the lockfile isn't left stale.
 2. Update `CHANGELOG.md`: move `Unreleased` items under the new version.
+   **Write for the end user, not the commit log.** One bullet per
+   user-visible change, present tense, no rationale/mechanism — "Linux is
+   now supported" not "adds a systemd backend alongside the existing
+   launchd one because...". The internal reasoning already lives in the
+   commit messages and PR description; repeating it here just makes the
+   entry something people skim past instead of read. Assume the reader is
+   busy: a release note is a list of "does this affect me", not a design
+   doc. Drop dev/CI-only changes (test tooling, internal refactors) unless
+   they change something a user can observe.
 3. `make check` must be green.
 4. `dist plan` — sanity-check the artifact list before anything is pushed.
 5. Commit, then tag and push:
