@@ -10,17 +10,28 @@
 use crate::error::InstallError;
 use std::path::{Path, PathBuf};
 
-/// Reject non-macOS before anything is written (D5).
+/// Which daemon backend `install`/`uninstall` should drive.
+///
+/// One variant per supported OS (issue #75 added `Linux` alongside the
+/// original macOS-only `Launchd`). Anything else is rejected by
+/// [`detect_platform`] before `install` writes anything (D5).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Platform {
+    Macos,
+    Linux,
+}
+
+/// Reject anything but macOS or Linux before `install` writes anything (D5).
 ///
 /// Takes the OS name rather than reading `std::env::consts::OS` so it stays a
 /// pure function. That is not only for testability: CI compiles this crate on
 /// Linux, and a `#[cfg(target_os = "macos")]` gate would make its tests
 /// unrunnable there.
-pub fn check_platform(os: &str) -> Result<(), InstallError> {
-    if os == "macos" {
-        Ok(())
-    } else {
-        Err(InstallError::UnsupportedPlatform(os.to_string()))
+pub fn detect_platform(os: &str) -> Result<Platform, InstallError> {
+    match os {
+        "macos" => Ok(Platform::Macos),
+        "linux" => Ok(Platform::Linux),
+        other => Err(InstallError::UnsupportedPlatform(other.to_string())),
     }
 }
 
@@ -89,6 +100,31 @@ pub fn default_menubar_plugins_dir(home: &Path) -> PathBuf {
         .join("plugins")
 }
 
+/// Where a per-user systemd unit belongs, given an explicit `$XDG_CONFIG_HOME`
+/// value (or its absence).
+///
+/// `systemctl --user` itself resolves its unit search path this way — first
+/// `$XDG_CONFIG_HOME/systemd/user` if that variable is set and non-empty, else
+/// `~/.config/systemd/user`. Hardcoding the `~/.config` half only, the way an
+/// earlier version of this function did, means `install` and `systemctl`
+/// silently disagree on a machine that sets `$XDG_CONFIG_HOME` to somewhere
+/// else: `install` writes units nothing will ever `enable`, and `doctor`
+/// re-derives the same wrong path and reports the (never-registered) install
+/// as healthy.
+pub fn default_systemd_user_dir_in(home: &Path, xdg_config_home: Option<&Path>) -> PathBuf {
+    match xdg_config_home {
+        Some(dir) if !dir.as_os_str().is_empty() => dir.join("systemd").join("user"),
+        _ => home.join(".config").join("systemd").join("user"),
+    }
+}
+
+/// `default_systemd_user_dir_in` against the process's real `$XDG_CONFIG_HOME`.
+/// The other environment read in this crate, alongside `resolve_binary`'s `PATH`.
+pub fn default_systemd_user_dir(home: &Path) -> PathBuf {
+    let xdg = std::env::var_os("XDG_CONFIG_HOME").map(PathBuf::from);
+    default_systemd_user_dir_in(home, xdg.as_deref())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -103,10 +139,40 @@ mod tests {
     }
 
     #[test]
-    fn check_platform_accepts_macos_and_rejects_everything_else() {
-        assert!(check_platform("macos").is_ok());
-        let err = check_platform("linux").unwrap_err();
-        assert!(err.to_string().contains("only supports macOS"), "got {err}");
+    fn detect_platform_accepts_macos_and_linux_and_rejects_everything_else() {
+        assert_eq!(detect_platform("macos").unwrap(), Platform::Macos);
+        assert_eq!(detect_platform("linux").unwrap(), Platform::Linux);
+        let err = detect_platform("windows").unwrap_err();
+        assert!(err.to_string().contains("macOS"), "got {err}");
+        assert!(err.to_string().contains("Linux"), "got {err}");
+    }
+
+    #[test]
+    fn default_systemd_user_dir_in_falls_back_to_home_dot_config_when_xdg_unset() {
+        assert_eq!(
+            default_systemd_user_dir_in(Path::new("/home/j"), None),
+            PathBuf::from("/home/j/.config/systemd/user")
+        );
+    }
+
+    /// The regression guard: `systemctl --user` itself honors `$XDG_CONFIG_HOME`,
+    /// so `install` writing units under a hardcoded `~/.config` would leave
+    /// `enable`/`daemon-reload` looking somewhere `systemctl` never searches.
+    #[test]
+    fn default_systemd_user_dir_in_honors_xdg_config_home_when_set() {
+        assert_eq!(
+            default_systemd_user_dir_in(Path::new("/home/j"), Some(Path::new("/mnt/xdg-config"))),
+            PathBuf::from("/mnt/xdg-config/systemd/user")
+        );
+    }
+
+    #[test]
+    fn default_systemd_user_dir_in_ignores_an_empty_xdg_config_home() {
+        // Per the XDG base-dir spec, an empty value is treated as unset.
+        assert_eq!(
+            default_systemd_user_dir_in(Path::new("/home/j"), Some(Path::new(""))),
+            PathBuf::from("/home/j/.config/systemd/user")
+        );
     }
 
     #[test]

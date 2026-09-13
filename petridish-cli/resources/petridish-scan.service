@@ -1,0 +1,8 @@
+[Unit]
+Description=petridish scan (run periodically by petridish-scan.timer)
+
+[Service]
+Type=oneshot
+ExecStart=__SWAB_PATH__ scan
+StandardOutput=append:__LOG_PATH__
+StandardError=append:__LOG_PATH__

@@ -3,10 +3,11 @@
 use clap::{Parser, Subcommand};
 use petridish_cli::doctor;
 use petridish_cli::error::InstallError;
-use petridish_cli::install::{self, Binaries, Layout};
+use petridish_cli::install::{self, Backend, Binaries, Layout};
 use petridish_cli::launchd::RealLaunchctl;
 use petridish_cli::menubar;
-use petridish_cli::paths;
+use petridish_cli::paths::{self, Platform};
+use petridish_cli::systemd::RealSystemctl;
 use petridish_core::schema::Radar;
 use std::path::PathBuf;
 use std::process::ExitCode;
@@ -15,7 +16,7 @@ use std::process::ExitCode;
 #[command(
     name = "petridish",
     version,
-    about = "Wire up petridish: the launchd daemon, the Claude Code hook, and the menu bar."
+    about = "Wire up petridish: the scan daemon (launchd on macOS, systemd on Linux), the Claude Code hook, and (macOS only) the menu bar."
 )]
 struct Cli {
     #[command(subcommand)]
@@ -24,7 +25,8 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Command {
-    /// Install the launchd job, the Claude Code hook, and the menu-bar plugin.
+    /// Install the scan daemon (launchd on macOS, a systemd --user timer on
+    /// Linux), the Claude Code hook, and (macOS only) the menu-bar plugin.
     Install {
         /// Where to write the xbar/SwiftBar plugin. Defaults to xbar's own
         /// directory; SwiftBar's is user-configured and cannot be guessed.
@@ -68,17 +70,29 @@ fn home() -> PathBuf {
         .unwrap_or_default()
 }
 
-fn layout(menubar_dir: Option<PathBuf>, no_menubar: bool) -> Layout {
+/// Build the `Layout` for `platform`. The menu bar has no Linux equivalent at
+/// all (issue #75), so `menubar_dir`/`no_menubar` are only consulted on macOS —
+/// `menubar_plugins_dir` is unconditionally `None` on every other platform.
+fn layout(platform: Platform, menubar_dir: Option<PathBuf>, no_menubar: bool) -> Layout {
     let home = home();
-    let menubar_plugins_dir = if no_menubar {
-        None
-    } else {
-        Some(menubar_dir.unwrap_or_else(|| paths::default_menubar_plugins_dir(&home)))
+    let backend = match platform {
+        Platform::Macos => Backend::Launchd {
+            launch_agents_dir: home.join("Library").join("LaunchAgents"),
+            uid: unsafe { libc_getuid() },
+        },
+        Platform::Linux => Backend::Systemd {
+            unit_dir: paths::default_systemd_user_dir(&home),
+        },
+    };
+    let menubar_plugins_dir = match platform {
+        Platform::Macos if !no_menubar => {
+            Some(menubar_dir.unwrap_or_else(|| paths::default_menubar_plugins_dir(&home)))
+        }
+        _ => None,
     };
     Layout {
         claude_dir: home.join(".claude"),
-        launch_agents_dir: home.join("Library").join("LaunchAgents"),
-        uid: unsafe { libc_getuid() },
+        backend,
         menubar_plugins_dir,
         home,
     }
@@ -110,21 +124,31 @@ fn run() -> Result<i32, InstallError> {
             menubar_plugins_dir,
             no_menubar_plugin,
         } => {
-            paths::check_platform(std::env::consts::OS)?;
-            let layout = layout(menubar_plugins_dir, no_menubar_plugin);
+            let platform = paths::detect_platform(std::env::consts::OS)?;
+            let layout = layout(platform, menubar_plugins_dir, no_menubar_plugin);
             let bins = resolve_binaries()?;
-            install::install(&layout, &bins, &RealLaunchctl, &mut std::io::stdout())?;
+            // Both controllers are always passed; `install` picks which one it
+            // actually calls from `layout.backend`, so there is no separate
+            // platform match here to keep in sync with it.
+            install::install(
+                &layout,
+                &bins,
+                &RealLaunchctl,
+                &RealSystemctl,
+                &mut std::io::stdout(),
+            )?;
             Ok(0)
         }
         Command::Uninstall {
             menubar_plugins_dir,
             no_menubar_plugin,
         } => {
-            paths::check_platform(std::env::consts::OS)?;
-            let layout = layout(menubar_plugins_dir, no_menubar_plugin);
+            let platform = paths::detect_platform(std::env::consts::OS)?;
+            let layout = layout(platform, menubar_plugins_dir, no_menubar_plugin);
             install::uninstall(
                 &layout,
                 &RealLaunchctl,
+                &RealSystemctl,
                 &mut std::io::stdout(),
                 &mut std::io::stderr(),
             )?;
@@ -135,9 +159,17 @@ fn run() -> Result<i32, InstallError> {
             no_menubar_plugin,
             json,
         } => {
-            let layout = layout(menubar_plugins_dir, no_menubar_plugin);
-            let path_var = std::env::var("PATH").unwrap_or_default();
             let os = std::env::consts::OS;
+            // `doctor` degrades rather than refuses on a platform `install`
+            // itself would reject (issue #25) — an unrecognised OS still gets
+            // a best-effort systemd-shaped `Layout` so the hook/config/binary
+            // checks below still run. `doctor::checks` re-derives whether `os`
+            // is actually supported itself and reports the daemon check as a
+            // `skip` rather than trusting this fallback for that one check —
+            // see its doc comment.
+            let platform = paths::detect_platform(os).unwrap_or(Platform::Linux);
+            let layout = layout(platform, menubar_plugins_dir, no_menubar_plugin);
+            let path_var = std::env::var("PATH").unwrap_or_default();
             let checks = doctor::checks(&layout, &path_var, os);
             if json {
                 println!("{}", doctor::checks_to_json(&checks));

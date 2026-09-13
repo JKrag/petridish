@@ -3,12 +3,14 @@
 Local monitoring daemon: crawls project roots, tracks git state, senses AI agent activity,
 and aggregates into `~/.petridish/projects.json`. `swab` (the scanner) and `petri` (the
 terminal dashboard) are cross-platform — no native-macOS dependency. `petridish-cli`'s
-`install`/`uninstall` only support macOS today (launchd, `~/Library`) and exit with an error
-elsewhere — there's no Linux equivalent yet (issue #75; not a hard technical constraint,
-just unimplemented). `doctor`/`menubar` already run cross-platform: `doctor` reports its
-launchd/plist/menu-bar checks as "not applicable" on other platforms instead of failing, and
-`menubar` prints an explicit macOS-only message (issue #25). See README.md's "Linux" section
-for the manual, launchd-free way to run `swab`/`petri` there today.
+`install`/`uninstall` support macOS (launchd, `~/Library`) and Linux (a `systemd --user`
+timer, issue #75) and exit with an error on anything else. There is deliberately no
+cron-based `install` path — only systemd — since systemd-user support is effectively
+universal on mainstream Linux; a non-systemd distro still has the manual cron recipe in
+README.md's "Linux: no systemd?" section. `doctor` runs full, real checks on both
+platforms — the daemon-registration check branches on which backend `install` used, not on
+OS name. `menubar` stays macOS-only (xbar/SwiftBar have no Linux equivalent) and prints an
+explicit macOS-only message rather than failing (issue #25).
 
 **One toolchain, four crates, split by role:**
 
@@ -29,11 +31,12 @@ for the manual, launchd-free way to run `swab`/`petri` there today.
   installer and menu-bar renderer: `install`, `uninstall`, `doctor`, `menubar`. It replaced
   the Python `installer.py`/`menubar.py` (ADR-0004). Like `petridish-core`, it does not
   depend on `swab` — it wires the daemon up, it never writes state itself. `install`/
-  `uninstall` only support macOS today and exit with an error elsewhere (launchd,
-  `~/Library` — ARCHITECTURE.md §8.3 D5; a Linux equivalent is issue #75, an open gap, not a
-  settled scope boundary); `doctor`/`menubar` already run cross-platform and degrade rather
-  than refuse — `doctor`'s launchd/plist/menu-bar checks report `skip`, and `menubar` prints
-  an explicit macOS-only message (issue #25). `swab` and `petri` are not macOS-bound at all.
+  `uninstall` support macOS (launchd, `~/Library`) and Linux (`systemd --user`, issue #75)
+  and exit with an error on anything else (ARCHITECTURE.md §8.3 D5). `doctor` runs full,
+  real checks on both platforms — it branches on which backend `install` used
+  (`install::Backend`), not on OS name. `menubar` stays macOS-only and degrades rather than
+  refuses — it prints an explicit macOS-only message and exits 0 (issue #25). `swab` and
+  `petri` are not macOS-bound at all.
 
 **The Python read-side is gone** (ADR-0004). `petripy`, `schema.py`, `menubar.py` and
 `installer.py` were deleted once `petri` had earned trust and the installer had been
@@ -126,6 +129,17 @@ disabling debuginfo entirely so panic backtraces still resolve to file:line.
 **PTY test authoring rules** (settle-then-assert pitfalls, `make flake-hunt`) now live in
 `petri/CLAUDE.md` — read that file before writing or debugging anything under
 `petri/tests/`.
+
+**Testing the Linux systemd path for real, not through the `RecordingSystemctl` seam.**
+`cargo test`'s systemd coverage is all through that seam — real for argv/ordering/
+error-mapping, but it never calls the real `systemctl` binary or writes into a real unit
+search path. `.github/workflows/ci.yml`'s `linux-systemd-smoke` job covers the real thing,
+but only in CI. To exercise it locally (macOS has no systemd --user to test against), start
+a Lima VM (`limactl start default` — its out-of-the-box config mounts your home directory at
+the same absolute path inside the guest, which is what lets `swab` scan your real project
+data instead of an empty test machine) and run `make lima-install` / `make lima-uninstall` /
+`make lima-smoke`; see `petridish-cli/scripts/lima-dev.sh` for what each does and why the
+build's `CARGO_TARGET_DIR` has to live outside the (read-only) repo mount.
 
 ## Engineering integrity
 

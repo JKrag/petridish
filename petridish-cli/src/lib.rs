@@ -17,6 +17,8 @@ pub mod paths;
 pub mod plist;
 pub mod settings;
 pub mod shell;
+pub mod systemd;
+pub mod systemd_unit;
 
 #[cfg(test)]
 pub mod testutil;

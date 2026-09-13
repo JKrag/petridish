@@ -1,0 +1,14 @@
+[Unit]
+Description=Run petridish-scan.service periodically
+
+[Timer]
+OnStartupSec=0
+OnUnitActiveSec=60s
+# Without this, systemd's default one-minute coalescing window lets
+# OnUnitActiveSec fire up to another minute late, so scans could run every
+# 60-120s instead of the documented 60s.
+AccuracySec=1s
+Unit=petridish-scan.service
+
+[Install]
+WantedBy=timers.target

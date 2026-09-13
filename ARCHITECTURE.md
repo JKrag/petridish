@@ -334,20 +334,23 @@ Rejected alternatives:
 
 ### 8.2 Release channels
 
-1. **Homebrew tap — primary.** `petridish-cli`'s `install`/`uninstall` are macOS-only by
-   nature (launchd, `~/Library`) and actively refuse elsewhere via `check_platform` (D5
-   below), so brew is the natural fit for discoverability and upgrades there. `doctor` and
-   `menubar` are macOS-only in the same sense — their checks are launchd/`~/Library`-shaped
-   and meaningless elsewhere — but degrade rather than refuse outright (issue #25):
-   `doctor::checks` takes the OS name the same parameter-not-`#[cfg]` way as
-   `check_platform` and reports its plist/menu-bar checks as `skip: ... not applicable` on
-   non-macOS instead of a permanent, unfixable `fail`; `menubar` prints an explicit
-   macOS-only message and still exits 0. A personal tap (`brew install jkrag/tap/petridish`)
-   rather than `homebrew-core`, which imposes notability requirements and ongoing
-   maintenance obligations. `swab` and `petri` themselves carry no such dependency (issue
-   #23/#24, landed); Linux has no equivalent packaged channel yet, only the manual `cargo
-   install` + systemd/cron path README.md's "Linux" section documents (issue #26). A real
-   Linux installer/package is a future follow-up, not yet built.
+1. **Homebrew tap — primary (macOS).** `petridish-cli`'s `install`/`uninstall` support two
+   backends — launchd/`~/Library` on macOS, a `systemd --user` timer on Linux (issue #75) —
+   and actively refuse anything else via `paths::detect_platform` (D5 below), so brew is the
+   natural fit for discoverability and upgrades on macOS. `doctor` runs full, real checks on
+   both platforms now (the daemon-registration check branches on `Layout::Backend` rather
+   than being gated by OS); only `menubar` stays macOS-only, since xbar/SwiftBar are
+   macOS/Windows tools with no Linux equivalent (issue #25) — it prints an explicit
+   macOS-only message and still exits 0 rather than refusing. A personal tap
+   (`brew install jkrag/tap/petridish`) rather than `homebrew-core`, which imposes
+   notability requirements and ongoing maintenance obligations. `swab` and `petri`
+   themselves carry no platform dependency at all (issue #23/#24, landed); Linux has no
+   equivalent *packaged* channel yet for `petridish-cli` itself, only `cargo install` — a
+   real Linux package (`.deb`/`.rpm`, or a second tap) is a future follow-up, not yet built.
+   There is deliberately no cron-based `install` path — only systemd — since systemd-user
+   support is effectively universal on mainstream desktop/server Linux; a non-systemd distro
+   (Alpine/OpenRC, Void/runit, WSL without `systemd=true`) still has the manual cron recipe
+   README.md's "Linux: no systemd?" section documents.
 2. **Shell installer — secondary.** A `curl | sh` script for people who do not use brew.
 3. **`cargo install` — for Rust users**, from crates.io once published, or from a git
    checkout at any time. The only channel that currently reaches Linux.
@@ -402,13 +405,17 @@ nothing a user sees changes. See ADR-0004.
   machine predating the MECH-5 pair — stranding the new events forever and leaving the
   feature dead exactly where it was supposed to work. **Implemented:**
   `petridish-cli`'s `settings::add_hook_entries`.
-- **D5 — Declare macOS-only.** Fail early with a clear message on other platforms rather
-  than half-installing. **Implemented:** `petridish-cli`'s `paths::check_platform`, called
-  before anything is written, since launchd is where half-installing would actually happen.
-  *Reinterpreted:* the original implementation was a pyproject classifier plus
-  `installer.py`'s `sys.platform` check, both gone.
+- **D5 — Declare macOS-or-Linux-only.** Fail early with a clear message on any other
+  platform rather than half-installing. **Implemented:** `petridish-cli`'s
+  `paths::detect_platform`, called before anything is written, returning which backend
+  (`Platform::Macos` / `Platform::Linux`) `install`/`uninstall` should drive — since launchd
+  or systemd is where half-installing would actually happen. *Reinterpreted twice now:* the
+  original implementation was a pyproject classifier plus `installer.py`'s `sys.platform`
+  check (both gone); the Rust port started as `check_platform`, a macOS-only `bool`-shaped
+  gate, until issue #75 widened it to return the two-variant `Platform` enum
+  `install::Layout`'s `Backend` is built from.
 
-  Note that `check_platform` takes the OS name as a *parameter* rather than being a
+  Note that `detect_platform` takes the OS name as a *parameter* rather than being a
   `#[cfg(target_os)]` gate. CI compiles this crate on Linux to verify the rest of the
   workspace is not macOS-bound, and a compile-time gate would make its tests unrunnable
   there. The scanner is deliberately *not* platform-gated at all: its sensors degrade to
@@ -417,7 +424,7 @@ nothing a user sees changes. See ADR-0004.
   that invariant working — it hardcoded the macOS VS Code path with no Linux equivalent, so
   a Linux user actually running VS Code + Copilot was silently reported as inactive
   (issue #23). `ScanPaths::for_home_os` (`swab/src/scan.rs`) now switches on the OS name —
-  same parameter-not-`#[cfg]` shape as `check_platform`, for the same testability reason —
+  same parameter-not-`#[cfg]` shape as `detect_platform`, for the same testability reason —
   between the macOS path and `~/.config/Code/User/workspaceStorage` on Linux.
 - **D6 — Respect user-data separation.** User state (`config.toml`, `projects.json`,
   `events.ndjson`, the settings backup) lives in `~/.petridish/` and must survive

@@ -52,7 +52,7 @@ impl ScanPaths {
     }
 
     /// Same as [`Self::for_home`], but takes the OS name as a parameter (mirroring
-    /// `petridish-cli::paths::check_platform`) so both branches of the Copilot
+    /// `petridish-cli::paths::detect_platform`) so both branches of the Copilot
     /// `workspace_storage_dir` default are unit-testable on a single machine (issue #23),
     /// without a `#[cfg(target_os = "macos")]` gate that would make the Linux branch untestable
     /// wherever `swab` happens to be compiled.

@@ -10,7 +10,8 @@
 # returns only the LAST command's exit status, so a formatting failure would
 # report success. Verified empirically — keep them as prerequisites.
 
-.PHONY: help fmt fmt-check clippy test deny msrv raycast check check-all clean flake-hunt
+.PHONY: help fmt fmt-check clippy test deny msrv raycast check check-all clean flake-hunt \
+	lima-install lima-uninstall lima-verify lima-smoke lima-shell
 
 .DEFAULT_GOAL := help
 
@@ -74,3 +75,27 @@ check-all: check deny msrv raycast   ## Everything CI runs.
 
 clean:          ## Remove build output.
 	cargo clean
+
+# `cargo test`'s systemd coverage all goes through the RecordingSystemctl seam
+# (real for argv/ordering/error-mapping, but never the real `systemctl`
+# binary or a real unit search path). These exercise the real thing, inside a
+# Lima VM (LIMA_INSTANCE=default by default), against your own real project
+# data — macOS has no systemd --user to test this against directly. See
+# petridish-cli/scripts/lima-dev.sh for the one-time VM setup these assume.
+# Deliberately not part of `check`/`check-all`: they need a Lima VM, which CI
+# doesn't have (CI's own Linux systemd coverage is the
+# linux-systemd-smoke job in .github/workflows/ci.yml instead).
+lima-install:   ## Build + real `petridish install` in the Lima VM (for running `petri` yourself).
+	petridish-cli/scripts/lima-dev.sh install
+
+lima-uninstall: ## `petridish uninstall` in the Lima VM, then verify every touchpoint.
+	petridish-cli/scripts/lima-dev.sh uninstall
+
+lima-verify:    ## Re-run just the post-uninstall touchpoint checks in the Lima VM.
+	petridish-cli/scripts/lima-dev.sh verify
+
+lima-smoke:     ## Full install -> real scan -> uninstall round trip in the Lima VM.
+	petridish-cli/scripts/lima-dev.sh smoke
+
+lima-shell:     ## Interactive shell in the Lima VM, PATH set for the last build (run `petri` here).
+	petridish-cli/scripts/lima-dev.sh shell
