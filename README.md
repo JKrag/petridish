@@ -82,7 +82,7 @@ loginctl enable-linger "$USER"
 (it needs its own privileged `loginctl` call, not something to run silently on your behalf).
 
 <details>
-<summary>Installing from a checkout instead</summary>
+<summary id="installing-from-a-checkout-instead">Installing from a checkout instead</summary>
 
 ```sh
 cargo install --path petridish-cli --locked   # petridish
@@ -149,8 +149,7 @@ deletes its plist on macOS; disables and removes the systemd timer + service uni
 Linux), and **structurally removes only the hook entries carrying the `# petridish`
 marker** from `settings.json`. It does not restore the backup verbatim. That distinction
 matters: if you or another tool edited `settings.json` after installing, a verbatim restore
-would silently discard that
-edit.
+would silently discard that edit.
 
 `~/.petridish/` — config, state, the backup — is never deleted, so a later reinstall picks
 up where you left off.
@@ -164,13 +163,9 @@ Alpine/OpenRC, Void/runit, Devuan, Gentoo's OpenRC default, WSL without `systemd
 minimal container with no init at all. There, do by hand what `install` automates: build the
 binaries, schedule the scan, register the Claude Code hook.
 
-**1. Install the binaries.**
-
-```sh
-cargo install --path swab --locked            # swab, swab-hook
-cargo install --path petri --locked           # petri
-cargo install --path petridish-cli --locked   # petridish (for `doctor`, step 3)
-```
+**1. Install the binaries** the same way as [Installing from a checkout
+instead](#installing-from-a-checkout-instead) above — `petridish` here is only for `doctor`
+in step 3; nothing on this path calls `install`/`uninstall`.
 
 **2. Schedule `swab scan` to run every 60 seconds** with a cron entry. Wrap it in `flock` so
 two ticks can never overlap and corrupt each other's state:
@@ -289,6 +284,39 @@ formatting commit. Configure it once:
 ```sh
 git config blame.ignoreRevsFile .git-blame-ignore-revs
 ```
+
+### Testing the Linux systemd path for real
+
+`cargo test`'s systemd coverage all goes through a `Systemctl` seam that records the argv
+it's called with — real for the ordering/error-handling logic, but it never calls the real
+`systemctl` binary or writes into a real unit search path. Two ways to exercise the real
+thing:
+
+**In CI**, on every push: `.github/workflows/ci.yml`'s `linux-systemd-smoke` job starts a
+real `systemd --user` session on the `ubuntu-latest` runner (`loginctl enable-linger` plus
+starting `user@<uid>.service`, since the runner has no active login session by default) and
+runs `install` / `doctor` / `uninstall` against it for real.
+
+**On your own Mac**, on demand: macOS has no `systemd --user` to test against, so this needs
+a Linux VM. [Lima](https://lima-vm.io) (`brew install lima`) is the lightest way —
+`limactl start default` gives you a real systemd VM whose default config mounts your home
+directory at the same absolute path inside the guest, so `swab` scans your real project
+roots instead of an empty test machine, and there's no code to copy over (the checkout is
+the same files, just visible from both sides). Once the VM exists:
+
+```sh
+make lima-install    # build + a real `petridish install` (then go run `petri` yourself)
+make lima-smoke      # full round trip: install -> real scan -> uninstall -> verify
+make lima-uninstall  # uninstall, then verify every touchpoint
+make lima-verify     # just re-run the post-uninstall checks
+make lima-shell      # interactive shell in the VM, PATH set for the last build
+```
+
+See `petridish-cli/scripts/lima-dev.sh` for what each target does. In short: it builds with
+`CARGO_TARGET_DIR` pointed outside the repo mount (which Lima mounts read-only, so `cargo
+build`'s `target/` can't live inside it), then drives the real `petridish`/`swab`/`petri`
+binaries inside the VM. Not part of `check`/`check-all` — it needs a VM, which CI doesn't
+have.
 
 ## Docs
 
