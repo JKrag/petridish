@@ -1345,7 +1345,15 @@ fn render_mini_notice(frame: &mut ratatui::Frame, area: Rect, text: &str) {
     if area.width < 4 || area.height < 1 {
         return;
     }
-    let width = (text.chars().count() as u16 + 4).min(area.width);
+    // Measured and truncated in terminal columns, not `chars()` (Copilot review on #77):
+    // a `NoTarget`/`NoTool` notice embeds the project name verbatim, and `crate::width` is
+    // what every other row-fitting path in this crate uses for exactly that CJK-vs-column
+    // mismatch (see that module's doc comment).
+    let padding = 4u16;
+    let budget = area.width.saturating_sub(padding) as usize;
+    let fitted = crate::width::take_width(text, budget);
+    let text_width = crate::width::width(&fitted) as u16;
+    let width = (text_width + padding).min(area.width);
     let bar = Rect {
         x: area.x + area.width.saturating_sub(width) / 2,
         y: area.y + area.height.saturating_sub(1) / 2,
@@ -1355,7 +1363,7 @@ fn render_mini_notice(frame: &mut ratatui::Frame, area: Rect, text: &str) {
     frame.render_widget(Clear, bar);
     frame.render_widget(
         Paragraph::new(Line::from(Span::styled(
-            format!("  {text}  "),
+            format!("  {fitted}  "),
             Style::default()
                 .fg(ratatui::style::Color::Black)
                 .bg(theme::AGING)

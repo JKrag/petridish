@@ -225,6 +225,83 @@ fn a_notarget_action_shows_a_transient_notice_then_clears_it() {
 }
 
 #[test]
+fn a_notool_action_shows_a_transient_notice_then_clears_it() {
+    // Copilot review on #77: the NoTarget test above doesn't cover NoTool, a distinct match
+    // arm with its own message-building code in `mini_poll_loop`. `s` (rescan, `Target::Path`
+    // — "never NoTarget" per `s8_tools.rs`) with `PATH` pointed at an empty directory forces
+    // `swab` to resolve as not installed, landing reliably on `Resolution::NoTool` regardless
+    // of what's actually on the machine running the test.
+    let home = scratch_home("notool_notice");
+    let state_path = state_file_pointing_at(&home, true, None);
+    let empty_path = home.join("empty-path");
+    std::fs::create_dir_all(&empty_path).expect("empty PATH dir must be creatable");
+
+    let mut session = Session::spawn_with_args_and_env(
+        &state_path,
+        90,
+        24,
+        Some(&home),
+        &["--mini", "mini-action-project"],
+        &[("PATH", &empty_path.to_string_lossy())],
+    );
+
+    let before = session.screen_until(
+        90,
+        24,
+        Duration::from_secs(5),
+        Duration::from_millis(300),
+        5,
+        |grid| grid.iter().any(|r| r.contains("mini-action-project")),
+    );
+    assert!(
+        before.iter().any(|r| r.contains("mini-action-project")),
+        "precondition: the pane must show the pinned project, got:\n{}",
+        before.join("\n")
+    );
+
+    session.writer.write_all(b"s").expect("write s");
+    session.writer.flush().expect("flush");
+
+    let notice_text = "nothing installed that can rescan now";
+    let with_notice = session.screen_until(
+        90,
+        24,
+        Duration::from_secs(5),
+        Duration::from_millis(300),
+        8,
+        |grid| grid.iter().any(|r| r.contains(notice_text)),
+    );
+    assert!(
+        with_notice.iter().any(|r| r.contains(notice_text)),
+        "a NoTool action key in --mini must show a notice explaining why (issue #65), got:\n{}",
+        with_notice.join("\n")
+    );
+
+    let cleared = session.screen_until(
+        90,
+        24,
+        Duration::from_secs(1),
+        Duration::from_millis(300),
+        15,
+        |grid| !grid.iter().any(|r| r.contains(notice_text)),
+    );
+    assert!(
+        !cleared.iter().any(|r| r.contains(notice_text)),
+        "the NoTool notice must clear itself a few seconds after appearing (issue #65), \
+         still present after the wait:\n{}",
+        cleared.join("\n")
+    );
+
+    session.writer.write_all(b"q").expect("write q");
+    session.writer.flush().expect("flush");
+    let status = session.wait_with_timeout(Duration::from_secs(10));
+    assert!(
+        status.success(),
+        "mini must still exit cleanly after a NoTool notice cycle, got exit status {status:?}"
+    );
+}
+
+#[test]
 fn an_ambiguous_action_stays_a_harmless_no_op_in_mini() {
     // Issue #65's scope decision: --mini never gets a picker, so `Resolution::Ambiguous`
     // stays a no-op forever, not just until this issue ships. Proven for real rather than
@@ -277,6 +354,42 @@ fn an_ambiguous_action_stays_a_harmless_no_op_in_mini() {
 
     session.writer.write_all(b"e").expect("write e");
     session.writer.flush().expect("flush");
+
+    // Copilot review on #77: exit status alone doesn't couple this test to the behavior it
+    // claims to prove — a regression that launched one of the fake editors (they exit
+    // immediately, same as `true`) or painted a notice would still exit 0. Two real checks
+    // instead: no second alternate-screen entry (no hand-off happened at all, unlike the
+    // `Ready` test above), and the pane still shows only the plain project view, no overlay.
+    let no_handoff = !session.settle_until_raw(
+        Duration::from_secs(2),
+        Duration::from_millis(400),
+        3,
+        |stream| Session::alt_screen_entries(stream) >= 2,
+    );
+    assert!(
+        no_handoff,
+        "an Ambiguous action key must never hand the terminal off (issue #65 keeps it a \
+         no-op) — got a second alternate-screen entry as if a candidate launched"
+    );
+
+    let after = session.screen_until(
+        90,
+        24,
+        Duration::from_secs(2),
+        Duration::from_millis(300),
+        5,
+        |grid| grid.iter().any(|r| r.contains("mini-action-project")),
+    );
+    assert!(
+        after.iter().any(|r| r.contains("mini-action-project"))
+            && !after
+                .iter()
+                .any(|r| r.contains("nothing installed") || r.contains("has no remote")),
+        "an Ambiguous action key must leave the plain project view on screen, no notice \
+         overlay (issue #65 keeps it a no-op), got:\n{}",
+        after.join("\n")
+    );
+
     session.writer.write_all(b"q").expect("write q");
     session.writer.flush().expect("flush");
 

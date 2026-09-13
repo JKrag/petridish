@@ -477,6 +477,13 @@ fn mini_poll_loop<B: ratatui::backend::Backend>(
                     {
                         match resolve_action(action, project, prefs) {
                             crate::tools::Resolution::Ready(launch) => {
+                                // A stale notice from an earlier key would otherwise survive
+                                // the hand-off and cover the post-launch redraw (Copilot
+                                // review on #77): a real state transition invalidates
+                                // whatever the pane was explaining before it.
+                                if notice.take().is_some() {
+                                    notice_changed = true;
+                                }
                                 launch_now(terminal, &launch, std::path::Path::new(&project.path));
                             }
                             crate::tools::Resolution::Ambiguous(_) => {}
