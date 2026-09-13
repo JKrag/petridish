@@ -1,26 +1,27 @@
-//! Issue #64, layer 3: tool shortcuts against the real binary in `--mini`.
+//! Issue #64/#65: tool shortcuts against the real binary in `--mini`.
 //!
-//! Before this fix, `mini_poll_loop`'s key handling was a bare `q`/`Esc` guard — every other
-//! key, including every registry action key, was read and silently discarded. The fix is
-//! deliberately minimal, scoped down with the maintainer rather than inferred: only the
-//! unambiguous `Resolution::Ready` case is wired up, since `--mini` has no picker and no
-//! notice pane to show anything else in. Full parity (picker, notices) is issue #65.
+//! Before issue #64, `mini_poll_loop`'s key handling was a bare `q`/`Esc` guard — every other
+//! key, including every registry action key, was read and silently discarded. #64 wired up
+//! the unambiguous `Resolution::Ready` case only; a resolution needing a picker or notice was
+//! still a silent no-op, gated on a design decision (issue #65).
 //!
-//! This file gates the `Ready` half at the PTY layer, where the launch hand-off is a real,
-//! observable event. **It does not attempt the same for the non-`Ready` outcomes** — a
-//! Copilot review on this PR caught an earlier version that claimed to, and the claim didn't
-//! hold up: `dispatch_mini_action`'s body is a single `if let Resolution::Ready(..) = ..`
-//! match, so "does nothing" for `Ambiguous`, `NoTool`, and `NoTarget` is exactly as
-//! unobservable on screen as the pre-fix bug it replaces — a PTY test comparing before/after
-//! frames would pass identically whether the new dispatch code ran and correctly declined,
-//! or never ran at all. That's the same "no picker/notice surface" gap issue #65 exists to
-//! close, reached from a different angle. What *is* real and PTY-observable about that half
-//! is liveness: the process must not hang or crash on a key with nowhere to resolve, which
-//! `an_action_with_nowhere_to_resolve_does_not_hang_mini` checks by demanding a clean exit
-//! immediately afterward, rather than a screen comparison. Which specific non-`Ready`
-//! variant (`Ambiguous`/`NoTool`/`NoTarget`) that single key reaches doesn't change what's
-//! being proven, since all three take the same "not `Ready`" branch; `tools::resolve`'s own
-//! classification into those three is already exhaustively covered by `s8_tools.rs`.
+//! #65's decision: no picker in `--mini` — its whole use case is a small pane a poweruser
+//! already made their tool choice in — so `Resolution::Ambiguous` stays a no-op permanently.
+//! `NoTool`/`NoTarget` gain a transient, centered notice instead of staying silent, since
+//! those *are* worth explaining even in a poweruser's corner pane (e.g. `g` on a directory
+//! that isn't a git repo).
+//!
+//! This file therefore covers three shapes at the PTY layer:
+//! - `Ready` hands the terminal off for real (`an_unambiguous_action_hands_the_terminal_to_the_resolved_tool`).
+//! - `NoTarget` paints a real, observable notice that then clears itself
+//!   (`a_notarget_action_shows_a_transient_notice_then_clears_it`) — the two-way proof issue
+//!   #65 asked for: appears, then times out.
+//! - `Ambiguous` stays an explicit, asserted no-op
+//!   (`an_ambiguous_action_stays_a_harmless_no_op_in_mini`), proven via a synthetic `PATH`
+//!   with two fake "installed" editors so the resolution genuinely reaches `Ambiguous`
+//!   rather than standing in for it. `tools::resolve`'s own classification into
+//!   `Ready`/`Ambiguous`/`NoTool`/`NoTarget` is exhaustively covered by `s8_tools.rs`; what's
+//!   proven here is only that `--mini`'s dispatch treats each shape the way issue #65 decided.
 //!
 //! Mirrors `s8_pty_handoff.rs`'s technique for the launch half: `true` is pre-answered as
 //! the `gitlog` tool via a seeded `petri.toml`, so the hand-off is real (suspend, run,
@@ -149,14 +150,12 @@ fn an_unambiguous_action_hands_the_terminal_to_the_resolved_tool() {
 }
 
 #[test]
-fn an_action_with_nowhere_to_resolve_does_not_hang_mini() {
-    // No remote at all, so `o` resolves to `Resolution::NoTarget` — a stand-in for any
-    // non-`Ready` outcome, per this file's module doc. There is no screen effect to wait for
-    // by design, so the proof here is liveness, not a before/after frame comparison: `o`
-    // immediately followed by `q` must still produce a clean exit. A hang or a panic that
-    // corrupts the terminal (leaving raw mode set, or the child stuck) would fail this via
-    // `wait_with_timeout`'s own panic-on-hang rather than a flaky screen diff.
-    let home = scratch_home("noop");
+fn a_notarget_action_shows_a_transient_notice_then_clears_it() {
+    // No remote at all, so `o` resolves to `Resolution::NoTarget` — issue #65's centered
+    // notice, not a silent no-op, is the whole point of this test. The message text mirrors
+    // `begin_action`'s `NoTarget` phrasing (`Target::notice()`'s "has no remote"), so a
+    // divergence between the Dashboard/Browser wording and `--mini`'s would fail here.
+    let home = scratch_home("notarget_notice");
     let state_path = state_file_pointing_at(&home, true, None);
 
     let mut session = Session::spawn_with_args(
@@ -183,13 +182,108 @@ fn an_action_with_nowhere_to_resolve_does_not_hang_mini() {
 
     session.writer.write_all(b"o").expect("write o");
     session.writer.flush().expect("flush");
+
+    let notice_text = "mini-action-project has no remote";
+    let with_notice = session.screen_until(
+        90,
+        24,
+        Duration::from_secs(5),
+        Duration::from_millis(300),
+        8,
+        |grid| grid.iter().any(|r| r.contains(notice_text)),
+    );
+    assert!(
+        with_notice.iter().any(|r| r.contains(notice_text)),
+        "a NoTarget action key in --mini must show a notice explaining why (issue #65), got:\n{}",
+        with_notice.join("\n")
+    );
+
+    // `MINI_NOTICE_DURATION` (lib.rs) is 3s; poll well past it for the notice to clear
+    // itself with no further keystroke.
+    let cleared = session.screen_until(
+        90,
+        24,
+        Duration::from_secs(1),
+        Duration::from_millis(300),
+        15,
+        |grid| !grid.iter().any(|r| r.contains(notice_text)),
+    );
+    assert!(
+        !cleared.iter().any(|r| r.contains(notice_text)),
+        "the NoTarget notice must clear itself a few seconds after appearing (issue #65), \
+         still present after the wait:\n{}",
+        cleared.join("\n")
+    );
+
+    session.writer.write_all(b"q").expect("write q");
+    session.writer.flush().expect("flush");
+    let status = session.wait_with_timeout(Duration::from_secs(10));
+    assert!(
+        status.success(),
+        "mini must still exit cleanly after a notice cycle, got exit status {status:?}"
+    );
+}
+
+#[test]
+fn an_ambiguous_action_stays_a_harmless_no_op_in_mini() {
+    // Issue #65's scope decision: --mini never gets a picker, so `Resolution::Ambiguous`
+    // stays a no-op forever, not just until this issue ships. Proven for real rather than
+    // assumed: a synthetic PATH makes two of the `edit` action's candidates ("nvim" and
+    // "vim") genuinely "installed" per `is_installed_probe`, with no `[tools]` override in
+    // prefs to collapse the choice — the same setup shape `s8_tools.rs` uses to reach
+    // `Resolution::Ambiguous` in the first place, run here through the real binary.
+    let home = scratch_home("ambiguous_noop");
+    let state_path = state_file_pointing_at(&home, true, None);
+
+    let bin_dir = home.join("fakebin");
+    std::fs::create_dir_all(&bin_dir).expect("fake bin dir must be creatable");
+    for name in ["nvim", "vim"] {
+        let stub = bin_dir.join(name);
+        std::fs::write(&stub, b"#!/bin/sh\nexit 0\n").expect("stub must be writable");
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&stub, std::fs::Permissions::from_mode(0o755))
+                .expect("stub must be made executable");
+        }
+    }
+    let path_env = format!(
+        "{}:{}",
+        bin_dir.display(),
+        std::env::var("PATH").unwrap_or_default()
+    );
+
+    let mut session = Session::spawn_with_args_and_env(
+        &state_path,
+        90,
+        24,
+        Some(&home),
+        &["--mini", "mini-action-project"],
+        &[("PATH", &path_env)],
+    );
+
+    let before = session.screen_until(
+        90,
+        24,
+        Duration::from_secs(5),
+        Duration::from_millis(300),
+        5,
+        |grid| grid.iter().any(|r| r.contains("mini-action-project")),
+    );
+    assert!(
+        before.iter().any(|r| r.contains("mini-action-project")),
+        "precondition: the pane must show the pinned project, got:\n{}",
+        before.join("\n")
+    );
+
+    session.writer.write_all(b"e").expect("write e");
+    session.writer.flush().expect("flush");
     session.writer.write_all(b"q").expect("write q");
     session.writer.flush().expect("flush");
 
     let status = session.wait_with_timeout(Duration::from_secs(10));
     assert!(
         status.success(),
-        "an action key with nowhere to resolve, followed by q, must still exit mini \
-         cleanly (issue #64), got exit status {status:?}"
+        "an Ambiguous action key, followed by q, must still exit mini cleanly \
+         (issue #65 keeps Ambiguous a no-op), got exit status {status:?}"
     );
 }

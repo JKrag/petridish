@@ -1253,7 +1253,14 @@ const MINI_HEAVY_RULE_MIN_HEIGHT: u16 = 15;
 /// The below-the-floor message is `--mini`'s own wording, not the popup's
 /// (`PROPOSAL-focus-panel.md` §10's last row): it names the binary and the dimensions,
 /// because someone who typed `petri --mini` into a split needs to know what to resize to.
-pub fn render_mini(frame: &mut ratatui::Frame, area: Rect, ctx: &FocusCtx) {
+///
+/// `notice`, when present, is issue #65's answer for `Resolution::NoTool`/`NoTarget`:
+/// `--mini` has no picker and no dedicated chrome row to spend on it (`Ambiguous` stays a
+/// no-op — the scope call in issue #65's follow-up comment), so it draws centered over
+/// whatever the panel already painted rather than fighting the header/rule/body layout for
+/// a row. The caller (`mini_poll_loop`) owns the timer that clears it after a few seconds;
+/// this function only draws the frame it's handed.
+pub fn render_mini(frame: &mut ratatui::Frame, area: Rect, ctx: &FocusCtx, notice: Option<&str>) {
     use ratatui::widgets::Paragraph;
 
     if area.width == 0 || area.height == 0 {
@@ -1318,6 +1325,44 @@ pub fn render_mini(frame: &mut ratatui::Frame, area: Rect, ctx: &FocusCtx) {
 
     lines.truncate(area.height as usize);
     frame.render_widget(Paragraph::new(lines), area);
+
+    if let Some(text) = notice {
+        render_mini_notice(frame, area, text);
+    }
+}
+
+/// Draw `text` centered — both axes — over `area`, on top of whatever was already painted.
+///
+/// Centered rather than the Dashboard/Browser's bottom bar (`browser::render_notice`):
+/// those mounts have a reserved footer row to put it in, `--mini` does not, and a floor-size
+/// pane (24×6) has no row to spare at any fixed position without risking overlap with the
+/// header or the one line of body it has left. Center is the position least likely to
+/// collide with content the user is actively watching, and it reads as "transient" rather
+/// than "new chrome" the way a fixed row would.
+fn render_mini_notice(frame: &mut ratatui::Frame, area: Rect, text: &str) {
+    use ratatui::widgets::{Clear, Paragraph};
+
+    if area.width < 4 || area.height < 1 {
+        return;
+    }
+    let width = (text.chars().count() as u16 + 4).min(area.width);
+    let bar = Rect {
+        x: area.x + area.width.saturating_sub(width) / 2,
+        y: area.y + area.height.saturating_sub(1) / 2,
+        width,
+        height: 1,
+    };
+    frame.render_widget(Clear, bar);
+    frame.render_widget(
+        Paragraph::new(Line::from(Span::styled(
+            format!("  {text}  "),
+            Style::default()
+                .fg(ratatui::style::Color::Black)
+                .bg(theme::AGING)
+                .add_modifier(Modifier::BOLD),
+        ))),
+        bar,
+    );
 }
 
 /// ` petri · {project}` on the left, `5h 16% · 7d 1% · ▲ 4m` on the right — the pane's
@@ -1467,7 +1512,7 @@ mod mini_mount_tests {
         };
         let mut terminal = Terminal::new(TestBackend::new(w, h)).expect("TestBackend");
         terminal
-            .draw(|frame| render_mini(frame, frame.area(), &ctx))
+            .draw(|frame| render_mini(frame, frame.area(), &ctx, None))
             .expect("draw");
         let buf = terminal.backend().buffer().clone();
         (0..h)

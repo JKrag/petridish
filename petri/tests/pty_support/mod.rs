@@ -90,7 +90,7 @@ pub struct Session {
 
 impl Session {
     pub fn spawn(state_path: &std::path::Path, cols: u16, rows: u16) -> Self {
-        Self::spawn_inner(state_path, cols, rows, None, &[])
+        Self::spawn_inner(state_path, cols, rows, None, &[], &[])
     }
 
     /// Like `spawn`, but overrides `HOME` for the child process — needed to
@@ -106,7 +106,25 @@ impl Session {
         rows: u16,
         home: &std::path::Path,
     ) -> Self {
-        Self::spawn_inner(state_path, cols, rows, Some(home), &[])
+        Self::spawn_inner(state_path, cols, rows, Some(home), &[], &[])
+    }
+
+    /// Like `spawn_with_args`, but also sets `extra_env` on the child — needed for issue
+    /// #65's `Ambiguous` regression test, which has to make `is_installed_probe` see two
+    /// fake tools as installed without mutating this process's own `PATH` (CLAUDE.md's "no
+    /// test calls `std::env::set_var`" rule: this process is shared across every test
+    /// binary run in the same `cargo test` invocation, so a global env mutation here would
+    /// race every other test reading `PATH`). Passing `PATH` as one of `extra_env`'s pairs
+    /// only touches the child's env, which is this process's own child and therefore safe.
+    pub fn spawn_with_args_and_env(
+        state_path: &std::path::Path,
+        cols: u16,
+        rows: u16,
+        home: Option<&std::path::Path>,
+        extra_args: &[&str],
+        extra_env: &[(&str, &str)],
+    ) -> Self {
+        Self::spawn_inner(state_path, cols, rows, home, extra_args, extra_env)
     }
 
     /// Like `spawn_with_home`, but appends `extra_args` after the state-path
@@ -124,7 +142,7 @@ impl Session {
         home: Option<&std::path::Path>,
         extra_args: &[&str],
     ) -> Self {
-        Self::spawn_inner(state_path, cols, rows, home, extra_args)
+        Self::spawn_inner(state_path, cols, rows, home, extra_args, &[])
     }
 
     fn spawn_inner(
@@ -133,6 +151,7 @@ impl Session {
         rows: u16,
         home: Option<&std::path::Path>,
         extra_args: &[&str],
+        extra_env: &[(&str, &str)],
     ) -> Self {
         let pty_system = native_pty_system();
         let pair = pty_system
@@ -177,6 +196,9 @@ impl Session {
         cmd.env("LC_ALL", "en_US.UTF-8");
         if let Some(home) = home {
             cmd.env("HOME", home);
+        }
+        for (key, value) in extra_env {
+            cmd.env(key, value);
         }
 
         let child = pair

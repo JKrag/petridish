@@ -432,6 +432,11 @@ pub fn run_mini(
 ///
 /// `q` and `Esc` both quit. There is nothing for `Esc` to dismiss here, and a pane whose
 /// only binding is a letter is a trap in a tmux split.
+/// How long a `NoTool`/`NoTarget` notice (issue #65) stays on screen before
+/// `mini_poll_loop` clears it on its own — there is no dismiss key, since a
+/// pane that can be as small as 24×6 has no chrome to hint one in.
+const MINI_NOTICE_DURATION: std::time::Duration = std::time::Duration::from_secs(3);
+
 fn mini_poll_loop<B: ratatui::backend::Backend>(
     state_path: &std::path::Path,
     terminal: &mut ratatui::Terminal<B>,
@@ -445,37 +450,71 @@ fn mini_poll_loop<B: ratatui::backend::Backend>(
     let mut last_mtime = std::fs::metadata(state_path)
         .ok()
         .and_then(|m| m.modified().ok());
+    let mut notice: Option<(String, std::time::Instant)> = None;
 
-    render_mini_frame(terminal, &last_good, target, cwd, &feed, prefs);
+    render_mini_frame(terminal, &last_good, target, cwd, &feed, prefs, None);
 
     loop {
         let event_ready =
             crossterm::event::poll(std::time::Duration::from_secs(1)).unwrap_or(false);
+        let mut notice_changed = false;
         if event_ready && let Ok(crossterm::event::Event::Key(key)) = crossterm::event::read() {
             match key.code {
                 crossterm::event::KeyCode::Char('q') | crossterm::event::KeyCode::Esc => {
                     return Ok(0);
                 }
-                // Tool shortcuts (issue #64), minimal on purpose: `--mini` has
-                // no picker and no notice pane, so only the unambiguous case
-                // is wired up — a resolution that would need either
-                // (`Ambiguous`/`NoTool`/`NoTarget`) is silently a no-op, the
-                // same as pressing an unbound key already is. Full parity
-                // with the Dashboard/Browser (picker, notices) is issue #65.
+                // Tool shortcuts (issue #64). `--mini` still has no picker —
+                // `Resolution::Ambiguous` stays a no-op on purpose (issue #65's
+                // scope call: powerusers who reach for `--mini` have already
+                // picked a default elsewhere). `NoTool`/`NoTarget` now surface
+                // as a transient centered notice instead of a silent no-op.
                 crossterm::event::KeyCode::Char(c) => {
                     let registry = crate::tools::registry();
                     if let Some(r) = last_good.as_ref()
                         && let Ok(idx) = resolve_mini(r, target, cwd)
                         && let Some(project) = r.projects.get(idx)
                         && let Some(action) = registry.iter().find(|a| a.key == c)
-                        && let crate::tools::Resolution::Ready(launch) =
-                            resolve_action(action, project, prefs)
                     {
-                        launch_now(terminal, &launch, std::path::Path::new(&project.path));
+                        match resolve_action(action, project, prefs) {
+                            crate::tools::Resolution::Ready(launch) => {
+                                launch_now(terminal, &launch, std::path::Path::new(&project.path));
+                            }
+                            crate::tools::Resolution::Ambiguous(_) => {}
+                            crate::tools::Resolution::NoTool => {
+                                notice = Some((
+                                    format!(
+                                        "nothing installed that can {} — tried: {}",
+                                        action.label,
+                                        action
+                                            .candidates
+                                            .iter()
+                                            .map(|c| c.id.as_str())
+                                            .collect::<Vec<_>>()
+                                            .join(", ")
+                                    ),
+                                    std::time::Instant::now(),
+                                ));
+                                notice_changed = true;
+                            }
+                            crate::tools::Resolution::NoTarget => {
+                                notice = Some((
+                                    format!("{} {}", project.name, action.target.notice()),
+                                    std::time::Instant::now(),
+                                ));
+                                notice_changed = true;
+                            }
+                        }
                     }
                 }
                 _ => {}
             }
+        }
+
+        if let Some((_, started)) = &notice
+            && started.elapsed() >= MINI_NOTICE_DURATION
+        {
+            notice = None;
+            notice_changed = true;
         }
 
         let new_mtime = std::fs::metadata(state_path)
@@ -497,8 +536,16 @@ fn mini_poll_loop<B: ratatui::backend::Backend>(
             }
         }
 
-        if event_ready || mtime_changed {
-            render_mini_frame(terminal, &last_good, target, cwd, &feed, prefs);
+        if event_ready || mtime_changed || notice_changed {
+            render_mini_frame(
+                terminal,
+                &last_good,
+                target,
+                cwd,
+                &feed,
+                prefs,
+                notice.as_ref().map(|(text, _)| text.as_str()),
+            );
         }
 
         last_mtime = new_mtime;
@@ -523,6 +570,7 @@ fn render_mini_frame<B: ratatui::backend::Backend>(
     cwd: &std::path::Path,
     feed: &crate::feed::FeedState,
     prefs: &Prefs,
+    notice: Option<&str>,
 ) {
     let Some(r) = radar else { return };
     let resolved = resolve_mini(r, target, cwd);
@@ -537,7 +585,7 @@ fn render_mini_frame<B: ratatui::backend::Backend>(
                     feed: Some(feed),
                     prefs,
                 };
-                crate::focus::render_mini(frame, area, &ctx);
+                crate::focus::render_mini(frame, area, &ctx, notice);
             }
             Err(ref e) => {
                 let text: Vec<ratatui::text::Line<'static>> = e
