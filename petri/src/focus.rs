@@ -1352,6 +1352,12 @@ fn render_mini_notice(frame: &mut ratatui::Frame, area: Rect, text: &str) {
     let padding = 4u16;
     let budget = area.width.saturating_sub(padding) as usize;
     let fitted = crate::width::take_width(text, budget);
+    if fitted.is_empty() {
+        // A pane too narrow to fit even one character of the notice (Copilot review on
+        // #77): painting an empty, colored bar would hide whatever was there without
+        // explaining anything, which is worse than skipping the notice outright.
+        return;
+    }
     let text_width = crate::width::width(&fitted) as u16;
     let width = (text_width + padding).min(area.width);
     let bar = Rect {

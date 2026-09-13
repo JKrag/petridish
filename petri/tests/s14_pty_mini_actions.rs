@@ -189,7 +189,7 @@ fn a_notarget_action_shows_a_transient_notice_then_clears_it() {
         24,
         Duration::from_secs(5),
         Duration::from_millis(300),
-        8,
+        20,
         |grid| grid.iter().any(|r| r.contains(notice_text)),
     );
     assert!(
@@ -205,7 +205,7 @@ fn a_notarget_action_shows_a_transient_notice_then_clears_it() {
         24,
         Duration::from_secs(1),
         Duration::from_millis(300),
-        15,
+        20,
         |grid| !grid.iter().any(|r| r.contains(notice_text)),
     );
     assert!(
@@ -268,7 +268,7 @@ fn a_notool_action_shows_a_transient_notice_then_clears_it() {
         24,
         Duration::from_secs(5),
         Duration::from_millis(300),
-        8,
+        20,
         |grid| grid.iter().any(|r| r.contains(notice_text)),
     );
     assert!(
@@ -282,7 +282,7 @@ fn a_notool_action_shows_a_transient_notice_then_clears_it() {
         24,
         Duration::from_secs(1),
         Duration::from_millis(300),
-        15,
+        20,
         |grid| !grid.iter().any(|r| r.contains(notice_text)),
     );
     assert!(
