@@ -130,6 +130,17 @@ disabling debuginfo entirely so panic backtraces still resolve to file:line.
 `petri/CLAUDE.md` — read that file before writing or debugging anything under
 `petri/tests/`.
 
+**Testing the Linux systemd path for real, not through the `RecordingSystemctl` seam.**
+`cargo test`'s systemd coverage is all through that seam — real for argv/ordering/
+error-mapping, but it never calls the real `systemctl` binary or writes into a real unit
+search path. `.github/workflows/ci.yml`'s `linux-systemd-smoke` job covers the real thing,
+but only in CI. To exercise it locally (macOS has no systemd --user to test against), start
+a Lima VM (`limactl start default` — its out-of-the-box config mounts your home directory at
+the same absolute path inside the guest, which is what lets `swab` scan your real project
+data instead of an empty test machine) and run `make lima-install` / `make lima-uninstall` /
+`make lima-smoke`; see `petridish-cli/scripts/lima-dev.sh` for what each does and why the
+build's `CARGO_TARGET_DIR` has to live outside the (read-only) repo mount.
+
 ## Engineering integrity
 
 Correctness over green checks. Do not weaken, skip, or delete a test to make it pass — if a
