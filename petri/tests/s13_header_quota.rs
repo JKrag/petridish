@@ -365,7 +365,7 @@ fn mini_header_row(w: u16, h: u16, q: Option<QuotaState>) -> String {
     };
     let mut terminal = Terminal::new(TestBackend::new(w, h)).expect("test backend");
     terminal
-        .draw(|f| render_mini(f, f.area(), &ctx))
+        .draw(|f| render_mini(f, f.area(), &ctx, None))
         .expect("draw");
     let buffer = terminal.backend().buffer();
     (0..w)

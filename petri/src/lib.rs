@@ -425,6 +425,96 @@ pub fn run_mini(
     Ok(exit_code)
 }
 
+/// How long a `NoTool`/`NoTarget` notice (issue #65) stays on screen before
+/// `mini_poll_loop` clears it on its own — there is no dismiss key, since a
+/// pane that can be as small as 24×6 has no chrome to hint one in.
+const MINI_NOTICE_DURATION: std::time::Duration = std::time::Duration::from_secs(3);
+
+/// One key press's worth of `--mini` dispatch (issue #64/#65): resolves `key` against
+/// `project`, returns the `Launch` to hand off (if any), and updates `notice` in place.
+///
+/// `now` is threaded through as a parameter rather than read here via `Instant::now()` so
+/// the notice lifecycle is provable with synthetic instants instead of a real sleep —
+/// `SPEC.md` §8's "inject a fixed clock" PTY rule, applied to the one piece of `--mini`'s
+/// loop that is otherwise wall-clock-shaped. `mini_poll_loop` is the only real caller, and
+/// always passes `Instant::now()`; `s65_mini_notice.rs` passes synthetic ones — via
+/// `mini_apply_resolution` below, since which `Resolution` this reaches for a given key
+/// depends on what's installed on the machine running the test, and the notice-lifecycle
+/// rules don't.
+pub fn mini_dispatch(
+    key: char,
+    project: &petridish_core::schema::Project,
+    prefs: &Prefs,
+    notice: &mut Option<(String, std::time::Instant)>,
+    now: std::time::Instant,
+) -> Option<crate::tools::Launch> {
+    let registry = crate::tools::registry();
+    let action = registry.iter().find(|a| a.key == key)?;
+    let resolution = resolve_action(action, project, prefs);
+    mini_apply_resolution(resolution, action, project, notice, now)
+}
+
+/// The notice-lifecycle half of `mini_dispatch`, split out so it can be driven by a
+/// synthetic [`crate::tools::Resolution`] instead of one that depends on which tools happen
+/// to be installed on the machine running the test — `s8_tools.rs` already exhaustively
+/// covers `tools::resolve`'s own classification into `Ready`/`Ambiguous`/`NoTool`/
+/// `NoTarget`; what this function owns is only what `--mini` does with each one.
+///
+/// `Resolution::Ambiguous` leaves `notice` untouched on purpose — issue #65's scope call
+/// keeps it a permanent no-op, not merely a placeholder, so it neither sets a notice nor
+/// clears a stale one from an earlier key.
+pub fn mini_apply_resolution(
+    resolution: crate::tools::Resolution,
+    action: &crate::tools::Action,
+    project: &petridish_core::schema::Project,
+    notice: &mut Option<(String, std::time::Instant)>,
+    now: std::time::Instant,
+) -> Option<crate::tools::Launch> {
+    match resolution {
+        crate::tools::Resolution::Ready(launch) => {
+            // A stale notice from an earlier key would otherwise survive the hand-off and
+            // cover the post-launch redraw (Copilot review on #77): a real state
+            // transition invalidates whatever the pane was explaining before it.
+            notice.take();
+            Some(launch)
+        }
+        crate::tools::Resolution::Ambiguous(_) => None,
+        crate::tools::Resolution::NoTool => {
+            *notice = Some((
+                format!(
+                    "nothing installed that can {} — tried: {}",
+                    action.label,
+                    action
+                        .candidates
+                        .iter()
+                        .map(|c| c.id.as_str())
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                ),
+                now,
+            ));
+            None
+        }
+        crate::tools::Resolution::NoTarget => {
+            *notice = Some((format!("{} {}", project.name, action.target.notice()), now));
+            None
+        }
+    }
+}
+
+/// Whether a notice timestamped at the instant `mini_dispatch`/`launch_now`'s failure path
+/// stored has outlived `MINI_NOTICE_DURATION` as of `now`. Split out from `mini_poll_loop`
+/// for the same reason `mini_dispatch` takes `now` as a parameter: a synthetic pair of
+/// instants proves the boundary without a real three-second wait.
+pub fn mini_notice_expired(
+    notice: &Option<(String, std::time::Instant)>,
+    now: std::time::Instant,
+) -> bool {
+    notice
+        .as_ref()
+        .is_some_and(|(_, started)| now.duration_since(*started) >= MINI_NOTICE_DURATION)
+}
+
 /// `--mini`'s event loop. Same poll cadence and same quiet-tick rule as `poll_loop` (draw
 /// only on a real event or an mtime change, so an idle pane leaves the output stream
 /// still), and the same feed bookkeeping via `absorb_snapshot` — the `Recent` rung is a
@@ -445,37 +535,50 @@ fn mini_poll_loop<B: ratatui::backend::Backend>(
     let mut last_mtime = std::fs::metadata(state_path)
         .ok()
         .and_then(|m| m.modified().ok());
+    let mut notice: Option<(String, std::time::Instant)> = None;
 
-    render_mini_frame(terminal, &last_good, target, cwd, &feed, prefs);
+    render_mini_frame(terminal, &last_good, target, cwd, &feed, prefs, None);
 
     loop {
         let event_ready =
             crossterm::event::poll(std::time::Duration::from_secs(1)).unwrap_or(false);
+        // Only the idle-tick expiry below needs this: a keystroke already forces a redraw
+        // via `event_ready`, so `mini_dispatch`'s notice updates don't need to set it too.
+        let mut notice_changed = false;
         if event_ready && let Ok(crossterm::event::Event::Key(key)) = crossterm::event::read() {
             match key.code {
                 crossterm::event::KeyCode::Char('q') | crossterm::event::KeyCode::Esc => {
                     return Ok(0);
                 }
-                // Tool shortcuts (issue #64), minimal on purpose: `--mini` has
-                // no picker and no notice pane, so only the unambiguous case
-                // is wired up — a resolution that would need either
-                // (`Ambiguous`/`NoTool`/`NoTarget`) is silently a no-op, the
-                // same as pressing an unbound key already is. Full parity
-                // with the Dashboard/Browser (picker, notices) is issue #65.
+                // Tool shortcuts (issue #64). `--mini` still has no picker —
+                // `Resolution::Ambiguous` stays a no-op on purpose (issue #65's
+                // scope call: powerusers who reach for `--mini` have already
+                // picked a default elsewhere). `NoTool`/`NoTarget` now surface
+                // as a transient centered notice instead of a silent no-op.
                 crossterm::event::KeyCode::Char(c) => {
-                    let registry = crate::tools::registry();
                     if let Some(r) = last_good.as_ref()
                         && let Ok(idx) = resolve_mini(r, target, cwd)
                         && let Some(project) = r.projects.get(idx)
-                        && let Some(action) = registry.iter().find(|a| a.key == c)
-                        && let crate::tools::Resolution::Ready(launch) =
-                            resolve_action(action, project, prefs)
+                        && let Some(launch) =
+                            mini_dispatch(c, project, prefs, &mut notice, std::time::Instant::now())
                     {
-                        launch_now(terminal, &launch, std::path::Path::new(&project.path));
+                        // A launch that fails to even start (Copilot review on #77:
+                        // `launch_now`'s `Some` return was previously discarded here)
+                        // gets the same notice treatment as `NoTool`/`NoTarget`.
+                        if let Some(failure) =
+                            launch_now(terminal, &launch, std::path::Path::new(&project.path))
+                        {
+                            notice = Some((failure, std::time::Instant::now()));
+                        }
                     }
                 }
                 _ => {}
             }
+        }
+
+        if mini_notice_expired(&notice, std::time::Instant::now()) {
+            notice = None;
+            notice_changed = true;
         }
 
         let new_mtime = std::fs::metadata(state_path)
@@ -497,8 +600,16 @@ fn mini_poll_loop<B: ratatui::backend::Backend>(
             }
         }
 
-        if event_ready || mtime_changed {
-            render_mini_frame(terminal, &last_good, target, cwd, &feed, prefs);
+        if event_ready || mtime_changed || notice_changed {
+            render_mini_frame(
+                terminal,
+                &last_good,
+                target,
+                cwd,
+                &feed,
+                prefs,
+                notice.as_ref().map(|(text, _)| text.as_str()),
+            );
         }
 
         last_mtime = new_mtime;
@@ -523,6 +634,7 @@ fn render_mini_frame<B: ratatui::backend::Backend>(
     cwd: &std::path::Path,
     feed: &crate::feed::FeedState,
     prefs: &Prefs,
+    notice: Option<&str>,
 ) {
     let Some(r) = radar else { return };
     let resolved = resolve_mini(r, target, cwd);
@@ -537,7 +649,7 @@ fn render_mini_frame<B: ratatui::backend::Backend>(
                     feed: Some(feed),
                     prefs,
                 };
-                crate::focus::render_mini(frame, area, &ctx);
+                crate::focus::render_mini(frame, area, &ctx, notice);
             }
             Err(ref e) => {
                 let text: Vec<ratatui::text::Line<'static>> = e
