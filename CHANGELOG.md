@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.0.0-beta.8] — 2026-09-14
+
+### Added
+
+- **Prebuilt Linux binaries.** `brew install jkrag/tap/petridish` now works
+  on Linux (x86_64) via Linuxbrew, no Rust toolchain or build-from-source
+  needed. Other architectures (e.g. arm64) still use `cargo install`.
+
 ## [1.0.0-beta.7] — 2026-09-14
 
 ### Added
