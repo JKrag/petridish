@@ -124,10 +124,13 @@ jobs:
           # `doctor` must see the install it just made as healthy, in both
           # output modes - this is the exact check issue #78's review round
           # was about keeping honest on an unsupported platform, so it needs
-          # to also be honest on the platform that *is* supported.
+          # to also be honest on the platform that *is* supported. main.rs
+          # derives the exit code from the same `checks` vector it prints as
+          # JSON, so running --json under `set -e` (no python3 needed to
+          # re-parse and re-assert it) already fails the step on any check
+          # that isn't ok.
           petridish doctor
-          petridish doctor --json | python3 -c \
-            'import json,sys; checks = json.load(sys.stdin); assert all(c["ok"] for c in checks), checks'
+          petridish doctor --json
 
           petridish uninstall --no-menubar-plugin
           ! systemctl --user is-enabled petridish-scan.timer
