@@ -3,7 +3,7 @@
 use clap::{Parser, Subcommand};
 use petridish_cli::doctor;
 use petridish_cli::error::InstallError;
-use petridish_cli::install::{self, Backend, Binaries, Ctl, Layout};
+use petridish_cli::install::{self, Backend, Binaries, Layout};
 use petridish_cli::launchd::RealLaunchctl;
 use petridish_cli::menubar;
 use petridish_cli::paths::{self, Platform};
@@ -127,20 +127,16 @@ fn run() -> Result<i32, InstallError> {
             let platform = paths::detect_platform(std::env::consts::OS)?;
             let layout = layout(platform, menubar_plugins_dir, no_menubar_plugin);
             let bins = resolve_binaries()?;
-            match platform {
-                Platform::Macos => install::install(
-                    &layout,
-                    &bins,
-                    &Ctl::Launchd(&RealLaunchctl),
-                    &mut std::io::stdout(),
-                )?,
-                Platform::Linux => install::install(
-                    &layout,
-                    &bins,
-                    &Ctl::Systemd(&RealSystemctl),
-                    &mut std::io::stdout(),
-                )?,
-            }
+            // Both controllers are always passed; `install` picks which one it
+            // actually calls from `layout.backend`, so there is no separate
+            // platform match here to keep in sync with it.
+            install::install(
+                &layout,
+                &bins,
+                &RealLaunchctl,
+                &RealSystemctl,
+                &mut std::io::stdout(),
+            )?;
             Ok(0)
         }
         Command::Uninstall {
@@ -149,20 +145,13 @@ fn run() -> Result<i32, InstallError> {
         } => {
             let platform = paths::detect_platform(std::env::consts::OS)?;
             let layout = layout(platform, menubar_plugins_dir, no_menubar_plugin);
-            match platform {
-                Platform::Macos => install::uninstall(
-                    &layout,
-                    &Ctl::Launchd(&RealLaunchctl),
-                    &mut std::io::stdout(),
-                    &mut std::io::stderr(),
-                )?,
-                Platform::Linux => install::uninstall(
-                    &layout,
-                    &Ctl::Systemd(&RealSystemctl),
-                    &mut std::io::stdout(),
-                    &mut std::io::stderr(),
-                )?,
-            }
+            install::uninstall(
+                &layout,
+                &RealLaunchctl,
+                &RealSystemctl,
+                &mut std::io::stdout(),
+                &mut std::io::stderr(),
+            )?;
             Ok(0)
         }
         Command::Doctor {
@@ -173,7 +162,11 @@ fn run() -> Result<i32, InstallError> {
             let os = std::env::consts::OS;
             // `doctor` degrades rather than refuses on a platform `install`
             // itself would reject (issue #25) — an unrecognised OS still gets
-            // a best-effort systemd-shaped layout rather than a hard error.
+            // a best-effort systemd-shaped `Layout` so the hook/config/binary
+            // checks below still run. `doctor::checks` re-derives whether `os`
+            // is actually supported itself and reports the daemon check as a
+            // `skip` rather than trusting this fallback for that one check —
+            // see its doc comment.
             let platform = paths::detect_platform(os).unwrap_or(Platform::Linux);
             let layout = layout(platform, menubar_plugins_dir, no_menubar_plugin);
             let path_var = std::env::var("PATH").unwrap_or_default();

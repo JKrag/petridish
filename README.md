@@ -61,6 +61,18 @@ On Linux, `install` requires a running `systemd --user` session (true on every m
 desktop distro — Ubuntu, Fedora, Debian, RHEL and derivatives, Arch — since the mid-2010s).
 If you don't have one, see [Linux: no systemd?](#linux-no-systemd).
 
+By default, a `systemd --user` timer only runs while you're logged in — it stops the moment
+your last session ends and doesn't survive a reboot into no session at all. On a headless
+box, a server, or anything that reboots without an interactive login, also enable lingering
+so the timer keeps running regardless:
+
+```sh
+loginctl enable-linger "$USER"
+```
+
+`petridish install` prints a reminder of this on Linux; it can't enable lingering for you
+(it needs its own privileged `loginctl` call, not something to run silently on your behalf).
+
 <details>
 <summary>Installing from a checkout instead</summary>
 

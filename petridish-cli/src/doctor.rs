@@ -160,14 +160,18 @@ fn program_path_from_service(text: &str) -> Option<String> {
 /// Undo `systemd_unit`'s private `unit_quote`.
 ///
 /// Load-bearing the same way `xml_unescape` is: the service unit stores a `$`
-/// as `$$` and a literal `"` or `\` backslash-escaped, and comparing that
-/// against the filesystem would report a healthy install as broken. Undone in
-/// the reverse of the order `unit_quote` applies its escapes, so a literal
-/// backslash is not re-interpreted as starting an escape sequence.
+/// as `$$`, a `%` as `%%`, and a literal `"` or `\` backslash-escaped, and
+/// comparing that against the filesystem would report a healthy install as
+/// broken. The quote/backslash undoing happens in the reverse of the order
+/// `unit_quote` applies those two escapes, so a literal backslash is not
+/// re-interpreted as starting an escape sequence; `$$`/`%%` un-doubling is
+/// independent of that pair (no shared characters) and can happen in any order
+/// relative to it.
 fn unit_unescape(s: &str) -> String {
     s.replace("\\\"", "\"")
         .replace("\\\\", "\\")
         .replace("$$", "$")
+        .replace("%%", "%")
 }
 
 /// 6. Every binary reports the same version as this build.
@@ -257,12 +261,16 @@ fn version_check(path_var: &str) -> Check {
 /// tests point it at a scratch layout.
 ///
 /// `os` still gates the menu-bar check and the trailing hint line below (those
-/// stay macOS-only outright — issue #25), but the daemon-registration check
-/// (launchd plist vs. systemd timer) is no longer gated on `os` at all: it
-/// branches on `layout.backend` directly, so it is a real check on both
-/// platforms now that `install` writes real units on Linux too (issue #75 —
-/// previously Linux got a permanent, unactionable `skip` here since `install`
-/// never wrote anything for this check to look at).
+/// stay macOS-only outright — issue #25), and it also gates whether the
+/// daemon-registration check runs at all: for the two platforms `install`
+/// actually supports it branches on `layout.backend` directly rather than on
+/// `os` (a real check on both, now that `install` writes real units on Linux
+/// too — issue #75), but for anything `paths::detect_platform` rejects it
+/// reports a `skip` instead. Without that gate, `main.rs`'s best-effort
+/// fallback `Layout` for an unrecognised OS (built so the *other* checks below
+/// still run) would make this one lie: it would tell the user to "run
+/// `petridish install`" as the fix, when `install` on that same OS immediately
+/// refuses with `UnsupportedPlatform`.
 pub fn checks(layout: &Layout, path_var: &str, os: &str) -> Vec<Check> {
     let mut out = Vec::new();
 
@@ -276,17 +284,24 @@ pub fn checks(layout: &Layout, path_var: &str, os: &str) -> Vec<Check> {
     }
 
     // 2. The daemon registration exists, and the binary it names still does —
-    //    the plist on macOS, the timer + service unit pair on Linux.
-    match &layout.backend {
-        Backend::Launchd { .. } => {
-            // This is the stale-plist failure: `brew upgrade` (or a `cargo install`
-            // into a different prefix) can move `swab` out from under a plist that
-            // still points at the old location, and launchd then runs nothing at all
-            // while looking perfectly installed.
-            let plist_path = layout
-                .plist_path()
-                .expect("Launchd backend always has a plist path");
-            match presence(&plist_path) {
+    //    the plist on macOS, the timer + service unit pair on Linux. Skipped
+    //    outright on any other OS: see this function's doc comment.
+    if crate::paths::detect_platform(os).is_err() {
+        out.push(Check::skip(
+            "daemon",
+            format!("not applicable — {os:?} is not a platform `petridish install` supports"),
+        ));
+    } else {
+        match &layout.backend {
+            Backend::Launchd { .. } => {
+                // This is the stale-plist failure: `brew upgrade` (or a `cargo install`
+                // into a different prefix) can move `swab` out from under a plist that
+                // still points at the old location, and launchd then runs nothing at all
+                // while looking perfectly installed.
+                let plist_path = layout
+                    .plist_path()
+                    .expect("Launchd backend always has a plist path");
+                match presence(&plist_path) {
                 Presence::Absent => out.push(Check::fail(
                     "daemon",
                     format!(
@@ -321,17 +336,17 @@ pub fn checks(layout: &Layout, path_var: &str, os: &str) -> Vec<Check> {
                     Err(e) => out.push(Check::fail("daemon", e.to_string())),
                 },
             }
-        }
-        Backend::Systemd { .. } => {
-            // Same stale-registration failure as the plist case: a moved `swab`
-            // leaves a timer that fires into nothing, looking installed.
-            let timer_path = layout
-                .timer_unit_path()
-                .expect("Systemd backend always has a timer unit path");
-            let service_path = layout
-                .service_unit_path()
-                .expect("Systemd backend always has a service unit path");
-            match presence(&timer_path) {
+            }
+            Backend::Systemd { .. } => {
+                // Same stale-registration failure as the plist case: a moved `swab`
+                // leaves a timer that fires into nothing, looking installed.
+                let timer_path = layout
+                    .timer_unit_path()
+                    .expect("Systemd backend always has a timer unit path");
+                let service_path = layout
+                    .service_unit_path()
+                    .expect("Systemd backend always has a service unit path");
+                match presence(&timer_path) {
                 Presence::Absent => out.push(Check::fail(
                     "daemon",
                     format!(
@@ -346,25 +361,47 @@ pub fn checks(layout: &Layout, path_var: &str, os: &str) -> Vec<Check> {
                         timer_path.display()
                     ),
                 )),
-                Presence::Present => match std::fs::read_to_string(&service_path) {
-                    Ok(text) => match program_path_from_service(&text) {
-                        Some(prog) => match presence(Path::new(&prog)) {
-                            Presence::Present => {
-                                out.push(Check::pass("daemon", format!("runs {prog}")))
-                            }
-                            Presence::Absent => out.push(Check::fail(
-                                "daemon",
-                                format!("points at {prog}, which no longer exists — re-run `petridish install`"),
-                            )),
-                            Presence::Unknown(why) => out.push(Check::fail(
-                                "daemon",
-                                format!("points at {prog}, which could not be checked — {why}"),
-                            )),
+                // The timer exists, but a partial/corrupted install (manual
+                // edit, packaging regression) can leave the service unit it
+                // fires missing even though the timer is intact — checked
+                // separately, with the same friendly wording, rather than
+                // falling through to a raw `read_to_string` I/O error below.
+                Presence::Present => match presence(&service_path) {
+                    Presence::Absent => out.push(Check::fail(
+                        "daemon",
+                        format!(
+                            "missing: {} — run `petridish install`",
+                            service_path.display()
+                        ),
+                    )),
+                    Presence::Unknown(why) => out.push(Check::fail(
+                        "daemon",
+                        format!(
+                            "cannot check {} — {why}. A permissions problem, not a broken install; re-running `petridish install` will not change it.",
+                            service_path.display()
+                        ),
+                    )),
+                    Presence::Present => match std::fs::read_to_string(&service_path) {
+                        Ok(text) => match program_path_from_service(&text) {
+                            Some(prog) => match presence(Path::new(&prog)) {
+                                Presence::Present => {
+                                    out.push(Check::pass("daemon", format!("runs {prog}")))
+                                }
+                                Presence::Absent => out.push(Check::fail(
+                                    "daemon",
+                                    format!("points at {prog}, which no longer exists — re-run `petridish install`"),
+                                )),
+                                Presence::Unknown(why) => out.push(Check::fail(
+                                    "daemon",
+                                    format!("points at {prog}, which could not be checked — {why}"),
+                                )),
+                            },
+                            None => out.push(Check::fail("daemon", "could not read ExecStart")),
                         },
-                        None => out.push(Check::fail("daemon", "could not read ExecStart")),
+                        Err(e) => out.push(Check::fail("daemon", e.to_string())),
                     },
-                    Err(e) => out.push(Check::fail("daemon", e.to_string())),
                 },
+            }
             }
         }
     }
@@ -574,10 +611,27 @@ mod tests {
     }
 
     #[test]
-    fn unit_unescape_undoes_dollar_quote_and_backslash_escaping() {
+    fn unit_unescape_undoes_dollar_quote_backslash_and_percent_escaping() {
         assert_eq!(unit_unescape("a$$b"), "a$b");
         assert_eq!(unit_unescape("a\\\"b"), "a\"b");
         assert_eq!(unit_unescape("a\\\\b"), "a\\b");
+        assert_eq!(unit_unescape("a%%b"), "a%b");
+    }
+
+    /// A `%` must round-trip through `render_service` -> `program_path_from_service`
+    /// the same way `$`/`"`/`\` already do — systemd reads `%h`-style specifiers
+    /// in `ExecStart=` independently of quoting, so `unit_quote` doubles it.
+    #[test]
+    fn the_service_program_path_round_trips_a_percent_sign() {
+        let text = systemd_unit::render_service("/opt/50%homebrew/bin/swab", "/tmp/l.log");
+        assert!(
+            text.contains("%%"),
+            "precondition: the service really doubles the percent: {text}"
+        );
+        assert_eq!(
+            program_path_from_service(&text),
+            Some("/opt/50%homebrew/bin/swab".to_string())
+        );
     }
 
     #[test]
@@ -751,6 +805,35 @@ mod tests {
         );
     }
 
+    /// A genuinely unsupported OS (not macOS, not Linux) must report the
+    /// daemon check as a `skip`, not a `fail` telling the user to "run
+    /// `petridish install`" — that command would itself immediately refuse
+    /// with `UnsupportedPlatform` on the same machine, so the advice would be
+    /// actionable-looking but false. This is what `main.rs`'s best-effort
+    /// fallback `Layout` for an unrecognised OS relies on `checks` to do.
+    #[test]
+    fn checks_reports_the_daemon_check_as_skip_on_a_truly_unsupported_platform() {
+        let tmp = TempDir::new("doctor_unsupported_os");
+        let layout = Layout {
+            home: tmp.path.clone(),
+            claude_dir: tmp.path.join(".claude"),
+            backend: Backend::Systemd {
+                unit_dir: tmp.path.join(".config/systemd/user"),
+            },
+            menubar_plugins_dir: None,
+        };
+        let checks = checks(&layout, "", "windows");
+
+        let daemon = checks.iter().find(|c| c.key == "daemon").expect("daemon");
+        assert!(daemon.skipped, "an unsupported OS must skip, not fail");
+        assert!(daemon.ok, "a skip must not fail the install");
+        assert!(
+            !daemon.detail.contains("run `petridish install`"),
+            "must not suggest running install as a fix — it would itself refuse: {}",
+            daemon.detail
+        );
+    }
+
     #[test]
     fn checks_still_runs_the_daemon_and_menubar_checks_for_real_on_macos() {
         let tmp = TempDir::new("doctor_macos_real");
@@ -782,7 +865,8 @@ mod tests {
     /// not just "does not crash".
     #[test]
     fn checks_reports_the_daemon_check_as_healthy_after_a_real_linux_install() {
-        use crate::install::{self, Binaries, Ctl};
+        use crate::install::{self, Binaries};
+        use crate::launchd::recording::RecordingLaunchctl;
         use crate::systemd::recording::RecordingSystemctl;
 
         let tmp = TempDir::new("doctor_linux_healthy");
@@ -808,13 +892,48 @@ mod tests {
             petridish: bindir.join("petridish"),
         };
         let ctl = RecordingSystemctl::new(&[0, 0, 0]);
+        let unused_launchctl = RecordingLaunchctl::new(&[]);
         let mut out = Vec::new();
-        install::install(&layout, &bins, &Ctl::Systemd(&ctl), &mut out).unwrap();
+        install::install(&layout, &bins, &unused_launchctl, &ctl, &mut out).unwrap();
 
         let checks = checks(&layout, "", "linux");
         let daemon = checks.iter().find(|c| c.key == "daemon").expect("daemon");
         assert!(daemon.ok, "expected pass, got: {}", daemon.detail);
         assert!(daemon.detail.contains(&swab.to_string_lossy().to_string()));
+    }
+
+    /// A partial/corrupted install: the timer exists but its service unit was
+    /// deleted out from under it (manual edit, packaging regression). Must
+    /// report the same friendly "missing — run install" wording the
+    /// timer-absent case gets, not a raw filesystem error surfaced from
+    /// `read_to_string`.
+    #[test]
+    fn checks_reports_a_missing_service_unit_with_the_same_wording_as_a_missing_timer() {
+        let tmp = TempDir::new("doctor_linux_missing_service");
+        let unit_dir = tmp.path.join(".config/systemd/user");
+        std::fs::create_dir_all(&unit_dir).unwrap();
+        std::fs::write(unit_dir.join("petridish-scan.timer"), "[Timer]\n").unwrap();
+        // Deliberately no petridish-scan.service written.
+
+        let layout = Layout {
+            home: tmp.path.clone(),
+            claude_dir: tmp.path.join(".claude"),
+            backend: Backend::Systemd { unit_dir },
+            menubar_plugins_dir: None,
+        };
+        let checks = checks(&layout, "", "linux");
+        let daemon = checks.iter().find(|c| c.key == "daemon").expect("daemon");
+        assert!(!daemon.ok);
+        assert!(
+            daemon.detail.contains("missing:") && daemon.detail.contains("run `petridish install`"),
+            "expected the friendly missing-file wording, got: {}",
+            daemon.detail
+        );
+        assert!(
+            !daemon.detail.contains("os error"),
+            "must not leak a raw filesystem error: {}",
+            daemon.detail
+        );
     }
 
     #[test]

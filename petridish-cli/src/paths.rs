@@ -100,10 +100,29 @@ pub fn default_menubar_plugins_dir(home: &Path) -> PathBuf {
         .join("plugins")
 }
 
-/// Where a per-user systemd unit belongs — the XDG default `systemd --user`
-/// itself searches, so nothing needs to be told about a nonstandard location.
+/// Where a per-user systemd unit belongs, given an explicit `$XDG_CONFIG_HOME`
+/// value (or its absence).
+///
+/// `systemctl --user` itself resolves its unit search path this way — first
+/// `$XDG_CONFIG_HOME/systemd/user` if that variable is set and non-empty, else
+/// `~/.config/systemd/user`. Hardcoding the `~/.config` half only, the way an
+/// earlier version of this function did, means `install` and `systemctl`
+/// silently disagree on a machine that sets `$XDG_CONFIG_HOME` to somewhere
+/// else: `install` writes units nothing will ever `enable`, and `doctor`
+/// re-derives the same wrong path and reports the (never-registered) install
+/// as healthy.
+pub fn default_systemd_user_dir_in(home: &Path, xdg_config_home: Option<&Path>) -> PathBuf {
+    match xdg_config_home {
+        Some(dir) if !dir.as_os_str().is_empty() => dir.join("systemd").join("user"),
+        _ => home.join(".config").join("systemd").join("user"),
+    }
+}
+
+/// `default_systemd_user_dir_in` against the process's real `$XDG_CONFIG_HOME`.
+/// The other environment read in this crate, alongside `resolve_binary`'s `PATH`.
 pub fn default_systemd_user_dir(home: &Path) -> PathBuf {
-    home.join(".config").join("systemd").join("user")
+    let xdg = std::env::var_os("XDG_CONFIG_HOME").map(PathBuf::from);
+    default_systemd_user_dir_in(home, xdg.as_deref())
 }
 
 #[cfg(test)]
@@ -129,9 +148,29 @@ mod tests {
     }
 
     #[test]
-    fn default_systemd_user_dir_is_the_xdg_default_under_the_given_home() {
+    fn default_systemd_user_dir_in_falls_back_to_home_dot_config_when_xdg_unset() {
         assert_eq!(
-            default_systemd_user_dir(Path::new("/home/j")),
+            default_systemd_user_dir_in(Path::new("/home/j"), None),
+            PathBuf::from("/home/j/.config/systemd/user")
+        );
+    }
+
+    /// The regression guard: `systemctl --user` itself honors `$XDG_CONFIG_HOME`,
+    /// so `install` writing units under a hardcoded `~/.config` would leave
+    /// `enable`/`daemon-reload` looking somewhere `systemctl` never searches.
+    #[test]
+    fn default_systemd_user_dir_in_honors_xdg_config_home_when_set() {
+        assert_eq!(
+            default_systemd_user_dir_in(Path::new("/home/j"), Some(Path::new("/mnt/xdg-config"))),
+            PathBuf::from("/mnt/xdg-config/systemd/user")
+        );
+    }
+
+    #[test]
+    fn default_systemd_user_dir_in_ignores_an_empty_xdg_config_home() {
+        // Per the XDG base-dir spec, an empty value is treated as unset.
+        assert_eq!(
+            default_systemd_user_dir_in(Path::new("/home/j"), Some(Path::new(""))),
             PathBuf::from("/home/j/.config/systemd/user")
         );
     }

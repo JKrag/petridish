@@ -21,24 +21,33 @@ pub const SERVICE_FILENAME: &str = "petridish-scan.service";
 pub const TIMER_FILENAME: &str = "petridish-scan.timer";
 
 /// Quote `s` for a systemd unit-file value (`ExecStart=`), so it is taken as
-/// exactly one word regardless of spaces, quotes, or `$`.
+/// exactly one word regardless of spaces, quotes, `$`, or `%`.
 ///
 /// Unit files parse values with C-style/shell-like quoting (systemd.syntax(7)):
 /// a double-quoted string suppresses word-splitting, and only `\` and `"` need
 /// escaping inside it. `$` is deliberately escaped too — unlike a POSIX shell,
 /// systemd expands `$FOO`/`${FOO}` *inside* double quotes (environment and
 /// specifier expansion), so a literal `$` in a path must be neutralized or a
-/// path like `/Users/x/$HOME/bin/swab` would be silently mis-substituted.
-/// The escape sequence for a literal `$` is `$$` (doubling), matching the
+/// path like `/Users/x/$HOME/bin/swab` would be silently mis-substituted. The
+/// escape sequence for a literal `$` is `$$` (doubling), matching the
 /// convention used in make and most POSIX tools.
 ///
+/// `%` gets the same doubling treatment for a different reason: systemd's own
+/// specifier syntax (`%h` for the unit's home directory, `%%` for a literal
+/// `%`, etc. — systemd.unit(5)) is expanded in `ExecStart=` independently of
+/// shell-style quoting, so a path segment like `50%homebrew/bin/swab` would
+/// have `%h` interpreted as a specifier rather than two literal characters.
+///
 /// Backslash must be escaped first, before quote and dollar, so that a literal
-/// backslash does not accidentally consume a later escape's backslash.
+/// backslash does not accidentally consume a later escape's backslash. `%`
+/// doubling is independent of the other three (no shared characters) and can
+/// be applied in any order relative to them.
 fn unit_quote(s: &str) -> String {
     let escaped = s
         .replace('\\', "\\\\")
         .replace('"', "\\\"")
-        .replace('$', "$$");
+        .replace('$', "$$")
+        .replace('%', "%%");
     format!("\"{escaped}\"")
 }
 
@@ -49,8 +58,8 @@ fn unit_quote(s: &str) -> String {
 /// name would fail at runtime when systemd runs the service outside of an
 /// interactive shell, and would not be discoverable until the timer first fires.
 /// The path is quoted for safety — a path may contain a space, a double quote,
-/// a backslash, or a `$`, all of which systemd unit files would otherwise
-/// interpret.
+/// a backslash, a `$`, or a `%`, all of which systemd unit files would
+/// otherwise interpret.
 pub fn render_service(swab_abspath: &str, log_path: &str) -> String {
     SERVICE_TEMPLATE
         .replace("__SWAB_PATH__", &unit_quote(swab_abspath))
@@ -124,6 +133,28 @@ mod tests {
         // `a\\\"b` (the backslash escapes the quote instead of being literal),
         // which is incorrect.
         assert_eq!(unit_quote("a\\\"b"), "\"a\\\\\\\"b\"");
+    }
+
+    /// systemd expands `%h`/`%%`-style specifiers in `ExecStart=` independently
+    /// of quoting, so a literal `%` must be doubled or a path segment like
+    /// `50%homebrew` would have `%h` read as the home-directory specifier.
+    #[test]
+    fn unit_quote_doubles_a_percent_sign() {
+        assert_eq!(unit_quote("a%b"), "\"a%%b\"");
+        assert_eq!(unit_quote("50%homebrew"), "\"50%%homebrew\"");
+    }
+
+    #[test]
+    fn service_neutralizes_a_percent_sign_in_the_path() {
+        let out = render_service("/opt/50%homebrew/bin/swab", "/tmp/l.log");
+        assert!(
+            out.contains("ExecStart=\"/opt/50%%homebrew/bin/swab\" scan"),
+            "literal % must be doubled to %%, or systemd reads %h as a specifier:\n{out}"
+        );
+        assert!(
+            !out.contains("/opt/50%homebrew"),
+            "bare unescaped % must not appear:\n{out}"
+        );
     }
 
     #[test]

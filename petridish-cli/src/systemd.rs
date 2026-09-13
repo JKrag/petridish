@@ -85,6 +85,25 @@ pub fn disable_and_stop_timer(unit: &str, ctl: &dyn Systemctl, warn: &mut dyn Wr
     }
 }
 
+/// Tell systemd to forget the unit files `uninstall` just deleted from disk.
+///
+/// Call this *after* removing them, mirroring the reload
+/// `enable_and_start_timer` does *before* writing new ones. Without it,
+/// `systemctl status`/`list-units` can keep referencing the now-gone units
+/// until something unrelated triggers a reload. Never returns an error, the
+/// same way `disable_and_stop_timer` doesn't: the files are already gone
+/// either way, so a failed reload here leaves nothing on disk to clean up.
+pub fn reload_after_removal(ctl: &dyn Systemctl, warn: &mut dyn Write) {
+    let result = ctl.run(&["daemon-reload"]);
+    if result.code != 0 {
+        let _ = writeln!(
+            warn,
+            "warning: systemctl daemon-reload failed after uninstall ({})",
+            result.stderr.trim()
+        );
+    }
+}
+
 #[cfg(test)]
 pub mod recording {
     use super::*;
@@ -205,5 +224,23 @@ mod tests {
         let mut warn = Vec::new();
         disable_and_stop_timer(UNIT, &ctl, &mut warn);
         assert!(warn.is_empty());
+    }
+
+    #[test]
+    fn reload_after_removal_calls_daemon_reload() {
+        let ctl = RecordingSystemctl::new(&[0]);
+        let mut warn = Vec::new();
+        reload_after_removal(&ctl, &mut warn);
+        assert_eq!(ctl.argv(), vec![vec!["daemon-reload".to_string()]]);
+        assert!(warn.is_empty());
+    }
+
+    #[test]
+    fn reload_after_removal_never_returns_an_error_even_when_systemctl_fails() {
+        let ctl = RecordingSystemctl::new(&[1]);
+        let mut warn = Vec::new();
+        reload_after_removal(&ctl, &mut warn);
+        let text = String::from_utf8(warn).unwrap();
+        assert!(text.contains("daemon-reload failed"), "{text}");
     }
 }

@@ -95,14 +95,6 @@ impl Layout {
     }
 }
 
-/// The controller `install`/`uninstall` drive to (de)register the daemon —
-/// chosen by the caller to match `layout.backend`, since the caller is the one
-/// that already knows which platform it is running on.
-pub enum Ctl<'a> {
-    Launchd(&'a dyn Launchctl),
-    Systemd(&'a dyn Systemctl),
-}
-
 /// Where the binaries live. Resolved once by the caller so tests can supply
 /// scratch paths without a fake `PATH`.
 pub struct Binaries {
@@ -186,10 +178,17 @@ fn write_executable(path: &Path, content: &str) -> Result<(), InstallError> {
     Ok(())
 }
 
+/// `launchctl`/`systemctl` are both always passed in, but only one is ever
+/// called — the one `layout.backend` selects. Taking both instead of a
+/// `Ctl` enum the caller pairs with `backend` by hand means there is no
+/// mismatched-pairing case to guard against at all: the choice of which to
+/// invoke lives in exactly one place (this match), driven by data already in
+/// `layout`, not by a second parameter a caller could get out of sync with it.
 pub fn install(
     layout: &Layout,
     bins: &Binaries,
-    ctl: &Ctl,
+    launchctl: &dyn Launchctl,
+    systemctl: &dyn Systemctl,
     out: &mut dyn Write,
 ) -> Result<(), InstallError> {
     let data_dir = layout.data_dir();
@@ -223,8 +222,8 @@ pub fn install(
     let _ = writeln!(out, "pre-install backup kept at {}", backup_path.display());
 
     let log_path = data_dir.join("daemon.log").to_string_lossy().into_owned();
-    match (&layout.backend, ctl) {
-        (Backend::Launchd { uid, .. }, Ctl::Launchd(ctl)) => {
+    match &layout.backend {
+        Backend::Launchd { uid, .. } => {
             let plist_path = layout
                 .plist_path()
                 .expect("Launchd backend always has a plist path");
@@ -235,10 +234,10 @@ pub fn install(
                 &plist_path,
                 plist::render_plist(&bins.swab.to_string_lossy(), &log_path, PLIST_LABEL),
             )?;
-            launchd::load_job(&plist_path, *uid, PLIST_LABEL, *ctl)?;
+            launchd::load_job(&plist_path, *uid, PLIST_LABEL, launchctl)?;
             let _ = writeln!(out, "launchd job loaded: {}", plist_path.display());
         }
-        (Backend::Systemd { .. }, Ctl::Systemd(ctl)) => {
+        Backend::Systemd { .. } => {
             let service_path = layout
                 .service_unit_path()
                 .expect("Systemd backend always has a service unit path");
@@ -253,10 +252,15 @@ pub fn install(
                 systemd_unit::render_service(&bins.swab.to_string_lossy(), &log_path),
             )?;
             std::fs::write(&timer_path, systemd_unit::render_timer())?;
-            systemd::enable_and_start_timer(TIMER_FILENAME, *ctl)?;
+            systemd::enable_and_start_timer(TIMER_FILENAME, systemctl)?;
             let _ = writeln!(out, "systemd timer enabled: {}", timer_path.display());
+            let _ = writeln!(
+                out,
+                "note: this timer only runs while you're logged in unless lingering is \
+                 enabled — run `loginctl enable-linger \"$USER\"` on a headless machine \
+                 or one that reboots without an interactive login"
+            );
         }
-        _ => unreachable!("Layout::backend and Ctl must be constructed to match"),
     }
 
     // Always re-rendered, so a moved binary is picked up by a plain reinstall.
@@ -280,15 +284,19 @@ pub fn install(
     Ok(())
 }
 
+/// `launchctl`/`systemctl` are both always passed in, but only one is ever
+/// called — see [`install`]'s doc comment for why this shape replaced a `Ctl`
+/// enum the caller had to pair with `layout.backend` by hand.
 pub fn uninstall(
     layout: &Layout,
-    ctl: &Ctl,
+    launchctl: &dyn Launchctl,
+    systemctl: &dyn Systemctl,
     out: &mut dyn Write,
     warn: &mut dyn Write,
 ) -> Result<(), InstallError> {
-    match (&layout.backend, ctl) {
-        (Backend::Launchd { uid, .. }, Ctl::Launchd(ctl)) => {
-            launchd::unload_job(PLIST_LABEL, *uid, *ctl, warn);
+    match &layout.backend {
+        Backend::Launchd { uid, .. } => {
+            launchd::unload_job(PLIST_LABEL, *uid, launchctl, warn);
             let plist_path = layout
                 .plist_path()
                 .expect("Launchd backend always has a plist path");
@@ -297,8 +305,8 @@ pub fn uninstall(
                 let _ = writeln!(out, "removed {}", plist_path.display());
             }
         }
-        (Backend::Systemd { .. }, Ctl::Systemd(ctl)) => {
-            systemd::disable_and_stop_timer(TIMER_FILENAME, *ctl, warn);
+        Backend::Systemd { .. } => {
+            systemd::disable_and_stop_timer(TIMER_FILENAME, systemctl, warn);
             let service_path = layout
                 .service_unit_path()
                 .expect("Systemd backend always has a service unit path");
@@ -311,8 +319,10 @@ pub fn uninstall(
                     let _ = writeln!(out, "removed {}", path.display());
                 }
             }
+            // The files are gone; tell systemd so `status`/`list-units` stop
+            // referencing them instead of waiting for an unrelated reload.
+            systemd::reload_after_removal(systemctl, warn);
         }
-        _ => unreachable!("Layout::backend and Ctl must be constructed to match"),
     }
 
     let settings_path = layout.settings_path();
@@ -456,10 +466,27 @@ mod tests {
         .unwrap();
     }
 
+    /// A `Systemctl`/`Launchctl` that panics if ever called. Used on whichever
+    /// side a fixture's backend does not exercise, so a regression that makes
+    /// `install`/`uninstall` invoke the wrong controller for `layout.backend`
+    /// fails loudly instead of silently succeeding against the wrong side.
+    struct UnusedLaunchctl;
+    impl Launchctl for UnusedLaunchctl {
+        fn run(&self, args: &[&str]) -> launchd::CmdOutput {
+            panic!("launchctl must not be called for a Systemd-backed Layout, got {args:?}");
+        }
+    }
+    struct UnusedSystemctl;
+    impl Systemctl for UnusedSystemctl {
+        fn run(&self, args: &[&str]) -> systemd::CmdOutput {
+            panic!("systemctl must not be called for a Launchd-backed Layout, got {args:?}");
+        }
+    }
+
     fn run_install(f: &Fixture) -> Result<String, InstallError> {
         let ctl = RecordingLaunchctl::new(&[0]);
         let mut out = Vec::new();
-        install(&f.layout, &f.bins, &Ctl::Launchd(&ctl), &mut out)?;
+        install(&f.layout, &f.bins, &ctl, &UnusedSystemctl, &mut out)?;
         Ok(String::from_utf8(out).unwrap())
     }
 
@@ -467,14 +494,14 @@ mod tests {
         let ctl = RecordingLaunchctl::new(&[0]);
         let mut out = Vec::new();
         let mut warn = Vec::new();
-        uninstall(&f.layout, &Ctl::Launchd(&ctl), &mut out, &mut warn).unwrap();
+        uninstall(&f.layout, &ctl, &UnusedSystemctl, &mut out, &mut warn).unwrap();
         String::from_utf8(out).unwrap()
     }
 
     fn run_install_systemd(f: &Fixture) -> Result<String, InstallError> {
         let ctl = RecordingSystemctl::new(&[0, 0, 0]);
         let mut out = Vec::new();
-        install(&f.layout, &f.bins, &Ctl::Systemd(&ctl), &mut out)?;
+        install(&f.layout, &f.bins, &UnusedLaunchctl, &ctl, &mut out)?;
         Ok(String::from_utf8(out).unwrap())
     }
 
@@ -482,7 +509,7 @@ mod tests {
         let ctl = RecordingSystemctl::new(&[0]);
         let mut out = Vec::new();
         let mut warn = Vec::new();
-        uninstall(&f.layout, &Ctl::Systemd(&ctl), &mut out, &mut warn).unwrap();
+        uninstall(&f.layout, &UnusedLaunchctl, &ctl, &mut out, &mut warn).unwrap();
         String::from_utf8(out).unwrap()
     }
 
@@ -761,7 +788,7 @@ mod tests {
         let f = systemd_fixture("systemd_install_ctl_calls");
         let ctl = RecordingSystemctl::new(&[0, 0, 0]);
         let mut out = Vec::new();
-        install(&f.layout, &f.bins, &Ctl::Systemd(&ctl), &mut out).unwrap();
+        install(&f.layout, &f.bins, &UnusedLaunchctl, &ctl, &mut out).unwrap();
         assert_eq!(
             ctl.argv(),
             vec![
@@ -844,21 +871,27 @@ mod tests {
         );
     }
 
+    /// Uninstall must both disable the timer *and* reload systemd afterward —
+    /// otherwise `systemctl status`/`list-units` can keep referencing the
+    /// just-deleted unit files until something unrelated triggers a reload.
     #[test]
-    fn systemd_uninstall_calls_disable_now_on_the_timer() {
+    fn systemd_uninstall_disables_the_timer_then_reloads_systemd() {
         let f = systemd_fixture("systemd_uninstall_ctl_calls");
         run_install_systemd(&f).unwrap();
-        let ctl = RecordingSystemctl::new(&[0]);
+        let ctl = RecordingSystemctl::new(&[0, 0]);
         let mut out = Vec::new();
         let mut warn = Vec::new();
-        uninstall(&f.layout, &Ctl::Systemd(&ctl), &mut out, &mut warn).unwrap();
+        uninstall(&f.layout, &UnusedLaunchctl, &ctl, &mut out, &mut warn).unwrap();
         assert_eq!(
             ctl.argv(),
-            vec![vec![
-                "disable".to_string(),
-                "--now".to_string(),
-                "petridish-scan.timer".to_string()
-            ]]
+            vec![
+                vec![
+                    "disable".to_string(),
+                    "--now".to_string(),
+                    "petridish-scan.timer".to_string()
+                ],
+                vec!["daemon-reload".to_string()],
+            ]
         );
     }
 
