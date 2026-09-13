@@ -329,13 +329,20 @@ fn an_ambiguous_action_stays_a_harmless_no_op_in_mini() {
         std::env::var("PATH").unwrap_or_default()
     );
 
+    // Copilot review on #77: `resolve_action`'s edit-specific chain (lib.rs) checks
+    // `$VISUAL`/`$EDITOR` before the registry probe, so an inherited value from whatever
+    // shell runs `cargo test` could resolve straight to `Ready` and never reach
+    // `Ambiguous` at all — a machine with `EDITOR=vim` set would silently stop testing
+    // what this test claims to test. Cleared (not merely unset) for the child, since
+    // `resolve_action` treats an *empty* value the same as absent (`is_installed("")` is
+    // false) — `CommandBuilder` has no `env_remove`, only `env`.
     let mut session = Session::spawn_with_args_and_env(
         &state_path,
         90,
         24,
         Some(&home),
         &["--mini", "mini-action-project"],
-        &[("PATH", &path_env)],
+        &[("PATH", &path_env), ("VISUAL", ""), ("EDITOR", "")],
     );
 
     let before = session.screen_until(

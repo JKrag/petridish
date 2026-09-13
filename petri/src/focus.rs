@@ -1510,6 +1510,12 @@ mod mini_mount_tests {
 
     /// Render one `--mini` frame at `w`x`h` and hand back its rows as strings.
     fn rows(radar: &Radar, w: u16, h: u16) -> Vec<String> {
+        rows_with_notice(radar, w, h, None)
+    }
+
+    /// Like `rows`, with a notice overlay (issue #65). Split out so the notice-specific
+    /// tests below don't have to re-derive the render/flatten boilerplate every case adds.
+    fn rows_with_notice(radar: &Radar, w: u16, h: u16, notice: Option<&str>) -> Vec<String> {
         let prefs = Prefs::default();
         let ctx = FocusCtx {
             radar,
@@ -1520,7 +1526,7 @@ mod mini_mount_tests {
         };
         let mut terminal = Terminal::new(TestBackend::new(w, h)).expect("TestBackend");
         terminal
-            .draw(|frame| render_mini(frame, frame.area(), &ctx, None))
+            .draw(|frame| render_mini(frame, frame.area(), &ctx, notice))
             .expect("draw");
         let buf = terminal.backend().buffer().clone();
         (0..h)
@@ -1635,6 +1641,54 @@ mod mini_mount_tests {
             !whole.contains("upgrade swab"),
             "a current schema_version must never render the drift banner, got:\n{whole}"
         );
+    }
+
+    // Issue #65's centered notice overlay: rendering/fitting is pure and fast, so it belongs
+    // here rather than in a PTY test paying for a real terminal and, for the timing half,
+    // real wall-clock sleeps (Copilot review on #77's "move timing-only notice assertions to
+    // the deterministic test layer" nit). What a `TestBackend` frame cannot prove is the
+    // *timer* that clears the notice after `MINI_NOTICE_DURATION` — that lives in
+    // `mini_poll_loop`'s event loop, not in `render_mini`, so the PTY suite
+    // (`s14_pty_mini_actions.rs`) still owns the end-to-end appear-then-clear proof.
+
+    #[test]
+    fn a_notice_appears_centered_over_the_panel() {
+        let radar = load_normal();
+        let out = rows_with_notice(&radar, 60, 20, Some("has no remote"));
+        let hit = out
+            .iter()
+            .enumerate()
+            .find(|(_, r)| r.contains("has no remote"));
+        let (row, text) = hit.expect("the notice text must appear somewhere on screen");
+
+        assert_eq!(
+            row,
+            (20u16.saturating_sub(1) / 2) as usize,
+            "the notice must sit on the vertically centered row"
+        );
+        let start = text.find("has no remote").unwrap();
+        let end = start + "has no remote".len();
+        let left_margin = start;
+        let right_margin = 60 - end;
+        assert!(
+            left_margin.abs_diff(right_margin) <= 1,
+            "the notice must be horizontally centered (±1 for odd padding), got \
+             left={left_margin} right={right_margin} in {text:?}"
+        );
+    }
+
+    #[test]
+    fn a_notice_wider_than_the_pane_is_truncated_to_fit_not_overrun() {
+        let radar = load_normal();
+        let long = "this notice text is far too long for a narrow floor-size pane";
+        let out = rows_with_notice(&radar, 24, 6, Some(long));
+        for row in &out {
+            assert!(
+                crate::width::width(row) <= 24,
+                "no row may exceed the pane's own width, got {} columns in {row:?}",
+                crate::width::width(row)
+            );
+        }
     }
 
     #[test]
