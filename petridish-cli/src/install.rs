@@ -14,6 +14,8 @@ use crate::error::InstallError;
 use crate::launchd::{self, Launchctl};
 use crate::plist::{self, LEGACY_MENUBAR_PLUGIN_FILENAME, MENUBAR_PLUGIN_FILENAME, PLIST_LABEL};
 use crate::settings;
+use crate::systemd::{self, Systemctl};
+use crate::systemd_unit::{self, SERVICE_FILENAME, TIMER_FILENAME};
 use serde_json::Value;
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -29,6 +31,22 @@ pub const DEFAULT_CONFIG_TOML: &str = "\
 # max_depth = 4
 ";
 
+/// Which daemon backend this `Layout` drives, and where its files live.
+///
+/// One variant per [`crate::paths::Platform`]. `uid` lives inside `Launchd`
+/// rather than as a top-level `Layout` field because it means nothing outside
+/// launchd's `gui/<uid>` domain address — keeping it here means a Linux
+/// `Layout` simply has no uid to get wrong.
+pub enum Backend {
+    Launchd {
+        launch_agents_dir: PathBuf,
+        uid: u32,
+    },
+    Systemd {
+        unit_dir: PathBuf,
+    },
+}
+
 /// Everything `install`/`uninstall` need to know about where things live.
 ///
 /// A struct rather than eight parameters, because every caller passes the same
@@ -36,9 +54,9 @@ pub const DEFAULT_CONFIG_TOML: &str = "\
 pub struct Layout {
     pub home: PathBuf,
     pub claude_dir: PathBuf,
-    pub launch_agents_dir: PathBuf,
-    pub uid: u32,
+    pub backend: Backend,
     /// `None` means "do not touch the menu-bar plugin" (`--no-menubar-plugin`).
+    /// Always `None` on Linux — there is no menu-bar equivalent there.
     pub menubar_plugins_dir: Option<PathBuf>,
 }
 
@@ -52,9 +70,37 @@ impl Layout {
     pub fn backup_path(&self) -> PathBuf {
         self.data_dir().join("settings.json.backup")
     }
-    pub fn plist_path(&self) -> PathBuf {
-        self.launch_agents_dir.join(format!("{PLIST_LABEL}.plist"))
+    /// `None` off the `Systemd` backend — there is no plist there.
+    pub fn plist_path(&self) -> Option<PathBuf> {
+        match &self.backend {
+            Backend::Launchd {
+                launch_agents_dir, ..
+            } => Some(launch_agents_dir.join(format!("{PLIST_LABEL}.plist"))),
+            Backend::Systemd { .. } => None,
+        }
     }
+    /// `None` off the `Launchd` backend — there is no systemd unit there.
+    pub fn service_unit_path(&self) -> Option<PathBuf> {
+        match &self.backend {
+            Backend::Systemd { unit_dir } => Some(unit_dir.join(SERVICE_FILENAME)),
+            Backend::Launchd { .. } => None,
+        }
+    }
+    /// `None` off the `Launchd` backend — there is no systemd unit there.
+    pub fn timer_unit_path(&self) -> Option<PathBuf> {
+        match &self.backend {
+            Backend::Systemd { unit_dir } => Some(unit_dir.join(TIMER_FILENAME)),
+            Backend::Launchd { .. } => None,
+        }
+    }
+}
+
+/// The controller `install`/`uninstall` drive to (de)register the daemon —
+/// chosen by the caller to match `layout.backend`, since the caller is the one
+/// that already knows which platform it is running on.
+pub enum Ctl<'a> {
+    Launchd(&'a dyn Launchctl),
+    Systemd(&'a dyn Systemctl),
 }
 
 /// Where the binaries live. Resolved once by the caller so tests can supply
@@ -143,7 +189,7 @@ fn write_executable(path: &Path, content: &str) -> Result<(), InstallError> {
 pub fn install(
     layout: &Layout,
     bins: &Binaries,
-    ctl: &dyn Launchctl,
+    ctl: &Ctl,
     out: &mut dyn Write,
 ) -> Result<(), InstallError> {
     let data_dir = layout.data_dir();
@@ -176,20 +222,42 @@ pub fn install(
     }
     let _ = writeln!(out, "pre-install backup kept at {}", backup_path.display());
 
-    let plist_path = layout.plist_path();
-    if let Some(parent) = plist_path.parent() {
-        std::fs::create_dir_all(parent)?;
+    let log_path = data_dir.join("daemon.log").to_string_lossy().into_owned();
+    match (&layout.backend, ctl) {
+        (Backend::Launchd { uid, .. }, Ctl::Launchd(ctl)) => {
+            let plist_path = layout
+                .plist_path()
+                .expect("Launchd backend always has a plist path");
+            if let Some(parent) = plist_path.parent() {
+                std::fs::create_dir_all(parent)?;
+            }
+            std::fs::write(
+                &plist_path,
+                plist::render_plist(&bins.swab.to_string_lossy(), &log_path, PLIST_LABEL),
+            )?;
+            launchd::load_job(&plist_path, *uid, PLIST_LABEL, *ctl)?;
+            let _ = writeln!(out, "launchd job loaded: {}", plist_path.display());
+        }
+        (Backend::Systemd { .. }, Ctl::Systemd(ctl)) => {
+            let service_path = layout
+                .service_unit_path()
+                .expect("Systemd backend always has a service unit path");
+            let timer_path = layout
+                .timer_unit_path()
+                .expect("Systemd backend always has a timer unit path");
+            if let Some(parent) = service_path.parent() {
+                std::fs::create_dir_all(parent)?;
+            }
+            std::fs::write(
+                &service_path,
+                systemd_unit::render_service(&bins.swab.to_string_lossy(), &log_path),
+            )?;
+            std::fs::write(&timer_path, systemd_unit::render_timer())?;
+            systemd::enable_and_start_timer(TIMER_FILENAME, *ctl)?;
+            let _ = writeln!(out, "systemd timer enabled: {}", timer_path.display());
+        }
+        _ => unreachable!("Layout::backend and Ctl must be constructed to match"),
     }
-    std::fs::write(
-        &plist_path,
-        plist::render_plist(
-            &bins.swab.to_string_lossy(),
-            &data_dir.join("daemon.log").to_string_lossy(),
-            PLIST_LABEL,
-        ),
-    )?;
-    launchd::load_job(&plist_path, layout.uid, PLIST_LABEL, ctl)?;
-    let _ = writeln!(out, "launchd job loaded: {}", plist_path.display());
 
     // Always re-rendered, so a moved binary is picked up by a plain reinstall.
     if let Some(dir) = &layout.menubar_plugins_dir {
@@ -214,16 +282,37 @@ pub fn install(
 
 pub fn uninstall(
     layout: &Layout,
-    ctl: &dyn Launchctl,
+    ctl: &Ctl,
     out: &mut dyn Write,
     warn: &mut dyn Write,
 ) -> Result<(), InstallError> {
-    launchd::unload_job(PLIST_LABEL, layout.uid, ctl, warn);
-
-    let plist_path = layout.plist_path();
-    if plist_path.exists() {
-        std::fs::remove_file(&plist_path)?;
-        let _ = writeln!(out, "removed {}", plist_path.display());
+    match (&layout.backend, ctl) {
+        (Backend::Launchd { uid, .. }, Ctl::Launchd(ctl)) => {
+            launchd::unload_job(PLIST_LABEL, *uid, *ctl, warn);
+            let plist_path = layout
+                .plist_path()
+                .expect("Launchd backend always has a plist path");
+            if plist_path.exists() {
+                std::fs::remove_file(&plist_path)?;
+                let _ = writeln!(out, "removed {}", plist_path.display());
+            }
+        }
+        (Backend::Systemd { .. }, Ctl::Systemd(ctl)) => {
+            systemd::disable_and_stop_timer(TIMER_FILENAME, *ctl, warn);
+            let service_path = layout
+                .service_unit_path()
+                .expect("Systemd backend always has a service unit path");
+            let timer_path = layout
+                .timer_unit_path()
+                .expect("Systemd backend always has a timer unit path");
+            for path in [&service_path, &timer_path] {
+                if path.exists() {
+                    std::fs::remove_file(path)?;
+                    let _ = writeln!(out, "removed {}", path.display());
+                }
+            }
+        }
+        _ => unreachable!("Layout::backend and Ctl must be constructed to match"),
     }
 
     let settings_path = layout.settings_path();
@@ -281,6 +370,7 @@ mod tests {
     use super::*;
     use crate::launchd::recording::RecordingLaunchctl;
     use crate::settings;
+    use crate::systemd::recording::RecordingSystemctl;
     use crate::testutil::TempDir;
     use serde_json::json;
 
@@ -306,9 +396,39 @@ mod tests {
             layout: Layout {
                 home,
                 claude_dir,
-                launch_agents_dir,
-                uid: 501,
+                backend: Backend::Launchd {
+                    launch_agents_dir,
+                    uid: 501,
+                },
                 menubar_plugins_dir: with_menubar.then_some(plugins),
+            },
+            bins: Binaries {
+                swab: bindir.join("swab"),
+                swab_hook: bindir.join("swab-hook"),
+                petridish: bindir.join("petridish"),
+            },
+            _tmp: tmp,
+        }
+    }
+
+    /// A Linux fixture: same shape as `fixture`, but with a `Systemd` backend
+    /// and no menu-bar plugin — there is no menu-bar equivalent on Linux.
+    fn systemd_fixture(tag: &str) -> Fixture {
+        let tmp = TempDir::new(tag);
+        let home = tmp.path.join("home");
+        let claude_dir = home.join(".claude");
+        let unit_dir = home.join(".config/systemd/user");
+        std::fs::create_dir_all(&claude_dir).unwrap();
+        std::fs::create_dir_all(&unit_dir).unwrap();
+
+        let bindir = tmp.path.join("bin");
+        std::fs::create_dir_all(&bindir).unwrap();
+        Fixture {
+            layout: Layout {
+                home,
+                claude_dir,
+                backend: Backend::Systemd { unit_dir },
+                menubar_plugins_dir: None,
             },
             bins: Binaries {
                 swab: bindir.join("swab"),
@@ -339,7 +459,7 @@ mod tests {
     fn run_install(f: &Fixture) -> Result<String, InstallError> {
         let ctl = RecordingLaunchctl::new(&[0]);
         let mut out = Vec::new();
-        install(&f.layout, &f.bins, &ctl, &mut out)?;
+        install(&f.layout, &f.bins, &Ctl::Launchd(&ctl), &mut out)?;
         Ok(String::from_utf8(out).unwrap())
     }
 
@@ -347,7 +467,22 @@ mod tests {
         let ctl = RecordingLaunchctl::new(&[0]);
         let mut out = Vec::new();
         let mut warn = Vec::new();
-        uninstall(&f.layout, &ctl, &mut out, &mut warn).unwrap();
+        uninstall(&f.layout, &Ctl::Launchd(&ctl), &mut out, &mut warn).unwrap();
+        String::from_utf8(out).unwrap()
+    }
+
+    fn run_install_systemd(f: &Fixture) -> Result<String, InstallError> {
+        let ctl = RecordingSystemctl::new(&[0, 0, 0]);
+        let mut out = Vec::new();
+        install(&f.layout, &f.bins, &Ctl::Systemd(&ctl), &mut out)?;
+        Ok(String::from_utf8(out).unwrap())
+    }
+
+    fn run_uninstall_systemd(f: &Fixture) -> String {
+        let ctl = RecordingSystemctl::new(&[0]);
+        let mut out = Vec::new();
+        let mut warn = Vec::new();
+        uninstall(&f.layout, &Ctl::Systemd(&ctl), &mut out, &mut warn).unwrap();
         String::from_utf8(out).unwrap()
     }
 
@@ -362,10 +497,10 @@ mod tests {
         run_install(&f).unwrap();
 
         assert!(f.layout.data_dir().join("config.toml").exists());
-        assert!(f.layout.plist_path().exists());
+        assert!(f.layout.plist_path().unwrap().exists());
         assert!(f.layout.backup_path().exists());
 
-        let plist_text = std::fs::read_to_string(f.layout.plist_path()).unwrap();
+        let plist_text = std::fs::read_to_string(f.layout.plist_path().unwrap()).unwrap();
         assert!(plist_text.contains(&f.bins.swab.to_string_lossy().to_string()));
 
         let settings = read_settings(&f);
@@ -411,7 +546,7 @@ mod tests {
             "plugin must be +x, got {plugin_mode:o}"
         );
 
-        let plist_mode = std::fs::metadata(f.layout.plist_path())
+        let plist_mode = std::fs::metadata(f.layout.plist_path().unwrap())
             .unwrap()
             .permissions()
             .mode();
@@ -521,7 +656,7 @@ mod tests {
         run_install(&f).unwrap();
         run_uninstall(&f);
 
-        assert!(!f.layout.plist_path().exists());
+        assert!(!f.layout.plist_path().unwrap().exists());
         assert!(
             !f.layout
                 .menubar_plugins_dir
@@ -592,6 +727,176 @@ mod tests {
         std::fs::write(&legacy, "#!/usr/bin/python3\n").unwrap();
         run_uninstall(&f);
         assert!(!legacy.exists());
+    }
+
+    // ═══ Issue #75: the systemd (Linux) backend. The hook/backup/config logic
+    // above is already platform-neutral and covered by the launchd suite; these
+    // tests exercise only what actually differs — daemon registration. ═══
+
+    #[test]
+    fn systemd_install_writes_config_hooks_and_unit_files() {
+        let f = systemd_fixture("systemd_install_full");
+        seed_settings(&f);
+        run_install_systemd(&f).unwrap();
+
+        assert!(f.layout.data_dir().join("config.toml").exists());
+        assert!(f.layout.service_unit_path().unwrap().exists());
+        assert!(f.layout.timer_unit_path().unwrap().exists());
+        assert!(f.layout.backup_path().exists());
+
+        let service_text = std::fs::read_to_string(f.layout.service_unit_path().unwrap()).unwrap();
+        assert!(service_text.contains(&f.bins.swab.to_string_lossy().to_string()));
+
+        let settings = read_settings(&f);
+        for event in petridish_core::schema::HOOK_EVENTS {
+            assert!(
+                settings::event_has_marker(&settings, event, settings::default_marker()),
+                "{event} not registered"
+            );
+        }
+    }
+
+    #[test]
+    fn systemd_install_calls_reload_enable_restart_on_the_timer() {
+        let f = systemd_fixture("systemd_install_ctl_calls");
+        let ctl = RecordingSystemctl::new(&[0, 0, 0]);
+        let mut out = Vec::new();
+        install(&f.layout, &f.bins, &Ctl::Systemd(&ctl), &mut out).unwrap();
+        assert_eq!(
+            ctl.argv(),
+            vec![
+                vec!["daemon-reload".to_string()],
+                vec!["enable".to_string(), "petridish-scan.timer".to_string()],
+                vec!["restart".to_string(), "petridish-scan.timer".to_string()],
+            ]
+        );
+    }
+
+    #[test]
+    fn a_second_systemd_install_reports_nothing_to_do_and_changes_nothing() {
+        let f = systemd_fixture("systemd_install_idempotent");
+        seed_settings(&f);
+        run_install_systemd(&f).unwrap();
+        let after_first = std::fs::read_to_string(f.layout.settings_path()).unwrap();
+
+        let output = run_install_systemd(&f).unwrap();
+        assert!(output.contains("left untouched"), "{output}");
+        assert_eq!(
+            std::fs::read_to_string(f.layout.settings_path()).unwrap(),
+            after_first
+        );
+    }
+
+    #[test]
+    fn systemd_install_never_disturbs_another_consumers_entries() {
+        let f = systemd_fixture("systemd_install_siblings");
+        seed_settings(&f);
+        let before = read_settings(&f);
+        run_install_systemd(&f).unwrap();
+        let after = read_settings(&f);
+
+        assert_eq!(after["model"], before["model"]);
+        assert_eq!(
+            after["hooks"]["PreToolUse"][0], before["hooks"]["PreToolUse"][0],
+            "the pre-existing group must survive verbatim and stay first"
+        );
+    }
+
+    #[test]
+    fn the_systemd_backup_is_taken_once_and_never_overwritten() {
+        let f = systemd_fixture("systemd_install_backup");
+        seed_settings(&f);
+        run_install_systemd(&f).unwrap();
+        let first = std::fs::read_to_string(f.layout.backup_path()).unwrap();
+        assert!(
+            !first.contains("swab-hook"),
+            "backup must predate our edits"
+        );
+
+        run_install_systemd(&f).unwrap();
+        assert_eq!(
+            std::fs::read_to_string(f.layout.backup_path()).unwrap(),
+            first
+        );
+    }
+
+    #[test]
+    fn systemd_uninstall_removes_our_wiring_and_leaves_everything_else() {
+        let f = systemd_fixture("systemd_uninstall_full");
+        seed_settings(&f);
+        let before = std::fs::read_to_string(f.layout.settings_path()).unwrap();
+        run_install_systemd(&f).unwrap();
+        run_uninstall_systemd(&f);
+
+        assert!(!f.layout.service_unit_path().unwrap().exists());
+        assert!(!f.layout.timer_unit_path().unwrap().exists());
+        assert!(!settings::has_marker(
+            &read_settings(&f),
+            settings::default_marker()
+        ));
+        // D6: user data survives.
+        assert!(f.layout.data_dir().join("config.toml").exists());
+        assert!(f.layout.backup_path().exists());
+
+        assert_eq!(
+            std::fs::read_to_string(f.layout.settings_path()).unwrap(),
+            before
+        );
+    }
+
+    #[test]
+    fn systemd_uninstall_calls_disable_now_on_the_timer() {
+        let f = systemd_fixture("systemd_uninstall_ctl_calls");
+        run_install_systemd(&f).unwrap();
+        let ctl = RecordingSystemctl::new(&[0]);
+        let mut out = Vec::new();
+        let mut warn = Vec::new();
+        uninstall(&f.layout, &Ctl::Systemd(&ctl), &mut out, &mut warn).unwrap();
+        assert_eq!(
+            ctl.argv(),
+            vec![vec![
+                "disable".to_string(),
+                "--now".to_string(),
+                "petridish-scan.timer".to_string()
+            ]]
+        );
+    }
+
+    #[test]
+    fn systemd_uninstall_on_a_never_installed_machine_is_a_quiet_no_op() {
+        let f = systemd_fixture("systemd_uninstall_clean");
+        let output = run_uninstall_systemd(&f);
+        assert!(output.contains("nothing to remove"), "{output}");
+        assert!(output.contains("no hook entries found"), "{output}");
+    }
+
+    /// The D4 regression guard, on the systemd backend too: uninstall must
+    /// remove only *marked* entries, never restore the backup wholesale.
+    #[test]
+    fn systemd_uninstall_does_not_restore_the_backup_over_unrelated_later_edits() {
+        let f = systemd_fixture("systemd_uninstall_no_restore");
+        seed_settings(&f);
+        run_install_systemd(&f).unwrap();
+
+        let mut current = read_settings(&f);
+        current["model"] = json!("sonnet");
+        current["hooks"]["Stop"]
+            .as_array_mut()
+            .unwrap()
+            .push(json!({"hooks": [{"type": "command", "command": "/opt/newcomer/hook"}]}));
+        write_settings_atomic(&f.layout.settings_path(), &current).unwrap();
+
+        run_uninstall_systemd(&f);
+        let after = read_settings(&f);
+        assert_eq!(after["model"], json!("sonnet"), "a later edit was reverted");
+        assert!(
+            after["hooks"]["Stop"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|g| g.to_string().contains("newcomer")),
+            "another consumer's later addition was lost: {after}"
+        );
     }
 
     #[test]

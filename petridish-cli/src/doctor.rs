@@ -10,9 +10,10 @@
 //! The hook check appears in both, on purpose: it is the one condition each
 //! command genuinely needs to know about.
 
-use crate::install::Layout;
+use crate::install::{Backend, Layout};
 use crate::plist::{MENUBAR_PLUGIN_FILENAME, PLIST_LABEL};
 use crate::settings;
+use crate::systemd_unit::TIMER_FILENAME;
 use petridish_core::schema::HOOK_EVENTS;
 use std::io::Write;
 use std::path::Path;
@@ -129,6 +130,46 @@ fn xml_unescape(s: &str) -> String {
         .replace("&amp;", "&")
 }
 
+/// Extract the `swab` path from a rendered `petridish-scan.service`'s
+/// `ExecStart=` line — the systemd analogue of `program_path_from_plist`.
+///
+/// `render_service` always double-quotes the path (`systemd_unit::unit_quote`),
+/// so this scans from the opening quote to the first quote not preceded by a
+/// backslash, keeping the escape sequences intact for [`unit_unescape`] to
+/// undo afterward.
+fn program_path_from_service(text: &str) -> Option<String> {
+    let line = text.lines().find(|l| l.starts_with("ExecStart="))?;
+    let rest = line.strip_prefix("ExecStart=")?.strip_prefix('"')?;
+    let mut raw = String::new();
+    let mut chars = rest.chars();
+    while let Some(c) = chars.next() {
+        match c {
+            '"' => return Some(unit_unescape(&raw)),
+            '\\' => {
+                raw.push('\\');
+                if let Some(next) = chars.next() {
+                    raw.push(next);
+                }
+            }
+            other => raw.push(other),
+        }
+    }
+    None
+}
+
+/// Undo `systemd_unit`'s private `unit_quote`.
+///
+/// Load-bearing the same way `xml_unescape` is: the service unit stores a `$`
+/// as `$$` and a literal `"` or `\` backslash-escaped, and comparing that
+/// against the filesystem would report a healthy install as broken. Undone in
+/// the reverse of the order `unit_quote` applies its escapes, so a literal
+/// backslash is not re-interpreted as starting an escape sequence.
+fn unit_unescape(s: &str) -> String {
+    s.replace("\\\"", "\"")
+        .replace("\\\\", "\\")
+        .replace("$$", "$")
+}
+
 /// 6. Every binary reports the same version as this build.
 ///
 /// `petridish doctor` is itself one of the four binaries, so its own
@@ -215,12 +256,13 @@ fn version_check(path_var: &str) -> Check {
 /// Run every install-surface check. Pure over the filesystem it is handed, so
 /// tests point it at a scratch layout.
 ///
-/// `os` takes the same "parameter, not `#[cfg(target_os)]`" shape as
-/// `paths::check_platform` (issue #25): the plist and menu-bar-plugin checks below are
-/// meaningless on a platform `install`/`uninstall` already refuse to touch (launchd,
-/// `~/Library`), so they report [`Check::skip`] there instead of a permanent, unactionable
-/// `fail` — CI compiles and tests this crate on Linux, and a compile-time gate would make
-/// the Linux branch untestable wherever this happens to build.
+/// `os` still gates the menu-bar check and the trailing hint line below (those
+/// stay macOS-only outright — issue #25), but the daemon-registration check
+/// (launchd plist vs. systemd timer) is no longer gated on `os` at all: it
+/// branches on `layout.backend` directly, so it is a real check on both
+/// platforms now that `install` writes real units on Linux too (issue #75 —
+/// previously Linux got a permanent, unactionable `skip` here since `install`
+/// never wrote anything for this check to look at).
 pub fn checks(layout: &Layout, path_var: &str, os: &str) -> Vec<Check> {
     let mut out = Vec::new();
 
@@ -233,53 +275,97 @@ pub fn checks(layout: &Layout, path_var: &str, os: &str) -> Vec<Check> {
         });
     }
 
-    // 2. The plist exists, and the binary it names still does. launchd-only: nothing to
-    //    check on a platform `install` never wrote a plist for in the first place.
-    if os != "macos" {
-        out.push(Check::skip(
-            "plist",
-            "not applicable on this platform — launchd is macOS-only",
-        ));
-    } else {
-        // This is the stale-plist failure: `brew upgrade` (or a `cargo install`
-        // into a different prefix) can move `swab` out from under a plist that
-        // still points at the old location, and launchd then runs nothing at all
-        // while looking perfectly installed.
-        let plist_path = layout.plist_path();
-        match presence(&plist_path) {
-            Presence::Absent => out.push(Check::fail(
-                "plist",
-                format!(
-                    "missing: {} — run `petridish install`",
-                    plist_path.display()
-                ),
-            )),
-            Presence::Unknown(why) => out.push(Check::fail(
-                "plist",
-                format!(
-                    "cannot check {} — {why}. A permissions problem, not a broken install; re-running `petridish install` will not change it.",
-                    plist_path.display()
-                ),
-            )),
-            Presence::Present => match std::fs::read_to_string(&plist_path) {
-                Ok(text) => match program_path_from_plist(&text) {
-                    Some(prog) => match presence(Path::new(&prog)) {
-                        Presence::Present => {
-                            out.push(Check::pass("plist", format!("runs {prog}")))
-                        }
-                        Presence::Absent => out.push(Check::fail(
-                            "plist",
-                            format!("points at {prog}, which no longer exists — re-run `petridish install`"),
-                        )),
-                        Presence::Unknown(why) => out.push(Check::fail(
-                            "plist",
-                            format!("points at {prog}, which could not be checked — {why}"),
-                        )),
+    // 2. The daemon registration exists, and the binary it names still does —
+    //    the plist on macOS, the timer + service unit pair on Linux.
+    match &layout.backend {
+        Backend::Launchd { .. } => {
+            // This is the stale-plist failure: `brew upgrade` (or a `cargo install`
+            // into a different prefix) can move `swab` out from under a plist that
+            // still points at the old location, and launchd then runs nothing at all
+            // while looking perfectly installed.
+            let plist_path = layout
+                .plist_path()
+                .expect("Launchd backend always has a plist path");
+            match presence(&plist_path) {
+                Presence::Absent => out.push(Check::fail(
+                    "daemon",
+                    format!(
+                        "missing: {} — run `petridish install`",
+                        plist_path.display()
+                    ),
+                )),
+                Presence::Unknown(why) => out.push(Check::fail(
+                    "daemon",
+                    format!(
+                        "cannot check {} — {why}. A permissions problem, not a broken install; re-running `petridish install` will not change it.",
+                        plist_path.display()
+                    ),
+                )),
+                Presence::Present => match std::fs::read_to_string(&plist_path) {
+                    Ok(text) => match program_path_from_plist(&text) {
+                        Some(prog) => match presence(Path::new(&prog)) {
+                            Presence::Present => {
+                                out.push(Check::pass("daemon", format!("runs {prog}")))
+                            }
+                            Presence::Absent => out.push(Check::fail(
+                                "daemon",
+                                format!("points at {prog}, which no longer exists — re-run `petridish install`"),
+                            )),
+                            Presence::Unknown(why) => out.push(Check::fail(
+                                "daemon",
+                                format!("points at {prog}, which could not be checked — {why}"),
+                            )),
+                        },
+                        None => out.push(Check::fail("daemon", "could not read ProgramArguments")),
                     },
-                    None => out.push(Check::fail("plist", "could not read ProgramArguments")),
+                    Err(e) => out.push(Check::fail("daemon", e.to_string())),
                 },
-                Err(e) => out.push(Check::fail("plist", e.to_string())),
-            },
+            }
+        }
+        Backend::Systemd { .. } => {
+            // Same stale-registration failure as the plist case: a moved `swab`
+            // leaves a timer that fires into nothing, looking installed.
+            let timer_path = layout
+                .timer_unit_path()
+                .expect("Systemd backend always has a timer unit path");
+            let service_path = layout
+                .service_unit_path()
+                .expect("Systemd backend always has a service unit path");
+            match presence(&timer_path) {
+                Presence::Absent => out.push(Check::fail(
+                    "daemon",
+                    format!(
+                        "missing: {} — run `petridish install`",
+                        timer_path.display()
+                    ),
+                )),
+                Presence::Unknown(why) => out.push(Check::fail(
+                    "daemon",
+                    format!(
+                        "cannot check {} — {why}. A permissions problem, not a broken install; re-running `petridish install` will not change it.",
+                        timer_path.display()
+                    ),
+                )),
+                Presence::Present => match std::fs::read_to_string(&service_path) {
+                    Ok(text) => match program_path_from_service(&text) {
+                        Some(prog) => match presence(Path::new(&prog)) {
+                            Presence::Present => {
+                                out.push(Check::pass("daemon", format!("runs {prog}")))
+                            }
+                            Presence::Absent => out.push(Check::fail(
+                                "daemon",
+                                format!("points at {prog}, which no longer exists — re-run `petridish install`"),
+                            )),
+                            Presence::Unknown(why) => out.push(Check::fail(
+                                "daemon",
+                                format!("points at {prog}, which could not be checked — {why}"),
+                            )),
+                        },
+                        None => out.push(Check::fail("daemon", "could not read ExecStart")),
+                    },
+                    Err(e) => out.push(Check::fail("daemon", e.to_string())),
+                },
+            }
         }
     }
 
@@ -348,10 +434,10 @@ pub fn checks(layout: &Layout, path_var: &str, os: &str) -> Vec<Check> {
 
 /// Print the checks and return the process exit code.
 ///
-/// `os` gates the trailing `launchctl` hint the same way [`checks`] gates the plist/menubar
-/// checks themselves (issue #25) — printing a launchd command on a platform that has no
-/// launchd is not just unhelpful, it actively contradicts a `skip: plist` line two lines
-/// above it.
+/// `os` picks which status-command hint to print at the end — `launchctl` on
+/// macOS, `systemctl --user status` on Linux — since [`checks`] itself no
+/// longer carries an `os` branch for the daemon check (it reads `layout.backend`
+/// directly instead), this is the one place `os` still matters.
 pub fn report(checks: &[Check], out: &mut dyn Write, os: &str) -> i32 {
     let mut failed = false;
     let mut passed = 0;
@@ -400,6 +486,11 @@ pub fn report(checks: &[Check], out: &mut dyn Write, os: &str) -> i32 {
         let _ = writeln!(
             out,
             "\nlaunchd job status: launchctl print gui/$(id -u)/{PLIST_LABEL}"
+        );
+    } else if os == "linux" {
+        let _ = writeln!(
+            out,
+            "\nsystemd timer status: systemctl --user status {TIMER_FILENAME}"
         );
     }
     i32::from(failed)
@@ -453,6 +544,45 @@ mod tests {
     #[test]
     fn program_path_is_none_for_a_plist_with_no_array() {
         assert_eq!(program_path_from_plist("<plist></plist>"), None);
+    }
+
+    use crate::systemd_unit;
+
+    #[test]
+    fn program_path_is_read_from_the_service_execstart_line() {
+        let text = systemd_unit::render_service("/opt/homebrew/bin/swab", "/tmp/l.log");
+        assert_eq!(
+            program_path_from_service(&text),
+            Some("/opt/homebrew/bin/swab".to_string())
+        );
+    }
+
+    /// `render_service` quote-escapes what it writes, so reading it back
+    /// without undoing that compares the escaped form against the filesystem
+    /// and reports a healthy install as stale.
+    #[test]
+    fn the_service_program_path_is_unit_decoded_before_it_is_used_as_a_path() {
+        let text = systemd_unit::render_service("/Users/a\"b\\c/swab", "/tmp/l.log");
+        assert!(
+            text.contains("\\\"") && text.contains("\\\\"),
+            "precondition: the service really is escaped: {text}"
+        );
+        assert_eq!(
+            program_path_from_service(&text),
+            Some("/Users/a\"b\\c/swab".to_string())
+        );
+    }
+
+    #[test]
+    fn unit_unescape_undoes_dollar_quote_and_backslash_escaping() {
+        assert_eq!(unit_unescape("a$$b"), "a$b");
+        assert_eq!(unit_unescape("a\\\"b"), "a\"b");
+        assert_eq!(unit_unescape("a\\\\b"), "a\\b");
+    }
+
+    #[test]
+    fn program_path_is_none_for_a_service_with_no_execstart() {
+        assert_eq!(program_path_from_service("[Service]\n"), None);
     }
 
     use crate::testutil::TempDir;
@@ -594,50 +724,50 @@ mod tests {
         assert!(text.contains("not applicable"), "{text}");
     }
 
+    /// Issue #75: the daemon check is a real check on Linux now that `install`
+    /// writes real systemd units there — it must never fall back to a `skip`
+    /// the way it did before Linux `install` existed. Menu bar has no Linux
+    /// equivalent at all, so it stays `None` on this backend and is absent
+    /// from the checks entirely (not a skip — there is nothing to ask about).
     #[test]
-    fn checks_reports_plist_and_menubar_as_skip_not_fail_on_linux() {
-        let tmp = TempDir::new("doctor_linux_skip");
+    fn checks_reports_the_daemon_check_for_real_on_linux() {
+        let tmp = TempDir::new("doctor_linux_real");
         let layout = Layout {
             home: tmp.path.clone(),
             claude_dir: tmp.path.join(".claude"),
-            launch_agents_dir: tmp.path.join("Library").join("LaunchAgents"),
-            uid: 501,
-            menubar_plugins_dir: Some(tmp.path.join("xbar-plugins")),
+            backend: Backend::Systemd {
+                unit_dir: tmp.path.join(".config/systemd/user"),
+            },
+            menubar_plugins_dir: None,
         };
         let checks = checks(&layout, "", "linux");
 
-        let plist = checks.iter().find(|c| c.key == "plist").expect("plist");
+        let daemon = checks.iter().find(|c| c.key == "daemon").expect("daemon");
+        assert!(!daemon.skipped, "the daemon check must be real on Linux");
+        assert!(!daemon.ok, "no unit was written in this scratch layout");
         assert!(
-            plist.skipped,
-            "plist must be skipped on Linux: {}",
-            plist.detail
+            checks.iter().all(|c| c.key != "menubar"),
+            "menubar has no Linux equivalent and must not appear at all"
         );
-        assert!(plist.ok, "a skip must not fail the install");
-
-        let menubar = checks.iter().find(|c| c.key == "menubar").expect("menubar");
-        assert!(
-            menubar.skipped,
-            "menubar must be skipped on Linux, not report the macOS plugin path as missing: {}",
-            menubar.detail
-        );
-        assert!(menubar.ok, "a skip must not fail the install");
     }
 
     #[test]
-    fn checks_still_runs_plist_and_menubar_for_real_on_macos() {
+    fn checks_still_runs_the_daemon_and_menubar_checks_for_real_on_macos() {
         let tmp = TempDir::new("doctor_macos_real");
         let layout = Layout {
             home: tmp.path.clone(),
             claude_dir: tmp.path.join(".claude"),
-            launch_agents_dir: tmp.path.join("Library").join("LaunchAgents"),
-            uid: 501,
+            backend: Backend::Launchd {
+                launch_agents_dir: tmp.path.join("Library").join("LaunchAgents"),
+                uid: 501,
+            },
             menubar_plugins_dir: Some(tmp.path.join("xbar-plugins")),
         };
         let checks = checks(&layout, "", "macos");
 
-        let plist = checks.iter().find(|c| c.key == "plist").expect("plist");
-        assert!(!plist.skipped, "plist must be a real check on macOS");
-        assert!(!plist.ok, "no plist was written in this scratch layout");
+        let daemon = checks.iter().find(|c| c.key == "daemon").expect("daemon");
+        assert!(!daemon.skipped, "the daemon check must be real on macOS");
+        assert!(!daemon.ok, "no plist was written in this scratch layout");
 
         let menubar = checks.iter().find(|c| c.key == "menubar").expect("menubar");
         assert!(!menubar.skipped, "menubar must be a real check on macOS");
@@ -647,11 +777,51 @@ mod tests {
         );
     }
 
+    /// The daemon check must genuinely pass end-to-end on Linux once `install`
+    /// writes real units — this is the "real doctor Linux path" from issue #75,
+    /// not just "does not crash".
+    #[test]
+    fn checks_reports_the_daemon_check_as_healthy_after_a_real_linux_install() {
+        use crate::install::{self, Binaries, Ctl};
+        use crate::systemd::recording::RecordingSystemctl;
+
+        let tmp = TempDir::new("doctor_linux_healthy");
+        let home = tmp.path.join("home");
+        let claude_dir = home.join(".claude");
+        let unit_dir = home.join(".config/systemd/user");
+        std::fs::create_dir_all(&claude_dir).unwrap();
+        std::fs::create_dir_all(&unit_dir).unwrap();
+        let bindir = tmp.path.join("bin");
+        std::fs::create_dir_all(&bindir).unwrap();
+        let swab = bindir.join("swab");
+        std::fs::write(&swab, "#!/bin/sh\n").unwrap();
+
+        let layout = Layout {
+            home,
+            claude_dir,
+            backend: Backend::Systemd { unit_dir },
+            menubar_plugins_dir: None,
+        };
+        let bins = Binaries {
+            swab: swab.clone(),
+            swab_hook: bindir.join("swab-hook"),
+            petridish: bindir.join("petridish"),
+        };
+        let ctl = RecordingSystemctl::new(&[0, 0, 0]);
+        let mut out = Vec::new();
+        install::install(&layout, &bins, &Ctl::Systemd(&ctl), &mut out).unwrap();
+
+        let checks = checks(&layout, "", "linux");
+        let daemon = checks.iter().find(|c| c.key == "daemon").expect("daemon");
+        assert!(daemon.ok, "expected pass, got: {}", daemon.detail);
+        assert!(daemon.detail.contains(&swab.to_string_lossy().to_string()));
+    }
+
     #[test]
     fn checks_to_json_round_trips_as_an_array_of_the_same_length() {
         let checks = vec![
             Check::pass("binaries", "/opt/homebrew/bin/swab"),
-            Check::fail("plist", "missing: /tmp/l.plist"),
+            Check::fail("daemon", "missing: /tmp/l.plist"),
         ];
         let json = checks_to_json(&checks);
         let parsed: Vec<serde_json::Value> = serde_json::from_str(&json).unwrap();

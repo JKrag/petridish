@@ -6,9 +6,10 @@ use std::fmt;
 
 #[derive(Debug)]
 pub enum InstallError {
-    /// Not macOS. launchd and `~/Library` are the macOS-only surface, so this
-    /// aborts before touching anything rather than half-installing
-    /// (ARCHITECTURE.md §8.3 D5).
+    /// Neither macOS nor Linux. Those are the only two backends `install`
+    /// knows how to wire up (launchd, systemd --user), so this aborts before
+    /// touching anything rather than half-installing (ARCHITECTURE.md §8.3 D5;
+    /// issue #75 extended D5's macOS-only refusal to also accept Linux).
     UnsupportedPlatform(String),
     /// A required binary is not on `PATH`.
     BinaryNotFound(String),
@@ -17,6 +18,13 @@ pub enum InstallError {
     LaunchctlFailed {
         bootstrap_stderr: String,
         load_stderr: String,
+    },
+    /// A `systemctl --user` step failed. Carries which step, because
+    /// `daemon-reload`/`enable`/`restart` failing each point somewhere
+    /// different (a malformed unit file vs. a missing user session bus).
+    SystemctlFailed {
+        operation: String,
+        stderr: String,
     },
     /// `settings.json` parsed, but has a shape we did not write and cannot
     /// safely edit around. Better to stop than to normalise away data belonging
@@ -31,7 +39,7 @@ impl fmt::Display for InstallError {
         match self {
             InstallError::UnsupportedPlatform(os) => write!(
                 f,
-                "petridish only supports macOS (launchd); detected {os:?}."
+                "petridish supports macOS (launchd) and Linux (systemd); detected {os:?}."
             ),
             // The from-source hint names the crate that actually produces the
             // missing binary — telling someone to `cargo install --path swab`
@@ -66,6 +74,9 @@ impl fmt::Display for InstallError {
                 bootstrap_stderr.trim(),
                 load_stderr.trim()
             ),
+            InstallError::SystemctlFailed { operation, stderr } => {
+                write!(f, "systemctl --user {operation} failed: {}", stderr.trim())
+            }
             InstallError::UnexpectedSettingsShape(what) => write!(
                 f,
                 "refusing to edit ~/.claude/settings.json: {what}. \
@@ -115,8 +126,20 @@ mod tests {
 
     #[test]
     fn the_platform_error_names_the_detected_os() {
-        let msg = InstallError::UnsupportedPlatform("linux".into()).to_string();
-        assert!(msg.contains("only supports macOS"), "{msg}");
-        assert!(msg.contains("linux"), "{msg}");
+        let msg = InstallError::UnsupportedPlatform("windows".into()).to_string();
+        assert!(msg.contains("macOS"), "{msg}");
+        assert!(msg.contains("Linux"), "{msg}");
+        assert!(msg.contains("windows"), "{msg}");
+    }
+
+    #[test]
+    fn the_systemctl_error_names_the_operation_and_stderr() {
+        let msg = InstallError::SystemctlFailed {
+            operation: "enable petridish-scan.timer".to_string(),
+            stderr: "Unit not found.\n".to_string(),
+        }
+        .to_string();
+        assert!(msg.contains("enable petridish-scan.timer"), "{msg}");
+        assert!(msg.contains("Unit not found."), "{msg}");
     }
 }

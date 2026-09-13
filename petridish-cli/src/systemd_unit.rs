@@ -1,0 +1,144 @@
+//! Rendering systemd user service and timer units for Linux.
+//!
+//! Both templates are `include_str!`'d rather than shipped as data files. That
+//! removes the entire class of problem of a template missing from the installed
+//! artifact — it is now a compile error rather than a runtime one. It also keeps
+//! the unit files *reviewable artifacts*: a human diffing
+//! `~/.config/systemd/user/petridish-scan.service` against the file in this repo
+//! sees the same document, which building the units programmatically would not
+//! preserve.
+
+const SERVICE_TEMPLATE: &str = include_str!("../resources/petridish-scan.service");
+const TIMER_TEMPLATE: &str = include_str!("../resources/petridish-scan.timer");
+
+/// systemd unit name (shared by both the service and timer).
+pub const UNIT_NAME: &str = "petridish-scan";
+
+/// Filename of the installed systemd user service unit.
+pub const SERVICE_FILENAME: &str = "petridish-scan.service";
+
+/// Filename of the installed systemd user timer unit.
+pub const TIMER_FILENAME: &str = "petridish-scan.timer";
+
+/// Quote `s` for a systemd unit-file value (`ExecStart=`), so it is taken as
+/// exactly one word regardless of spaces, quotes, or `$`.
+///
+/// Unit files parse values with C-style/shell-like quoting (systemd.syntax(7)):
+/// a double-quoted string suppresses word-splitting, and only `\` and `"` need
+/// escaping inside it. `$` is deliberately escaped too — unlike a POSIX shell,
+/// systemd expands `$FOO`/`${FOO}` *inside* double quotes (environment and
+/// specifier expansion), so a literal `$` in a path must be neutralized or a
+/// path like `/Users/x/$HOME/bin/swab` would be silently mis-substituted.
+/// The escape sequence for a literal `$` is `$$` (doubling), matching the
+/// convention used in make and most POSIX tools.
+///
+/// Backslash must be escaped first, before quote and dollar, so that a literal
+/// backslash does not accidentally consume a later escape's backslash.
+fn unit_quote(s: &str) -> String {
+    let escaped = s
+        .replace('\\', "\\\\")
+        .replace('"', "\\\"")
+        .replace('$', "$$");
+    format!("\"{escaped}\"")
+}
+
+/// Render the systemd service unit, substituting the absolute path to the `swab`
+/// binary and the log file path.
+///
+/// The absolute path is required, not a nicety. A relative path or bare command
+/// name would fail at runtime when systemd runs the service outside of an
+/// interactive shell, and would not be discoverable until the timer first fires.
+/// The path is quoted for safety — a path may contain a space, a double quote,
+/// a backslash, or a `$`, all of which systemd unit files would otherwise
+/// interpret.
+pub fn render_service(swab_abspath: &str, log_path: &str) -> String {
+    SERVICE_TEMPLATE
+        .replace("__SWAB_PATH__", &unit_quote(swab_abspath))
+        .replace("__LOG_PATH__", log_path)
+}
+
+/// Render the systemd timer unit.
+///
+/// The timer has no placeholders, so this function simply returns the static
+/// template verbatim. It is kept for symmetry with `render_service` so callers
+/// do not need to special-case "this one has no substitution".
+pub fn render_timer() -> String {
+    TIMER_TEMPLATE.to_string()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn service_substitutes_both_placeholders() {
+        let out = render_service("/opt/homebrew/bin/swab", "/Users/x/.petridish/daemon.log");
+        assert!(!out.contains("__SWAB_PATH__"));
+        assert!(!out.contains("__LOG_PATH__"));
+        assert!(out.contains("ExecStart=\"/opt/homebrew/bin/swab\" scan"));
+        assert!(out.contains("StandardOutput=append:/Users/x/.petridish/daemon.log"));
+        assert!(out.contains("StandardError=append:/Users/x/.petridish/daemon.log"));
+    }
+
+    #[test]
+    fn service_quotes_a_path_containing_a_space() {
+        let out = render_service("/Volumes/Dev Disk/bin/swab", "/tmp/l.log");
+        assert!(
+            out.contains("ExecStart=\"/Volumes/Dev Disk/bin/swab\" scan"),
+            "path with space must be quoted:\n{out}"
+        );
+    }
+
+    #[test]
+    fn service_neutralizes_a_dollar_sign_in_the_path() {
+        let out = render_service("/Users/x/$HOME/bin/swab", "/tmp/l.log");
+        // The `$` must become `$$` so systemd doesn't expand it.
+        assert!(
+            out.contains("ExecStart=\"/Users/x/$$HOME/bin/swab\" scan"),
+            "literal $ must be escaped as $$:\n{out}"
+        );
+        assert!(
+            !out.contains("/Users/x/$HOME"),
+            "bare unescaped $HOME must not appear:\n{out}"
+        );
+    }
+
+    #[test]
+    fn service_escapes_an_embedded_double_quote_and_backslash() {
+        let out = render_service("/Users/x/a\"b\\c/swab", "/tmp/l.log");
+        assert!(
+            out.contains("ExecStart=\"/Users/x/a\\\"b\\\\c/swab\" scan"),
+            "embedded quote and backslash must be escaped:\n{out}"
+        );
+    }
+
+    #[test]
+    fn unit_quote_escapes_backslash_before_quote_and_dollar() {
+        // Backslash must be replaced first, or a literal backslash would
+        // accidentally consume a later escape's backslash.
+        assert_eq!(unit_quote("a\\b"), "\"a\\\\b\"");
+        assert_eq!(unit_quote("a\"b"), "\"a\\\"b\"");
+        assert_eq!(unit_quote("a$b"), "\"a$$b\"");
+        // Combined: this would be wrong if backslash-escape were not first.
+        // If we escaped " or $ before \, then a path like `a\"b` would become
+        // `a\\\"b` (the backslash escapes the quote instead of being literal),
+        // which is incorrect.
+        assert_eq!(unit_quote("a\\\"b"), "\"a\\\\\\\"b\"");
+    }
+
+    #[test]
+    fn render_timer_returns_the_static_template_verbatim() {
+        let out = render_timer();
+        assert!(out.contains("OnStartupSec=0"));
+        assert!(out.contains("OnUnitActiveSec=60s"));
+        assert!(out.contains("WantedBy=timers.target"));
+        assert!(out.contains("Unit=petridish-scan.service"));
+        assert!(!out.contains("__"), "leftover placeholder in:\n{out}");
+    }
+
+    #[test]
+    fn service_has_no_placeholders_left() {
+        let out = render_service("/bin/swab", "/tmp/l.log");
+        assert!(!out.contains("__"), "leftover placeholder in:\n{out}");
+    }
+}

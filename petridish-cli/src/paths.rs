@@ -10,17 +10,28 @@
 use crate::error::InstallError;
 use std::path::{Path, PathBuf};
 
-/// Reject non-macOS before anything is written (D5).
+/// Which daemon backend `install`/`uninstall` should drive.
+///
+/// One variant per supported OS (issue #75 added `Linux` alongside the
+/// original macOS-only `Launchd`). Anything else is rejected by
+/// [`detect_platform`] before `install` writes anything (D5).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Platform {
+    Macos,
+    Linux,
+}
+
+/// Reject anything but macOS or Linux before `install` writes anything (D5).
 ///
 /// Takes the OS name rather than reading `std::env::consts::OS` so it stays a
 /// pure function. That is not only for testability: CI compiles this crate on
 /// Linux, and a `#[cfg(target_os = "macos")]` gate would make its tests
 /// unrunnable there.
-pub fn check_platform(os: &str) -> Result<(), InstallError> {
-    if os == "macos" {
-        Ok(())
-    } else {
-        Err(InstallError::UnsupportedPlatform(os.to_string()))
+pub fn detect_platform(os: &str) -> Result<Platform, InstallError> {
+    match os {
+        "macos" => Ok(Platform::Macos),
+        "linux" => Ok(Platform::Linux),
+        other => Err(InstallError::UnsupportedPlatform(other.to_string())),
     }
 }
 
@@ -89,6 +100,12 @@ pub fn default_menubar_plugins_dir(home: &Path) -> PathBuf {
         .join("plugins")
 }
 
+/// Where a per-user systemd unit belongs — the XDG default `systemd --user`
+/// itself searches, so nothing needs to be told about a nonstandard location.
+pub fn default_systemd_user_dir(home: &Path) -> PathBuf {
+    home.join(".config").join("systemd").join("user")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -103,10 +120,20 @@ mod tests {
     }
 
     #[test]
-    fn check_platform_accepts_macos_and_rejects_everything_else() {
-        assert!(check_platform("macos").is_ok());
-        let err = check_platform("linux").unwrap_err();
-        assert!(err.to_string().contains("only supports macOS"), "got {err}");
+    fn detect_platform_accepts_macos_and_linux_and_rejects_everything_else() {
+        assert_eq!(detect_platform("macos").unwrap(), Platform::Macos);
+        assert_eq!(detect_platform("linux").unwrap(), Platform::Linux);
+        let err = detect_platform("windows").unwrap_err();
+        assert!(err.to_string().contains("macOS"), "got {err}");
+        assert!(err.to_string().contains("Linux"), "got {err}");
+    }
+
+    #[test]
+    fn default_systemd_user_dir_is_the_xdg_default_under_the_given_home() {
+        assert_eq!(
+            default_systemd_user_dir(Path::new("/home/j")),
+            PathBuf::from("/home/j/.config/systemd/user")
+        );
     }
 
     #[test]

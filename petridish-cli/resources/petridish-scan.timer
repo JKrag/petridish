@@ -1,0 +1,10 @@
+[Unit]
+Description=Run petridish-scan.service periodically
+
+[Timer]
+OnStartupSec=0
+OnUnitActiveSec=60s
+Unit=petridish-scan.service
+
+[Install]
+WantedBy=timers.target
