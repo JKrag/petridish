@@ -57,13 +57,21 @@ fn unit_quote(s: &str) -> String {
 /// The absolute path is required, not a nicety. A relative path or bare command
 /// name would fail at runtime when systemd runs the service outside of an
 /// interactive shell, and would not be discoverable until the timer first fires.
-/// The path is quoted for safety — a path may contain a space, a double quote,
-/// a backslash, a `$`, or a `%`, all of which systemd unit files would
-/// otherwise interpret.
+/// `swab_abspath` is quoted with [`unit_quote`] because `ExecStart=` parses its
+/// value with the shell-like command-line syntax that needs it. `log_path`
+/// deliberately is *not* run through `unit_quote`: `StandardOutput=append:PATH`
+/// and `StandardError=append:PATH` are not word-split or quote-parsed at
+/// all — systemd (`config_parse_exec_output` in `load-fragment.c`) takes
+/// everything after `append:` up to the end of the line as the literal path,
+/// so embedded spaces are already safe, and wrapping it in `unit_quote`'s
+/// double quotes would instead insert two literal `"` characters into the
+/// filename. The one thing that *is* interpreted for this directive is `%`
+/// specifier expansion (`%h`, `%n`, ... via `unit_path_printf`), so only `%`
+/// is escaped, by doubling it.
 pub fn render_service(swab_abspath: &str, log_path: &str) -> String {
     SERVICE_TEMPLATE
         .replace("__SWAB_PATH__", &unit_quote(swab_abspath))
-        .replace("__LOG_PATH__", log_path)
+        .replace("__LOG_PATH__", &log_path.replace('%', "%%"))
 }
 
 /// Render the systemd timer unit.
@@ -157,11 +165,40 @@ mod tests {
         );
     }
 
+    /// `StandardOutput=append:PATH` is not word-split, so a space in the log
+    /// path must survive unquoted — unlike `ExecStart=`'s path, which goes
+    /// through `unit_quote`.
+    #[test]
+    fn service_leaves_a_space_in_the_log_path_unquoted() {
+        let out = render_service("/bin/swab", "/home/Alice Smith/.petridish/daemon.log");
+        assert!(
+            out.contains("StandardOutput=append:/home/Alice Smith/.petridish/daemon.log"),
+            "log path with a space must appear literally, without quotes:\n{out}"
+        );
+        assert!(
+            !out.contains("append:\""),
+            "append: paths are not quote-parsed; a literal quote would become part of the filename:\n{out}"
+        );
+    }
+
+    /// `append:` paths still go through `unit_path_printf`, which expands `%`
+    /// specifiers (`%h`, `%n`, ...), so a literal `%` must be doubled just
+    /// like it is for `ExecStart=`.
+    #[test]
+    fn service_doubles_a_percent_sign_in_the_log_path() {
+        let out = render_service("/bin/swab", "/opt/50%homebrew/daemon.log");
+        assert!(
+            out.contains("StandardOutput=append:/opt/50%%homebrew/daemon.log"),
+            "literal % in the log path must be doubled to %%:\n{out}"
+        );
+    }
+
     #[test]
     fn render_timer_returns_the_static_template_verbatim() {
         let out = render_timer();
         assert!(out.contains("OnStartupSec=0"));
         assert!(out.contains("OnUnitActiveSec=60s"));
+        assert!(out.contains("AccuracySec=1s"));
         assert!(out.contains("WantedBy=timers.target"));
         assert!(out.contains("Unit=petridish-scan.service"));
         assert!(!out.contains("__"), "leftover placeholder in:\n{out}");

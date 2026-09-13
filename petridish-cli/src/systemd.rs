@@ -69,18 +69,38 @@ pub fn enable_and_start_timer(unit: &str, ctl: &dyn Systemctl) -> Result<(), Ins
     Ok(())
 }
 
-/// Tear the timer down, tolerating "was never installed". Never returns an
-/// error: the unit files are about to be deleted either way, and a failed
-/// `disable --now` on an already-absent unit is harmless noise — warns instead
-/// of aborting an uninstall over something that does not matter (mirrors
-/// `launchd::unload_job`'s philosophy).
-pub fn disable_and_stop_timer(unit: &str, ctl: &dyn Systemctl, warn: &mut dyn Write) {
-    let result = ctl.run(&["disable", "--now", unit]);
-    if result.code != 0 {
+/// Tear the timer *and* the service it triggers down, tolerating "was never
+/// installed". Never returns an error: the unit files are about to be deleted
+/// either way, and a failed call on an already-absent unit is harmless
+/// noise — warns instead of aborting an uninstall over something that does
+/// not matter (mirrors `launchd::unload_job`'s philosophy).
+///
+/// `disable --now` on the timer alone is not enough: the timer and the
+/// service it triggers (`petridish-scan.service`) are separate units with no
+/// `PartOf=` relationship, so stopping the timer does not stop a scan that is
+/// already running. Without also stopping the service, an uninstall that
+/// races a long-running scan lets that scan keep running — and keep
+/// writing — after the unit files are deleted.
+pub fn disable_and_stop_timer(
+    timer_unit: &str,
+    service_unit: &str,
+    ctl: &dyn Systemctl,
+    warn: &mut dyn Write,
+) {
+    let disable = ctl.run(&["disable", "--now", timer_unit]);
+    if disable.code != 0 {
         let _ = writeln!(
             warn,
-            "warning: systemctl could not disable {unit} cleanly ({})",
-            result.stderr.trim()
+            "warning: systemctl could not disable {timer_unit} cleanly ({})",
+            disable.stderr.trim()
+        );
+    }
+    let stop = ctl.run(&["stop", service_unit]);
+    if stop.code != 0 {
+        let _ = writeln!(
+            warn,
+            "warning: systemctl could not stop {service_unit} cleanly ({})",
+            stop.stderr.trim()
         );
     }
 }
@@ -158,6 +178,7 @@ mod tests {
     use super::*;
 
     const UNIT: &str = "petridish-scan.timer";
+    const SERVICE: &str = "petridish-scan.service";
 
     #[test]
     fn enable_and_start_timer_calls_reload_enable_restart_in_order() {
@@ -210,19 +231,43 @@ mod tests {
     }
 
     #[test]
-    fn disable_and_stop_timer_never_returns_an_error_even_when_systemctl_fails() {
-        let ctl = RecordingSystemctl::new(&[1]);
+    fn disable_and_stop_timer_stops_both_the_timer_and_the_service() {
+        let ctl = RecordingSystemctl::new(&[0, 0]);
         let mut warn = Vec::new();
-        disable_and_stop_timer(UNIT, &ctl, &mut warn);
+        disable_and_stop_timer(UNIT, SERVICE, &ctl, &mut warn);
+        assert_eq!(
+            ctl.argv(),
+            vec![
+                vec!["disable".to_string(), "--now".to_string(), UNIT.to_string()],
+                vec!["stop".to_string(), SERVICE.to_string()],
+            ]
+        );
+        assert!(warn.is_empty());
+    }
+
+    #[test]
+    fn disable_and_stop_timer_warns_but_does_not_error_when_disable_fails() {
+        let ctl = RecordingSystemctl::new(&[1, 0]);
+        let mut warn = Vec::new();
+        disable_and_stop_timer(UNIT, SERVICE, &ctl, &mut warn);
         let text = String::from_utf8(warn).unwrap();
         assert!(text.contains("could not disable"), "{text}");
     }
 
     #[test]
-    fn disable_and_stop_timer_is_quiet_on_success() {
-        let ctl = RecordingSystemctl::new(&[0]);
+    fn disable_and_stop_timer_warns_but_does_not_error_when_stop_fails() {
+        let ctl = RecordingSystemctl::new(&[0, 1]);
         let mut warn = Vec::new();
-        disable_and_stop_timer(UNIT, &ctl, &mut warn);
+        disable_and_stop_timer(UNIT, SERVICE, &ctl, &mut warn);
+        let text = String::from_utf8(warn).unwrap();
+        assert!(text.contains("could not stop"), "{text}");
+    }
+
+    #[test]
+    fn disable_and_stop_timer_is_quiet_on_success() {
+        let ctl = RecordingSystemctl::new(&[0, 0]);
+        let mut warn = Vec::new();
+        disable_and_stop_timer(UNIT, SERVICE, &ctl, &mut warn);
         assert!(warn.is_empty());
     }
 

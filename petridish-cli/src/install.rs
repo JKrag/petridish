@@ -306,7 +306,7 @@ pub fn uninstall(
             }
         }
         Backend::Systemd { .. } => {
-            systemd::disable_and_stop_timer(TIMER_FILENAME, systemctl, warn);
+            systemd::disable_and_stop_timer(TIMER_FILENAME, SERVICE_FILENAME, systemctl, warn);
             let service_path = layout
                 .service_unit_path()
                 .expect("Systemd backend always has a service unit path");
@@ -871,14 +871,17 @@ mod tests {
         );
     }
 
-    /// Uninstall must both disable the timer *and* reload systemd afterward —
-    /// otherwise `systemctl status`/`list-units` can keep referencing the
-    /// just-deleted unit files until something unrelated triggers a reload.
+    /// Uninstall must disable the timer, stop the service it triggers (a
+    /// separate unit with no `PartOf=` back-reference, so disabling the timer
+    /// alone would not stop a scan already in flight), and reload systemd
+    /// afterward — otherwise `systemctl status`/`list-units` can keep
+    /// referencing the just-deleted unit files until something unrelated
+    /// triggers a reload.
     #[test]
-    fn systemd_uninstall_disables_the_timer_then_reloads_systemd() {
+    fn systemd_uninstall_disables_the_timer_stops_the_service_then_reloads_systemd() {
         let f = systemd_fixture("systemd_uninstall_ctl_calls");
         run_install_systemd(&f).unwrap();
-        let ctl = RecordingSystemctl::new(&[0, 0]);
+        let ctl = RecordingSystemctl::new(&[0, 0, 0]);
         let mut out = Vec::new();
         let mut warn = Vec::new();
         uninstall(&f.layout, &UnusedLaunchctl, &ctl, &mut out, &mut warn).unwrap();
@@ -890,6 +893,7 @@ mod tests {
                     "--now".to_string(),
                     "petridish-scan.timer".to_string()
                 ],
+                vec!["stop".to_string(), "petridish-scan.service".to_string()],
                 vec!["daemon-reload".to_string()],
             ]
         );

@@ -32,17 +32,25 @@ manual cron recipe in [Linux: no systemd?](#linux-no-systemd) instead
 
 ## Install
 
+**macOS** — Homebrew tap:
+
 ```sh
 brew install jkrag/tap/petridish
 petridish install
 ```
+
+**Linux** — no packaged channel yet, only `cargo install` from a checkout (needs a Rust
+toolchain): clone this repo, then follow
+[Installing from a checkout instead](#installing-from-a-checkout-instead) below, and finish
+with `petridish install`.
 
 `petridish install` is the step that wires the tool into the machine. It:
 
 - creates `~/.petridish/` with a commented-out default `config.toml`
 - registers a background job that runs `swab scan` every 60 seconds, logging to
   `~/.petridish/daemon.log` — a launchd job on macOS, a `systemd --user` timer
-  (`petridish-scan.timer` / `.service`, under `~/.config/systemd/user/`) on Linux
+  (`petridish-scan.timer` / `.service`, under `$XDG_CONFIG_HOME/systemd/user/` if that's set,
+  else `~/.config/systemd/user/`) on Linux
 - adds Claude Code hook entries to `~/.claude/settings.json`, tagged with the literal
   marker `# petridish`, **without disturbing any other hook consumer** already configured
   there
