@@ -24,6 +24,11 @@ CMD="${1:-}"
 GUEST_TARGET_DIR="$HOME/pd-target"
 BIN_DIR="$GUEST_TARGET_DIR/debug"
 
+# Same XDG-or-home fallback as paths.rs's default_systemd_user_dir_in, so this
+# verifier looks in the same place `petridish install` actually wrote to.
+SYSTEMD_USER_DIR="${XDG_CONFIG_HOME:+$XDG_CONFIG_HOME/systemd/user}"
+SYSTEMD_USER_DIR="${SYSTEMD_USER_DIR:-$HOME/.config/systemd/user}"
+
 : "${PD_REPO_ROOT:?set by lima-dev.sh}"
 : "${PD_DEFAULT_ROOTS:?set by lima-dev.sh}"
 
@@ -77,17 +82,23 @@ set_default_roots_if_untouched() {
   local cfg="$HOME/.petridish/config.toml"
   [[ -f "$cfg" ]] || return 0
   grep -qE '^# roots = ' "$cfg" || return 0
-  python3 - "$cfg" "$PD_DEFAULT_ROOTS" <<'PYEOF'
-import sys
-cfg_path, roots_csv = sys.argv[1], sys.argv[2]
-roots = roots_csv.split(",")
-new_line = "roots = [" + ", ".join(repr(r) for r in roots) + "]\n"
-with open(cfg_path) as f:
-    lines = f.readlines()
-with open(cfg_path, "w") as f:
-    for line in lines:
-        f.write(new_line if line.startswith("# roots = ") else line)
-PYEOF
+
+  local -a root_arr
+  IFS=',' read -ra root_arr <<<"$PD_DEFAULT_ROOTS"
+  local quoted="" sep=""
+  local r
+  for r in "${root_arr[@]}"; do
+    quoted+="${sep}\"${r}\""
+    sep=", "
+  done
+
+  local tmp
+  tmp="$(mktemp)"
+  awk -v line="roots = [$quoted]" '
+    /^# roots = / { print line; next }
+    { print }
+  ' "$cfg" > "$tmp" && mv "$tmp" "$cfg"
+
   echo "config.toml: filled in default roots -> $PD_DEFAULT_ROOTS"
 }
 
@@ -102,8 +113,8 @@ do_install() {
 
 timer_removed() { ! systemctl --user is-enabled petridish-scan.timer; }
 timer_inactive() { ! systemctl --user is-active petridish-scan.timer; }
-timer_file_gone() { [[ ! -f "$HOME/.config/systemd/user/petridish-scan.timer" ]]; }
-service_file_gone() { [[ ! -f "$HOME/.config/systemd/user/petridish-scan.service" ]]; }
+timer_file_gone() { [[ ! -f "$SYSTEMD_USER_DIR/petridish-scan.timer" ]]; }
+service_file_gone() { [[ ! -f "$SYSTEMD_USER_DIR/petridish-scan.service" ]]; }
 hook_removed() { ! grep -q '# petridish' "$HOME/.claude/settings.json"; }
 config_survived() { [[ -f "$HOME/.petridish/config.toml" ]]; }
 
@@ -137,18 +148,15 @@ do_smoke() {
   echo "running a real scan..."
   swab scan
 
-  python3 - "$HOME/.petridish/projects.json" <<'PYEOF'
-import json
-import sys
-
-with open(sys.argv[1]) as f:
-    data = json.load(f)
-projects = data.get("projects", [])
-assert isinstance(projects, list) and len(projects) > 0, (
-    f"expected at least one scanned project, got {projects!r}"
-)
-print(f"scan found {len(projects)} project(s)")
-PYEOF
+  # Every Project has exactly one "path" field (petridish-core's schema.rs) and
+  # no other struct in projects.json reuses that key, so counting occurrences
+  # is a reliable non-empty-array check without a JSON parser on the guest.
+  project_count="$(grep -o '"path":' "$HOME/.petridish/projects.json" | wc -l | tr -d ' ')"
+  if [[ "$project_count" -lt 1 ]]; then
+    echo "expected at least one scanned project, got 0" >&2
+    exit 1
+  fi
+  echo "scan found $project_count project(s)"
 
   petri --version
 
