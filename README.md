@@ -15,15 +15,16 @@ up. Works on both macOS and Linux; see [Install](#install) below.
 
 ## Install
 
-**macOS** — Homebrew tap:
+**macOS, and Linux on x86_64** — Homebrew tap ([Linuxbrew](https://docs.brew.sh/Homebrew-on-Linux)
+on Linux):
 
 ```sh
 brew install jkrag/tap/petridish
 petridish install
 ```
 
-**Linux** — no packaged channel yet, only `cargo install` from a checkout (needs a Rust
-toolchain): clone this repo, then follow
+**Linux on other architectures (e.g. arm64)** — no prebuilt binary yet, only `cargo install`
+from a checkout (needs a Rust toolchain): clone this repo, then follow
 [Installing from a checkout instead](#installing-from-a-checkout-instead) below, and finish
 with `petridish install`.
 

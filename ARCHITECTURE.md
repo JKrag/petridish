@@ -334,26 +334,30 @@ Rejected alternatives:
 
 ### 8.2 Release channels
 
-1. **Homebrew tap — primary (macOS).** `petridish-cli`'s `install`/`uninstall` support two
-   backends — launchd/`~/Library` on macOS, a `systemd --user` timer on Linux (issue #75) —
-   and actively refuse anything else via `paths::detect_platform` (D5 below), so brew is the
-   natural fit for discoverability and upgrades on macOS. `doctor` runs full, real checks on
-   both platforms now (the daemon-registration check branches on `Layout::Backend` rather
-   than being gated by OS); only `menubar` stays macOS-only, since xbar/SwiftBar are
-   macOS/Windows tools with no Linux equivalent (issue #25) — it prints an explicit
-   macOS-only message and still exits 0 rather than refusing. A personal tap
-   (`brew install jkrag/tap/petridish`) rather than `homebrew-core`, which imposes
-   notability requirements and ongoing maintenance obligations. `swab` and `petri`
-   themselves carry no platform dependency at all (issue #23/#24, landed); Linux has no
-   equivalent *packaged* channel yet for `petridish-cli` itself, only `cargo install` — a
-   real Linux package (`.deb`/`.rpm`, or a second tap) is a future follow-up, not yet built.
-   There is deliberately no cron-based `install` path — only systemd — since systemd-user
-   support is effectively universal on mainstream desktop/server Linux; a non-systemd distro
-   (Alpine/OpenRC, Void/runit, WSL without `systemd=true`) still has the manual cron recipe
-   README.md's "Linux: no systemd?" section documents.
-2. **Shell installer — secondary.** A `curl | sh` script for people who do not use brew.
-3. **`cargo install` — for Rust users**, from crates.io once published, or from a git
-   checkout at any time. The only channel that currently reaches Linux.
+1. **Homebrew tap — primary, both platforms.** `petridish-cli`'s `install`/`uninstall`
+   support two backends — launchd/`~/Library` on macOS, a `systemd --user` timer on Linux
+   (issue #75) — and actively refuse anything else via `paths::detect_platform` (D5 below).
+   `doctor` runs full, real checks on both platforms now (the daemon-registration check
+   branches on `Layout::Backend` rather than being gated by OS); only `menubar` stays
+   macOS-only, since xbar/SwiftBar are macOS/Windows tools with no Linux equivalent (issue
+   #25) — it prints an explicit macOS-only message and still exits 0 rather than refusing.
+   A personal tap (`brew install jkrag/tap/petridish`) rather than `homebrew-core`, which
+   imposes notability requirements and ongoing maintenance obligations.
+   `x86_64-unknown-linux-gnu` binaries joined the tap once Linux `install` itself landed —
+   cargo-dist generates the `on_linux`/`on_macos` branches in the formula automatically
+   from `dist-workspace.toml`'s `targets` list, no hand-written formula logic needed.
+   `aarch64-unknown-linux-gnu` isn't built yet (needs a cross toolchain or an arm64 runner),
+   so an ARM Linux user still needs `cargo install`. There is deliberately no cron-based
+   `install` path — only systemd — since systemd-user support is effectively universal on
+   mainstream desktop/server Linux; a non-systemd distro (Alpine/OpenRC, Void/runit, WSL
+   without `systemd=true`) still has the manual cron recipe README.md's "Linux: no
+   systemd?" section documents.
+2. **Shell installer — not built.** cargo-dist can generate a `curl | sh` script, but one
+   per package (`petridish`/`swab`/`petri`) rather than one for the whole product — see
+   `dist-workspace.toml`'s comment on why Homebrew's `depends_on` is used instead.
+3. **`cargo install`** — for Rust users, or anyone on a platform/architecture the tap
+   doesn't build for yet (Linux arm64), from crates.io once published or a git checkout at
+   any time.
 
 **PyPI is no longer a channel.** It was named the primary, source-of-truth channel here
 when the package was Python; there is nothing left to publish there (ADR-0004).

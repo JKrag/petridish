@@ -35,14 +35,14 @@ publish-jobs = ["homebrew"]
 # beta.
 publish-prereleases = true
 
-# macOS only, and that is the product rather than a limitation: launchd and
-# ~/Library are load-bearing, and `petridish install` refuses to run anywhere
-# else (ARCHITECTURE.md §8.3 D5). Both architectures, because Intel Macs are
-# still in use.
-#
-# CI still *compiles and tests* on Linux — that is what verifies the scanner
-# isn't accidentally macOS-bound — but there is nothing to ship there.
-targets = ["aarch64-apple-darwin", "x86_64-apple-darwin"]
+# Both macOS architectures, because Intel Macs are still in use. Linux gained
+# a real `install` backend (systemd --user, issue #75) in beta.7, so it's no
+# longer just a compile-and-test target — x86_64-unknown-linux-gnu ships
+# actual release binaries, native on GitHub's ubuntu-latest runner (no cross
+# toolchain needed). aarch64-unknown-linux-gnu isn't included yet — that would
+# need a cross toolchain (`cross`/zig) or an arm64 runner, deliberately left
+# for a follow-up once the x86_64 path is proven out with real users.
+targets = ["aarch64-apple-darwin", "x86_64-apple-darwin", "x86_64-unknown-linux-gnu"]
 
 # The shell installer drops binaries here rather than in a versioned directory,
 # so an upgrade replaces them in place and the absolute paths written into the

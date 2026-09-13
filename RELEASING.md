@@ -116,9 +116,15 @@ On a machine that has never had petridish installed:
 brew install jkrag/tap/petridish
 petridish install
 petridish doctor          # every check should pass
-launchctl list | grep petridish
+launchctl list | grep petridish     # macOS
+systemctl --user is-active petridish-scan.timer   # Linux
 petri                     # should render real data within a minute
 ```
+
+Verify Linux too when the release adds/changes a Linux target — `x86_64-unknown-linux-gnu`
+only reaches real users through the tap, not through CI (`linux-systemd-smoke` builds from
+source, it never installs the published Homebrew bottle). A Lima VM stands in for a machine
+that's never had petridish installed; see `petridish-cli/scripts/lima-dev.sh`.
 
 Then check the hook landed **alongside** any pre-existing entries rather than
 replacing them:
