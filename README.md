@@ -9,26 +9,9 @@ Built for the situation where you have dozens of small experiments scattered acr
 filesystem and no idea which ones are alive, which have uncommitted work, and which agent
 is currently waiting on you.
 
-**`swab`** (the scanner) and **`petri`** (the terminal dashboard) are cross-platform — no
-native-macOS dependency. **`petridish`** wires the other two into the machine: a background
-daemon (launchd on macOS, a `systemd --user` timer on Linux), the Claude Code hook, and —
-macOS only — the menu bar. `install`/`uninstall` support both platforms; on anything else
-they exit with an error rather than half-installing. `doctor` and `menubar` run
-cross-platform too: `doctor` checks the daemon registration for real on both platforms and
-reports the menu-bar check as "not applicable" where there is no menu bar to check, and
-`menubar` prints an explicit message instead of plugin text nothing will read.
-
-There's no cron-based `install` path — only systemd. If you're on a non-systemd distro
-(Alpine/OpenRC, Void/runit, WSL without `systemd=true`) or in a minimal container, use the
-manual cron recipe in [Linux: no systemd?](#linux-no-systemd) instead
-([#75](https://github.com/JKrag/petridish/issues/75) has the reasoning).
-
-| | macOS | Linux |
-| --- | --- | --- |
-| `swab` (scanner), `petri` (dashboard) | ✅ | ✅ |
-| `petridish install` / `uninstall` | ✅ (launchd) | ✅ (`systemd --user`); no cron path — see [above](#linux-no-systemd) |
-| `petridish doctor` | ✅ full checks | ✅ full checks (menu-bar check reports "not applicable") |
-| `petridish menubar` | ✅ | ❌ — prints a "macOS-only" message and exits 0 |
+Three binaries: **`swab`** scans, **`petri`** is the terminal dashboard, and **`petridish`**
+installs everything as a background daemon — no need to run anything by hand once it's set
+up. Works on both macOS and Linux; see [Install](#install) below.
 
 ## Install
 
