@@ -11,7 +11,7 @@ resolver = "3"
 # intention of supporting, so independent versioning would be a lie told to
 # cargo.
 [workspace.package]
-version = "1.0.0-beta.6"
+version = "1.0.0-beta.7"
 edition = "2024"
 # Floor comes from `gix` and `clap` (1.85, also the edition-2024 floor); the
 # widest MSRV anywhere in the resolved tree is 1.88. Verified by the MSRV job
@@ -48,7 +48,7 @@ serde = { version = "1", features = ["derive"] }
 # from a `Map` to a struct for exactly this reason.
 serde_json = { version = "1", features = ["preserve_order"] }
 toml = "1.1"
-petridish-core = { path = "petridish-core", version = "1.0.0-beta.6" }
+petridish-core = { path = "petridish-core", version = "1.0.0-beta.7" }
 
 # Dev/test/clippy builds all use this profile. Full debuginfo isn't needed for
 # local iteration (backtraces still resolve to file:line with line-tables-only),

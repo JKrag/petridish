@@ -7,6 +7,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.0.0-beta.7] — 2026-09-14
+
+### Added
+
+- **Linux is now supported.** `petridish install`/`uninstall` work via
+  `systemd --user` — same behavior as macOS (#75).
+- **`petri --mini`**: shortcut keys that don't resolve now show a quick
+  notice instead of doing nothing silently (#65).
+
+### Fixed
+
+- Linux install now respects `$XDG_CONFIG_HOME` instead of assuming
+  `~/.config`.
+- Linux uninstall now fully stops the scan service and reloads systemd —
+  nothing lingers after uninstall.
+- Fixed a unit-file bug that could break install on paths containing `%`.
+
 ## [1.0.0-beta.6] — 2026-09-12
 
 ### Added
