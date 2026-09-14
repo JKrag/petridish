@@ -31,6 +31,17 @@ brew trust jkrag/tap
 brew install jkrag/tap/petridish
 ```
 
+**Linux (x86_64) without Homebrew** — a script that downloads the same prebuilt binaries
+straight from the GitHub Release, no Rust toolchain needed:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/JKrag/petridish/master/scripts/install.sh | bash
+petridish install
+```
+
+It installs to `~/.local/bin` by default; pass `--prefix DIR` to change that, or
+`--version vX.Y.Z` to pin a specific release instead of the latest one.
+
 **Linux on other architectures (e.g. arm64)** — no prebuilt binary yet, only `cargo install`
 from a checkout (needs a Rust toolchain): clone this repo, then follow
 [Installing from a checkout instead](#installing-from-a-checkout-instead) below, and finish
