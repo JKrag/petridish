@@ -1,0 +1,8 @@
+{
+  "uuid": "petridish@jkrag",
+  "name": "petridish",
+  "description": "Fleet overview from the petridish scanner: working/total in the panel, projects grouped by bucket in the dropdown. Linux counterpart of the xbar/SwiftBar plugin.",
+  "version": "1.0",
+  "max-instances": 1,
+  "website": "https://github.com/JKrag/petridish"
+}
