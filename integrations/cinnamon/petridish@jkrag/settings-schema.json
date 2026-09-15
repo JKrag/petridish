@@ -1,0 +1,16 @@
+{
+  "refresh-seconds": {
+    "type": "spinbutton",
+    "default": 30,
+    "min": 5,
+    "max": 600,
+    "step": 5,
+    "units": "seconds",
+    "description": "Refresh interval"
+  },
+  "binary-path": {
+    "type": "entry",
+    "default": "",
+    "description": "Path to the petridish binary (leave empty to search PATH, ~/.cargo/bin, ~/.local/bin)"
+  }
+}

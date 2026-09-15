@@ -173,3 +173,14 @@ jobs:
       # Its genuinely useful checks are these two, and they run offline.
       - run: npx eslint .
       - run: npx prettier --check "src/**/*.{ts,tsx}" "tests/**/*.ts"
+
+  # The Cinnamon applet's parser is plain dependency-free JS, so this is just
+  # node's built-in test runner — no npm ci, no lockfile to cache.
+  cinnamon:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - run: node --test integrations/cinnamon/tests/

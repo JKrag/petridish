@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Petri dish seen from above: dish rim + two colonies. Drawn as a symbolic
+     icon (single flat color) so Cinnamon can recolor it to match the panel
+     theme — the 🧫 emoji itself renders as an unreadable tofu box in St panel
+     labels, which is why the applet uses this instead of the title's emoji. -->
+<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 16 16">
+  <g fill="none" stroke="#bebebe" stroke-width="1.4">
+    <circle cx="8" cy="8" r="6.4"/>
+  </g>
+  <g fill="#bebebe" stroke="none">
+    <circle cx="6" cy="6.6" r="1.5"/>
+    <circle cx="10.1" cy="9.6" r="1.1"/>
+  </g>
+</svg>

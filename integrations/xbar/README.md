@@ -63,3 +63,6 @@ placeholder rather than a silent disappearance.
 
 `petridish doctor` reports whether the plugin is installed and executable, along
 with the rest of the install surface.
+
+On Linux, the same dropdown comes from the [Cinnamon applet](../cinnamon/README.md),
+which consumes the identical `petridish menubar` output.
