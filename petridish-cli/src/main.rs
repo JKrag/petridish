@@ -53,7 +53,10 @@ enum Command {
         #[arg(long)]
         json: bool,
     },
-    /// Print xbar/SwiftBar plugin text for the current state file.
+    /// Print menu-bar text (xbar format) for the current state file.
+    ///
+    /// Consumed by xbar/SwiftBar on macOS and the Cinnamon applet
+    /// (integrations/cinnamon) on Linux.
     ///
     /// Always exits 0: xbar disables a plugin that errors, so every failure
     /// degrades to a visible placeholder instead.
@@ -178,18 +181,11 @@ fn run() -> Result<i32, InstallError> {
             Ok(doctor::report(&checks, &mut std::io::stdout(), os))
         }
         Command::Menubar { state } => {
-            let os = std::env::consts::OS;
-            if os != "macos" {
-                // Issue #25: menubar is an xbar/SwiftBar-only experiment, meaningless
-                // without a macOS menu bar to render into. Refuse with an explicit
-                // message rather than silently printing plugin text nothing will ever
-                // read — still exits 0, matching the "always exits 0" contract that
-                // exists so a caller (xbar itself, on macOS) never sees this command
-                // fail; a curious direct invocation on Linux gets a clear answer
-                // instead of a cryptic "unavailable" state-file message.
-                println!("{}", menubar::render_unsupported_platform(os));
-                return Ok(0);
-            }
+            // Renders on every platform. Issue #25 used to refuse off-macOS because
+            // nothing on Linux could read xbar plugin text; the Cinnamon applet in
+            // integrations/cinnamon/ is now exactly such a reader, so the refusal's
+            // premise is gone. The xbar *plugin install* remains macOS-only — this is
+            // only the pure text renderer.
             let path = state.unwrap_or_else(|| home().join(".petridish").join("projects.json"));
             let text = std::fs::read_to_string(&path)
                 .ok()
