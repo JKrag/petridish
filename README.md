@@ -58,7 +58,9 @@ with `petridish install`.
   marker `# petridish`, **without disturbing any other hook consumer** already configured
   there
 - macOS only: installs the xbar/SwiftBar menu-bar plugin (skip it with
-  `--no-menubar-plugin`); Linux has no menu-bar equivalent, so this step is a no-op there
+  `--no-menubar-plugin`). On Linux this step is a no-op — the panel equivalent is the
+  Cinnamon applet, installed separately (see
+  [integrations/cinnamon](integrations/cinnamon/README.md))
 
 It backs up `~/.claude/settings.json` once, to `~/.petridish/settings.json.backup`, before
 touching it. That backup is a safety artifact for you — uninstall never reads it back
@@ -109,7 +111,7 @@ Four binaries, each with one job:
 
 | Binary | Role | Platform |
 | --- | --- | --- |
-| `petridish` | Install, uninstall, health-check, and (macOS only) render the menu bar | macOS + Linux (`menubar` is macOS-only) |
+| `petridish` | Install, uninstall, health-check, and render the menu-bar text | macOS + Linux |
 | `swab` | The scanner. The **only** thing that writes `projects.json` | Cross-platform |
 | `swab-hook` | The Claude Code hook. Appends one line to `events.ndjson`, nothing else | Cross-platform |
 | `petri` | The terminal dashboard | Cross-platform |
@@ -118,7 +120,7 @@ Four binaries, each with one job:
 petridish install       # wire up the daemon + the Claude Code hook (+ menu bar on macOS)
 petridish uninstall     # remove all of that, leaving ~/.petridish intact
 petridish doctor        # is the install intact?
-petridish menubar       # macOS only — print xbar plugin text for the current state
+petridish menubar       # print xbar-format menu text for the current state
 
 swab scan               # run one tick, write ~/.petridish/projects.json
 swab list [--bucket B] [--all] [--json]
