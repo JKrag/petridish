@@ -1651,7 +1651,11 @@ pub fn header_right_group(
     width: usize,
 ) -> String {
     let projects = format!("{} projects", radar.projects.len());
-    let clock = now.format("%H:%M").to_string();
+    // `now` is UTC (used elsewhere for age/elapsed math); the clock is the one display
+    // consumer, so convert to the machine's local timezone just for formatting.
+    let clock = chrono::DateTime::<chrono::Local>::from(*now)
+        .format("%H:%M")
+        .to_string();
     let scan = format!("scan {scan_secs:.1}s");
     let quota_full = quota_segment(radar.quota.as_ref(), false);
     let quota_short = quota_segment(radar.quota.as_ref(), true);

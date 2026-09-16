@@ -34,6 +34,15 @@ fn now() -> chrono::DateTime<chrono::Utc> {
     "2026-09-09T14:22:00Z".parse().expect("pinned now")
 }
 
+/// `header_right_group` renders the clock in the machine's local timezone, not UTC (it
+/// would otherwise be off by the tester's UTC offset). Derive the expected string the same
+/// way rather than pinning "14:22" literally, so this suite isn't timezone-dependent.
+fn clock() -> String {
+    chrono::DateTime::<chrono::Local>::from(now())
+        .format("%H:%M")
+        .to_string()
+}
+
 fn quota(five: Option<u8>, seven: Option<u8>) -> QuotaState {
     QuotaState {
         measured_at: Some(now()),
@@ -179,7 +188,10 @@ fn context_used_pct_is_never_rendered() {
 fn the_full_group_carries_projects_quota_clock_and_scan() {
     let group =
         dashboard::header_right_group(&radar(14, Some(quota(Some(16), Some(1)))), &now(), 0.3, 100);
-    assert_eq!(group, "14 projects · 5h 16% · 7d 1% · 14:22 · scan 0.3s");
+    assert_eq!(
+        group,
+        format!("14 projects · 5h 16% · 7d 1% · {} · scan 0.3s", clock())
+    );
 }
 
 /// Every rung of the ladder, narrowest-first, at the exact width that forces it. The widths
@@ -190,13 +202,13 @@ fn the_ladder_drops_scan_then_projects_then_the_clock_then_compresses_quota() {
     let r = radar(14, Some(quota(Some(16), Some(1))));
     let at = |w: usize| dashboard::header_right_group(&r, &now(), 0.3, w);
 
-    let rungs = [
-        "14 projects · 5h 16% · 7d 1% · 14:22 · scan 0.3s",
-        "14 projects · 5h 16% · 7d 1% · 14:22",
-        "5h 16% · 7d 1% · 14:22",
-        "5h 16% · 7d 1%",
-        "16%/1%",
-        "",
+    let rungs = vec![
+        format!("14 projects · 5h 16% · 7d 1% · {} · scan 0.3s", clock()),
+        format!("14 projects · 5h 16% · 7d 1% · {}", clock()),
+        format!("5h 16% · 7d 1% · {}", clock()),
+        "5h 16% · 7d 1%".to_string(),
+        "16%/1%".to_string(),
+        String::new(),
     ];
 
     // Walk widths down from "everything fits" to zero and collect the distinct groups seen,
@@ -224,7 +236,7 @@ fn quota_outranks_the_clock() {
     let group = dashboard::header_right_group(&r, &now(), 0.3, width);
     assert!(group.contains("5h 16%"), "got {group:?}");
     assert!(
-        !group.contains("14:22"),
+        !group.contains(&clock()),
         "the clock must go first, got {group:?}"
     );
 }
@@ -236,7 +248,7 @@ fn the_ladder_without_quota_is_the_pre_existing_group() {
     let r = radar(14, None);
     assert_eq!(
         dashboard::header_right_group(&r, &now(), 0.3, 100),
-        "14 projects · 14:22 · scan 0.3s"
+        format!("14 projects · {} · scan 0.3s", clock())
     );
 }
 
