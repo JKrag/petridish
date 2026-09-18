@@ -64,6 +64,10 @@ fn idx_of(radar: &Radar, name: &str) -> usize {
         .unwrap_or_else(|| panic!("fixture has no project named {name}"))
 }
 
+fn utc(_: chrono::DateTime<chrono::Utc>) -> chrono::FixedOffset {
+    chrono::FixedOffset::east_opt(0).unwrap()
+}
+
 /// The full ladder in render order — what `plan_rungs` returns a subsequence of.
 const LADDER: [Rung; 9] = [
     Rung::Identity,
@@ -134,7 +138,7 @@ impl Case {
             radar: &self.radar,
             target,
             now: pinned_now(),
-            tz_offset: chrono::FixedOffset::east_opt(0).unwrap(),
+            tz_offset_at: utc,
             feed: self.feed.as_ref(),
             prefs: &self.prefs,
         };
