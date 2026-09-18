@@ -1155,6 +1155,7 @@ pub fn render(
         .max(0);
 
     let now = chrono::Utc::now();
+    let offset = local_offset();
     let scan_secs = radar.scan_duration_ms as f64 / 1000.0;
 
     let plan = plan_layout(area, radar, state.collapsed, feed.events().len());
@@ -1168,7 +1169,7 @@ pub fn render(
     .areas(area);
 
     frame.render_widget(
-        Paragraph::new(header_lines(radar, &now, scan_secs, width)),
+        Paragraph::new(header_lines(radar, &now, offset, scan_secs, width)),
         header_area,
     );
 
@@ -1305,6 +1306,7 @@ pub fn render(
             Paragraph::new(crate::feed::feed_block_lines(
                 feed,
                 now,
+                offset,
                 width,
                 plan.feed_rows,
             )),
@@ -1644,18 +1646,29 @@ pub fn quota_segment(quota: Option<&QuotaState>, compressed: bool) -> Option<Str
 ///
 /// Returns `""` when not even the compressed quota fits; the caller then draws the title
 /// alone rather than a stray trailing space.
+/// The machine's current local UTC offset, computed once at render time.
+///
+/// Threaded into `header_right_group`/`feed_block_lines` as a parameter rather than having
+/// each formatter call `chrono::Local` directly, so a test can pin a fixed non-UTC offset
+/// and actually exercise the local-time conversion regardless of the timezone the test
+/// process itself happens to run in (commonly UTC in CI).
+pub fn local_offset() -> chrono::FixedOffset {
+    *chrono::Local::now().offset()
+}
+
 pub fn header_right_group(
     radar: &Radar,
     now: &chrono::DateTime<chrono::Utc>,
+    offset: chrono::FixedOffset,
     scan_secs: f64,
     width: usize,
 ) -> String {
     let projects = format!("{} projects", radar.projects.len());
     // `now` is UTC (used elsewhere for age/elapsed math); the clock is the one display
-    // consumer, so convert to the machine's local timezone just for formatting.
-    let clock = chrono::DateTime::<chrono::Local>::from(*now)
-        .format("%H:%M")
-        .to_string();
+    // consumer, so convert to `offset` — the machine's local timezone in production — just
+    // for formatting. Threaded in rather than read from the clock so a test can pin a
+    // non-UTC offset and actually exercise the conversion (see `local_offset`).
+    let clock = now.with_timezone(&offset).format("%H:%M").to_string();
     let scan = format!("scan {scan_secs:.1}s");
     let quota_full = quota_segment(radar.quota.as_ref(), false);
     let quota_short = quota_segment(radar.quota.as_ref(), true);
@@ -1688,10 +1701,11 @@ pub fn header_right_group(
 fn header_lines(
     radar: &Radar,
     now: &chrono::DateTime<chrono::Utc>,
+    offset: chrono::FixedOffset,
     scan_secs: f64,
     width: usize,
 ) -> Vec<Line<'static>> {
-    let right = header_right_group(radar, now, scan_secs, width);
+    let right = header_right_group(radar, now, offset, scan_secs, width);
     let title = split_line(
         HEADER_TITLE.to_string(),
         if right.is_empty() {
