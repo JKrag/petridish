@@ -1306,7 +1306,7 @@ pub fn render(
             Paragraph::new(crate::feed::feed_block_lines(
                 feed,
                 now,
-                offset,
+                crate::feed::local_offset_at,
                 width,
                 plan.feed_rows,
             )),

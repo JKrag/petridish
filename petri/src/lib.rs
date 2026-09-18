@@ -646,7 +646,7 @@ fn render_mini_frame<B: ratatui::backend::Backend>(
                     radar: r,
                     target: crate::focus::FocusTarget::Project(idx),
                     now: chrono::Utc::now(),
-                    tz_offset: crate::dashboard::local_offset(),
+                    tz_offset_at: crate::feed::local_offset_at,
                     feed: Some(feed),
                     prefs,
                 };
@@ -1737,7 +1737,7 @@ pub fn render_current<B: ratatui::backend::Backend>(
                             radar: r,
                             target: s.focus_target(r),
                             now: chrono::Utc::now(),
-                            tz_offset: crate::dashboard::local_offset(),
+                            tz_offset_at: crate::feed::local_offset_at,
                             feed: Some(feed),
                             prefs,
                         };

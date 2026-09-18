@@ -44,6 +44,10 @@ fn offset() -> chrono::FixedOffset {
     chrono::FixedOffset::east_opt(5 * 3600 + 30 * 60).unwrap() // UTC+05:30
 }
 
+fn offset_at(_: chrono::DateTime<chrono::Utc>) -> chrono::FixedOffset {
+    offset()
+}
+
 fn clock() -> String {
     now().with_timezone(&offset()).format("%H:%M").to_string()
 }
@@ -387,7 +391,7 @@ fn mini_header_row(w: u16, h: u16, q: Option<QuotaState>) -> String {
         radar: &radar,
         target: FocusTarget::Project(0),
         now: now(),
-        tz_offset: offset(),
+        tz_offset_at: offset_at,
         feed: None,
         prefs: &prefs,
     };
