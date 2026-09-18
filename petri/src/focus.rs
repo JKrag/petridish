@@ -105,6 +105,10 @@ pub struct FocusCtx<'a> {
     /// Pinned by the caller rather than read from the clock inside a rung, so a render is
     /// reproducible in a test and every rung on one frame agrees about what "now" is.
     pub now: DateTime<Utc>,
+    /// The local UTC offset lookup the `Recent` rung's feed stamps are formatted with — pinned
+    /// alongside `now` for the same reproducibility reason, while still allowing historical
+    /// events to pick the offset that was in effect at their own instant.
+    pub tz_offset_at: fn(DateTime<Utc>) -> chrono::FixedOffset,
     /// `None` is a real state, not an error: `--mini` may start before two snapshots have
     /// been diffed. The `Recent` rung is then absent, not empty.
     pub feed: Option<&'a FeedState>,
@@ -1090,10 +1094,10 @@ fn recent_lines(p: &Project, ctx: &FocusCtx, width: usize, rows: u16) -> Vec<Lin
         // project name, which every row here would repeat back at the panel's own header.
         // The stamp's date-vs-clock switch is already solved in `feed.rs` and getting it
         // wrong reads as a sorting bug, so it is reused rather than reformatted.
-        let stamp = e.stamp(ctx.now);
+        let stamp = e.stamp(ctx.now, ctx.tz_offset_at);
         // Today's events tint fresh, earlier dates cold — the same rule the fleet-wide
         // feed uses, so a row does not change meaning when it moves between the two.
-        let stamp_style = if e.is_today(ctx.now) {
+        let stamp_style = if e.is_today(ctx.now, ctx.tz_offset_at) {
             Style::default().fg(theme::FRESH)
         } else {
             Style::default().fg(theme::COLD)
@@ -1527,6 +1531,7 @@ mod mini_mount_tests {
             radar,
             target: FocusTarget::Project(0),
             now: Utc::now(),
+            tz_offset_at: crate::feed::local_offset_at,
             feed: None,
             prefs: &prefs,
         };

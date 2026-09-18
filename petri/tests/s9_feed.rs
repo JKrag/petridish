@@ -9,7 +9,7 @@
 //! Every test below FAILS (panics on `todo!()`) against the stub — confirmed before
 //! delegating.
 
-use petri::feed::{FeedKind, FeedState, agent_detail, humanize_event};
+use petri::feed::{FeedEvent, FeedKind, FeedState, agent_detail, humanize_event};
 use petridish_core::schema::{
     AgentActivity, AgentState, GitState, Project, Radar, SCHEMA_VERSION, StatusBucket,
 };
@@ -18,6 +18,12 @@ fn ts(s: &str) -> chrono::DateTime<chrono::Utc> {
     chrono::DateTime::parse_from_rfc3339(s)
         .unwrap_or_else(|e| panic!("bad fixture timestamp {s}: {e}"))
         .with_timezone(&chrono::Utc)
+}
+
+/// This file is about the stamp's date-vs-clock arithmetic, not timezone lookup, so the
+/// baseline cases pin UTC.
+fn utc(_: chrono::DateTime<chrono::Utc>) -> chrono::FixedOffset {
+    chrono::FixedOffset::east_opt(0).unwrap()
 }
 
 fn project(id: &str, name: &str, bucket: StatusBucket) -> Project {
@@ -181,7 +187,7 @@ fn row_text_is_clock_project_then_detail() {
         .events()
         .front()
         .expect("one seeded row")
-        .row_text(ts("2026-09-03T14:30:00Z"));
+        .row_text(ts("2026-09-03T14:30:00Z"), utc);
     // The shape IDEAS.md's SPACE-1 entry names, on a UTC minute-precision clock.
     assert_eq!(row, "14:22  project-radar · claude-code stop · 3 files");
 }
@@ -202,8 +208,68 @@ fn row_text_shows_a_date_for_an_event_from_an_earlier_day() {
         .events()
         .front()
         .unwrap()
-        .row_text(ts("2026-09-03T05:00:00Z"));
+        .row_text(ts("2026-09-03T05:00:00Z"), utc);
     assert_eq!(row, "09-02  project-radar · claude-code stop");
+}
+
+/// `stamp`/`is_today`/`row_text` must convert *both* `self.at` and `now` into `offset`
+/// before comparing dates — not just format the clock in it. Chosen so the UTC-only dates
+/// disagree with the offset-converted ones: at UTC+00:00 the event (`2026-09-04T00:15Z`)
+/// and `now` (`2026-09-03T23:50Z`) fall on different calendar days, but at UTC-01:00 they
+/// both fall on 2026-09-03 — so this only passes if the offset, not raw UTC, decides
+/// "today".
+#[test]
+fn is_today_and_the_clock_both_use_the_given_offset_not_utc() {
+    fn minus_one(_: chrono::DateTime<chrono::Utc>) -> chrono::FixedOffset {
+        chrono::FixedOffset::west_opt(3600).unwrap()
+    }
+
+    let event = FeedEvent {
+        at: ts("2026-09-04T00:15:00Z"),
+        project: "project-radar".to_string(),
+        kind: FeedKind::Agent,
+        detail: "claude-code stop".to_string(),
+    };
+    let now = ts("2026-09-03T23:50:00Z");
+
+    assert!(
+        !event.is_today(now, utc),
+        "sanity check: at UTC these fall on different calendar days"
+    );
+    assert!(
+        event.is_today(now, minus_one),
+        "at UTC-01:00 both `at` and `now` fall on 2026-09-03, so this must read as today"
+    );
+    assert_eq!(
+        event.row_text(now, minus_one),
+        "23:15  project-radar · claude-code stop",
+        "the clock must be the UTC-01:00 local time (23:15), not the UTC one (00:15)"
+    );
+}
+
+#[test]
+fn historical_rows_use_the_offset_in_effect_at_the_event_time() {
+    fn ny_dst_offset_at(at: chrono::DateTime<chrono::Utc>) -> chrono::FixedOffset {
+        if at.timestamp() < 1_793_512_800 {
+            chrono::FixedOffset::west_opt(4 * 3600).unwrap()
+        } else {
+            chrono::FixedOffset::west_opt(5 * 3600).unwrap()
+        }
+    }
+
+    let event = FeedEvent {
+        at: ts("2026-11-01T05:30:00Z"),
+        project: "project-radar".to_string(),
+        kind: FeedKind::Agent,
+        detail: "claude-code stop".to_string(),
+    };
+    let now = ts("2026-11-01T07:30:00Z");
+
+    assert_eq!(
+        event.row_text(now, ny_dst_offset_at),
+        "01:30  project-radar · claude-code stop",
+        "the historical event should keep the pre-fallback UTC-04:00 offset even though `now` is already UTC-05:00"
+    );
 }
 
 // ---------------------------------------------------------------- seeded

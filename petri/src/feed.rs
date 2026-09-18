@@ -26,7 +26,7 @@
 //! never "Claude".
 
 use crate::theme;
-use chrono::{DateTime, Utc};
+use chrono::{DateTime, FixedOffset, Local, Utc};
 use petridish_core::present::status_bucket_str;
 use petridish_core::schema::{Project, Radar};
 use ratatui::style::{Color, Modifier, Style};
@@ -72,35 +72,45 @@ pub struct FeedEvent {
 }
 
 impl FeedEvent {
-    /// The row as one line of text: `"HH:MM  {project} · {detail}"`, with the clock in UTC
-    /// at minute precision.
+    /// The row as one line of text: `"HH:MM  {project} · {detail}"`, with the clock at
+    /// minute precision in the per-instant offset `offset_at` yields.
     ///
-    /// UTC rather than local time is deliberate and matches the Dashboard header, which
-    /// already formats `chrono::Utc::now()` as `%H:%M` (`dashboard::header_lines`) — a feed
-    /// on a different clock from the header directly above it would be worse than either
-    /// choice on its own.
+    /// The caller supplies the offset lookup so tests can pin a fixed timezone while the real
+    /// UI still derives the local offset from each event's own instant; reusing the *current*
+    /// offset for historical rows gets DST crossings wrong.
     ///
     /// **An event from an earlier day shows `MM-DD` instead of a clock**, in the same
     /// five-column field so the rows stay aligned. Found by running the feed against a real
     /// `projects.json`: a fleet that has been quiet overnight renders `23:14` *below*
     /// `04:58`, which reads as a sorting bug when the order is in fact correct. A bare clock
     /// simply cannot express "yesterday", and the feed's whole purpose is chronology.
-    pub fn row_text(&self, now: DateTime<Utc>) -> String {
-        format!("{}  {}", self.stamp(now), self.body_text())
+    pub fn row_text(
+        &self,
+        now: DateTime<Utc>,
+        offset_at: fn(DateTime<Utc>) -> FixedOffset,
+    ) -> String {
+        format!("{}  {}", self.stamp(now, offset_at), self.body_text())
     }
 
-    /// True when this event happened on `now`'s UTC date — i.e. its stamp is a clock
-    /// rather than a date.
-    pub fn is_today(&self, now: DateTime<Utc>) -> bool {
-        self.at.date_naive() == now.date_naive()
+    /// True when this event happened on `now`'s local date in the per-instant offset
+    /// `offset_at` yields — i.e. its stamp is a clock rather than a date.
+    pub fn is_today(
+        &self,
+        now: DateTime<Utc>,
+        offset_at: fn(DateTime<Utc>) -> FixedOffset,
+    ) -> bool {
+        self.at.with_timezone(&offset_at(self.at)).date_naive()
+            == now.with_timezone(&offset_at(now)).date_naive()
     }
 
-    /// The five-column time field: `HH:MM` for today, `MM-DD` for any earlier day.
-    pub fn stamp(&self, now: DateTime<Utc>) -> String {
-        if self.is_today(now) {
-            self.at.format("%H:%M").to_string()
+    /// The five-column time field: `HH:MM` for today, `MM-DD` for any earlier day, using the
+    /// per-instant offset `offset_at` yields.
+    pub fn stamp(&self, now: DateTime<Utc>, offset_at: fn(DateTime<Utc>) -> FixedOffset) -> String {
+        let at = self.at.with_timezone(&offset_at(self.at));
+        if self.is_today(now, offset_at) {
+            at.format("%H:%M").to_string()
         } else {
-            self.at.format("%m-%d").to_string()
+            at.format("%m-%d").to_string()
         }
     }
 
@@ -147,6 +157,11 @@ pub fn humanize_event(raw: &str) -> String {
     } else {
         joined
     }
+}
+
+/// The machine's local UTC offset at `at`.
+pub(crate) fn local_offset_at(at: DateTime<Utc>) -> FixedOffset {
+    *at.with_timezone(&Local).offset()
 }
 
 /// The `detail` string for an agent event on `p`: `"{agent} {event}"`, plus a
@@ -390,8 +405,9 @@ fn kind_color(kind: FeedKind) -> Color {
     }
 }
 
-/// Render the feed as exactly `rows` lines, `width` columns wide. `now` decides which rows
-/// are recent enough to show a clock rather than a date — see `FeedEvent::row_text`.
+/// Render the feed as exactly `rows` lines, `width` columns wide. `now` and `offset`
+/// together decide which rows are recent enough to show a clock rather than a date — see
+/// `FeedEvent::row_text`.
 ///
 /// Layout, top to bottom: one ` ACTIVITY` label line, then the newest `rows - 1` events,
 /// newest first, each `FeedEvent::row_text` prefixed with a space and **truncated — never
@@ -414,6 +430,7 @@ fn kind_color(kind: FeedKind) -> Color {
 pub fn feed_block_lines(
     feed: &FeedState,
     now: DateTime<Utc>,
+    offset_at: fn(DateTime<Utc>) -> FixedOffset,
     width: usize,
     rows: usize,
 ) -> Vec<Line<'static>> {
@@ -460,11 +477,14 @@ pub fn feed_block_lines(
             // character count either: `width` is a column budget from the layout, and a
             // project or branch name holding a wide character makes those two disagree,
             // which shows up as the row bleeding past its pane.
-            let head = crate::width::take_width(&format!(" {}  ", e.stamp(now)), width);
+            let head = crate::width::take_width(&format!(" {}  ", e.stamp(now, offset_at)), width);
             let remaining = width.saturating_sub(crate::width::width(&head));
             let body_text = crate::width::take_width(&e.body_text(), remaining);
             lines.push(Line::from(vec![
-                Span::styled(head, Style::default().fg(stamp_color(e.is_today(now)))),
+                Span::styled(
+                    head,
+                    Style::default().fg(stamp_color(e.is_today(now, offset_at))),
+                ),
                 Span::styled(body_text, Style::default().fg(kind_color(e.kind))),
             ]));
         }

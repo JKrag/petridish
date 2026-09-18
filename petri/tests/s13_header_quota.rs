@@ -34,6 +34,24 @@ fn now() -> chrono::DateTime<chrono::Utc> {
     "2026-09-09T14:22:00Z".parse().expect("pinned now")
 }
 
+/// `header_right_group` renders the clock in `offset` rather than UTC — production passes
+/// the machine's local offset (`dashboard::local_offset`), and this suite pins a fixed,
+/// non-zero, non-local offset instead of UTC or the test process's own timezone. That way
+/// the expected string genuinely depends on the conversion: reverting the production code
+/// to `now.format(...)` (bare UTC) would shift `clock()` away from what the header renders
+/// on every machine, including a CI runner that happens to run in UTC.
+fn offset() -> chrono::FixedOffset {
+    chrono::FixedOffset::east_opt(5 * 3600 + 30 * 60).unwrap() // UTC+05:30
+}
+
+fn offset_at(_: chrono::DateTime<chrono::Utc>) -> chrono::FixedOffset {
+    offset()
+}
+
+fn clock() -> String {
+    now().with_timezone(&offset()).format("%H:%M").to_string()
+}
+
 fn quota(five: Option<u8>, seven: Option<u8>) -> QuotaState {
     QuotaState {
         measured_at: Some(now()),
@@ -164,8 +182,13 @@ fn a_lone_half_keeps_its_label_even_compressed() {
 fn context_used_pct_is_never_rendered() {
     // `DATA-5`: it belongs to the most recent session on this machine, not to the fleet and
     // not to any project. 73 is `quota()`'s value; `ctx` is the label it would carry.
-    let group =
-        dashboard::header_right_group(&radar(14, Some(quota(Some(16), Some(1)))), &now(), 0.3, 200);
+    let group = dashboard::header_right_group(
+        &radar(14, Some(quota(Some(16), Some(1)))),
+        &now(),
+        offset(),
+        0.3,
+        200,
+    );
     assert!(
         !group.contains("73") && !group.contains("ctx"),
         "context_used_pct must not reach the header, got {group:?}"
@@ -177,9 +200,17 @@ fn context_used_pct_is_never_rendered() {
 /// The full group at a comfortable width — `PROPOSAL §6`'s mockup line, verbatim in content.
 #[test]
 fn the_full_group_carries_projects_quota_clock_and_scan() {
-    let group =
-        dashboard::header_right_group(&radar(14, Some(quota(Some(16), Some(1)))), &now(), 0.3, 100);
-    assert_eq!(group, "14 projects · 5h 16% · 7d 1% · 14:22 · scan 0.3s");
+    let group = dashboard::header_right_group(
+        &radar(14, Some(quota(Some(16), Some(1)))),
+        &now(),
+        offset(),
+        0.3,
+        100,
+    );
+    assert_eq!(
+        group,
+        format!("14 projects · 5h 16% · 7d 1% · {} · scan 0.3s", clock())
+    );
 }
 
 /// Every rung of the ladder, narrowest-first, at the exact width that forces it. The widths
@@ -188,15 +219,15 @@ fn the_full_group_carries_projects_quota_clock_and_scan() {
 #[test]
 fn the_ladder_drops_scan_then_projects_then_the_clock_then_compresses_quota() {
     let r = radar(14, Some(quota(Some(16), Some(1))));
-    let at = |w: usize| dashboard::header_right_group(&r, &now(), 0.3, w);
+    let at = |w: usize| dashboard::header_right_group(&r, &now(), offset(), 0.3, w);
 
-    let rungs = [
-        "14 projects · 5h 16% · 7d 1% · 14:22 · scan 0.3s",
-        "14 projects · 5h 16% · 7d 1% · 14:22",
-        "5h 16% · 7d 1% · 14:22",
-        "5h 16% · 7d 1%",
-        "16%/1%",
-        "",
+    let rungs = vec![
+        format!("14 projects · 5h 16% · 7d 1% · {} · scan 0.3s", clock()),
+        format!("14 projects · 5h 16% · 7d 1% · {}", clock()),
+        format!("5h 16% · 7d 1% · {}", clock()),
+        "5h 16% · 7d 1%".to_string(),
+        "16%/1%".to_string(),
+        String::new(),
     ];
 
     // Walk widths down from "everything fits" to zero and collect the distinct groups seen,
@@ -221,10 +252,10 @@ fn quota_outranks_the_clock() {
     // burn number is the thing you opened this pane to keep half an eye on."
     let r = radar(14, Some(quota(Some(16), Some(1))));
     let width = " petri · dashboard ".chars().count() + "5h 16% · 7d 1%".chars().count() + 2;
-    let group = dashboard::header_right_group(&r, &now(), 0.3, width);
+    let group = dashboard::header_right_group(&r, &now(), offset(), 0.3, width);
     assert!(group.contains("5h 16%"), "got {group:?}");
     assert!(
-        !group.contains("14:22"),
+        !group.contains(&clock()),
         "the clock must go first, got {group:?}"
     );
 }
@@ -235,8 +266,8 @@ fn the_ladder_without_quota_is_the_pre_existing_group() {
     // feature — otherwise every existing header assertion is quietly a new assertion.
     let r = radar(14, None);
     assert_eq!(
-        dashboard::header_right_group(&r, &now(), 0.3, 100),
-        "14 projects · 14:22 · scan 0.3s"
+        dashboard::header_right_group(&r, &now(), offset(), 0.3, 100),
+        format!("14 projects · {} · scan 0.3s", clock())
     );
 }
 
@@ -247,7 +278,7 @@ fn hostile_json_has_no_quota_and_therefore_no_segment() {
         r.quota.is_none(),
         "hostile.json is the absent-quota fixture"
     );
-    let group = dashboard::header_right_group(&r, &now(), 0.3, 100);
+    let group = dashboard::header_right_group(&r, &now(), offset(), 0.3, 100);
     assert!(
         !group.contains('%'),
         "no percentage may appear, got {group:?}"
@@ -261,7 +292,7 @@ fn the_group_never_overflows_the_width_it_was_given() {
     let r = radar(14, Some(quota(Some(100), Some(100))));
     let left = " petri · dashboard ".chars().count();
     for w in 0..=120 {
-        let group = dashboard::header_right_group(&r, &now(), 0.3, w);
+        let group = dashboard::header_right_group(&r, &now(), offset(), 0.3, w);
         if group.is_empty() {
             continue;
         }
@@ -360,6 +391,7 @@ fn mini_header_row(w: u16, h: u16, q: Option<QuotaState>) -> String {
         radar: &radar,
         target: FocusTarget::Project(0),
         now: now(),
+        tz_offset_at: offset_at,
         feed: None,
         prefs: &prefs,
     };

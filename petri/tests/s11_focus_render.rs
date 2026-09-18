@@ -63,6 +63,10 @@ fn idx_of(radar: &Radar, name: &str) -> usize {
         .unwrap_or_else(|| panic!("fixture has no project named {name}"))
 }
 
+fn utc(_: chrono::DateTime<chrono::Utc>) -> chrono::FixedOffset {
+    chrono::FixedOffset::east_opt(0).unwrap()
+}
+
 /// A rect that plans every rung except `Repo`/`Tree` — the size most tests below use, so a
 /// rung's absence is never an artefact of the geometry.
 const ROOMY: (u16, u16) = (96, 26);
@@ -173,6 +177,7 @@ impl Case {
             radar: &self.radar,
             target,
             now: pinned_now(),
+            tz_offset_at: utc,
             feed: self.feed.as_ref(),
             prefs: &self.prefs,
         }
