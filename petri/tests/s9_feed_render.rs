@@ -23,6 +23,14 @@ fn ts(s: &str) -> chrono::DateTime<chrono::Utc> {
         .with_timezone(&chrono::Utc)
 }
 
+/// This suite is about layout (rows/width/truncation), not timezones, so every call pins
+/// UTC — `feed::feed_block_lines` now takes an explicit offset (`petri/src/dashboard.rs`'s
+/// `local_offset`), and the non-UTC conversion itself is covered separately in
+/// `s9_feed.rs`/`s13_header_quota.rs`.
+fn utc() -> chrono::FixedOffset {
+    chrono::FixedOffset::east_opt(0).unwrap()
+}
+
 fn project(id: &str, name: &str, bucket: StatusBucket) -> Project {
     Project {
         id: id.to_string(),
@@ -285,7 +293,7 @@ fn leftover_beside_a_truncated_section_is_too_small_for_another_card() {
 #[test]
 fn block_is_exactly_the_rows_it_was_given() {
     for rows in [4usize, 6, 12] {
-        let lines = feed_block_lines(&feed_of(15), ts("2026-09-03T20:00:00Z"), 80, rows);
+        let lines = feed_block_lines(&feed_of(15), ts("2026-09-03T20:00:00Z"), utc(), 80, rows);
         assert_eq!(
             lines.len(),
             rows,
@@ -297,15 +305,15 @@ fn block_is_exactly_the_rows_it_was_given() {
 #[test]
 fn block_is_empty_below_two_rows() {
     // A label with no room for one event is not worth the row.
-    assert!(feed_block_lines(&feed_of(5), ts("2026-09-03T20:00:00Z"), 80, 1).is_empty());
-    assert!(feed_block_lines(&feed_of(5), ts("2026-09-03T20:00:00Z"), 80, 0).is_empty());
+    assert!(feed_block_lines(&feed_of(5), ts("2026-09-03T20:00:00Z"), utc(), 80, 1).is_empty());
+    assert!(feed_block_lines(&feed_of(5), ts("2026-09-03T20:00:00Z"), utc(), 80, 0).is_empty());
 }
 
 #[test]
 fn block_draws_no_rule_of_its_own() {
     // Whatever sits above always ends in one; a second produced two identical dividers in
     // consecutive rows on a real dashboard.
-    let lines = feed_block_lines(&feed_of(4), ts("2026-09-03T20:00:00Z"), 40, 5);
+    let lines = feed_block_lines(&feed_of(4), ts("2026-09-03T20:00:00Z"), utc(), 40, 5);
     let first: String = lines[0].spans.iter().map(|s| s.content.as_ref()).collect();
     assert!(
         first.contains("ACTIVITY"),
@@ -324,7 +332,7 @@ fn block_draws_no_rule_of_its_own() {
 
 #[test]
 fn block_is_labelled_and_lists_newest_first() {
-    let lines = feed_block_lines(&feed_of(6), ts("2026-09-03T20:00:00Z"), 80, 6);
+    let lines = feed_block_lines(&feed_of(6), ts("2026-09-03T20:00:00Z"), utc(), 80, 6);
     let text: Vec<String> = lines
         .iter()
         .map(|l| {
@@ -358,7 +366,13 @@ fn block_is_labelled_and_lists_newest_first() {
 fn block_says_so_when_there_is_nothing_to_show() {
     // An unexplained empty box reads as breakage; "nothing has happened" is the honest
     // reading of a quiet fleet and must be stated.
-    let lines = feed_block_lines(&FeedState::default(), ts("2026-09-03T20:00:00Z"), 80, 5);
+    let lines = feed_block_lines(
+        &FeedState::default(),
+        ts("2026-09-03T20:00:00Z"),
+        utc(),
+        80,
+        5,
+    );
     let text: String = lines
         .iter()
         .flat_map(|l| l.spans.iter().map(|s| s.content.to_string()))
@@ -395,7 +409,7 @@ fn rows_are_truncated_to_width_never_wrapped() {
             ],
         ),
     );
-    let lines = feed_block_lines(&feed, ts("2026-09-03T20:00:00Z"), 40, 5);
+    let lines = feed_block_lines(&feed, ts("2026-09-03T20:00:00Z"), utc(), 40, 5);
     for line in &lines {
         let text: String = line.spans.iter().map(|s| s.content.as_ref()).collect();
         assert!(
@@ -408,7 +422,7 @@ fn rows_are_truncated_to_width_never_wrapped() {
 #[test]
 fn block_does_not_panic_on_a_hostile_width() {
     for width in [0usize, 1, 3, 10] {
-        let _ = feed_block_lines(&feed_of(4), ts("2026-09-03T20:00:00Z"), width, 5);
+        let _ = feed_block_lines(&feed_of(4), ts("2026-09-03T20:00:00Z"), utc(), width, 5);
     }
 }
 
@@ -589,7 +603,7 @@ fn block_pads_a_short_feed_to_its_full_height() {
     // fleet with three events in a twelve-row block returns five lines and the contract
     // ("exactly `rows` lines") quietly stops holding. Same asymmetry as phase A's commit
     // arm: one branch handling a case its sibling drops.
-    let lines = feed_block_lines(&feed_of(2), ts("2026-09-03T20:00:00Z"), 80, 8);
+    let lines = feed_block_lines(&feed_of(2), ts("2026-09-03T20:00:00Z"), utc(), 80, 8);
     assert_eq!(lines.len(), 8, "a short feed must still fill its rect");
 }
 
@@ -626,7 +640,7 @@ fn rows_are_tinted_by_what_produced_them() {
         "fixture precondition"
     );
 
-    let lines = feed_block_lines(&feed, ts("2026-09-03T20:00:00Z"), 80, 4);
+    let lines = feed_block_lines(&feed, ts("2026-09-03T20:00:00Z"), utc(), 80, 4);
     // span 0 is the time field, span 1 the body — kind tints the body. Indexed through a
     // helper because a PADDED body row is `Line::default()` with zero spans: a fixture
     // change that shortens the feed would otherwise turn this into an index panic instead
@@ -681,7 +695,7 @@ fn a_clock_and_a_date_are_visually_distinct() {
     );
 
     let now = ts("2026-09-03T09:00:00Z");
-    let lines = feed_block_lines(&feed, now, 80, 4);
+    let lines = feed_block_lines(&feed, now, utc(), 80, 4);
     let stamps: Vec<_> = lines[1..3].iter().map(|l| span_fg(l, 0)).collect();
     let texts: Vec<String> = lines[1..3]
         .iter()
@@ -709,7 +723,7 @@ fn the_stamp_survives_a_narrow_pane_before_the_body_does() {
     // The stamp is what makes the block chronological, so it is the last thing a narrow
     // pane should lose. Also guards the two-span truncation against exceeding the budget.
     for width in [0usize, 1, 4, 8, 12, 40] {
-        let lines = feed_block_lines(&feed_of(3), ts("2026-09-03T20:00:00Z"), width, 5);
+        let lines = feed_block_lines(&feed_of(3), ts("2026-09-03T20:00:00Z"), utc(), width, 5);
         for line in &lines {
             let text: String = line.spans.iter().map(|s| s.content.as_ref()).collect();
             assert!(

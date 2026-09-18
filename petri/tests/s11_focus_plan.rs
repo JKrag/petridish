@@ -134,6 +134,7 @@ impl Case {
             radar: &self.radar,
             target,
             now: pinned_now(),
+            tz_offset: chrono::FixedOffset::east_opt(0).unwrap(),
             feed: self.feed.as_ref(),
             prefs: &self.prefs,
         };
