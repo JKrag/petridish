@@ -470,6 +470,102 @@ fn help_popup_opens_and_closes_on_any_key() {
     );
 }
 
+/// `?` on the Dashboard, with content that actually matches the Dashboard rather than the
+/// Browser's own list. `help.rs`'s module doc comment names the discriminating keys:
+/// `PageUp`/`Home`/`/` etc. are Browser-only (no viewport to page through on the
+/// Dashboard's "truncate, never scroll" model, `SPEC.md` §5), and `y` is Browser-only for
+/// an unrelated reason (it yanks the Browser's own selection). Showing the Browser's list
+/// here would advertise keys that do nothing on this screen.
+#[test]
+fn help_popup_opens_on_the_dashboard_with_dashboard_specific_content() {
+    let radar = radar_of(vec![project("alpha", "alpha")]);
+    let mut screen = Screen::Dashboard;
+    let mut dashboard_state = Some(DashboardState::with_collapsed(
+        &radar,
+        Prefs::default().collapsed,
+    ));
+    let mut browser_state: Option<petri::browser::BrowserState> = None;
+    let mut picker = None;
+    let mut picker_action = None;
+    let mut help_open = false;
+    let mut notice = None;
+    let mut prefs = Prefs::default();
+    let prefs_path = scratch_prefs_path("help_popup_dashboard");
+    let last_good = Some(radar);
+    let feed = petri::feed::FeedState::default();
+    let mut terminal =
+        Terminal::new(TestBackend::new(80, 24)).expect("TestBackend terminal must construct");
+
+    let after_question = handle_key(
+        key(KeyCode::Char('?')),
+        &mut terminal,
+        &mut screen,
+        &mut dashboard_state,
+        &mut browser_state,
+        &mut picker,
+        &mut picker_action,
+        &mut help_open,
+        &mut notice,
+        &last_good,
+        &mut prefs,
+        &prefs_path,
+    );
+    assert_eq!(
+        after_question,
+        KeyOutcome::Continue(true),
+        "'?' must be bound on the Dashboard, not just the Browser"
+    );
+    assert!(help_open, "'?' must open the help popup");
+
+    render_current(
+        &mut terminal,
+        &last_good,
+        screen,
+        &dashboard_state,
+        &browser_state,
+        &picker,
+        help_open,
+        &notice,
+        &feed,
+        &prefs,
+    );
+    let text = rendered_text(&terminal);
+    assert!(
+        text.contains("any key closes"),
+        "the help popup must actually render on the Dashboard, not just set the flag, got:\n{text}"
+    );
+    assert!(
+        text.contains("token usage"),
+        "the Actions half is identical on both screens, got:\n{text}"
+    );
+    for browser_only in ["PageUp", "Home/End", "fast jump", "filter", "yank"] {
+        assert!(
+            !text.contains(browser_only),
+            "the Dashboard's help must not advertise the Browser-only {browser_only:?}, got:\n{text}"
+        );
+    }
+
+    let after_key = handle_key(
+        key(KeyCode::Char('j')),
+        &mut terminal,
+        &mut screen,
+        &mut dashboard_state,
+        &mut browser_state,
+        &mut picker,
+        &mut picker_action,
+        &mut help_open,
+        &mut notice,
+        &last_good,
+        &mut prefs,
+        &prefs_path,
+    );
+    assert_eq!(after_key, KeyOutcome::Continue(true));
+    assert!(
+        !help_open,
+        "any key must close the Dashboard's help popup too, same as the Browser's"
+    );
+}
+
 /// Shared setup for the focus-popup tests below: a Dashboard with three
 /// RUNNING (`StatusBucket::Active`) projects, so a header collapse has
 /// visible rows to remove and `j` lands the cursor on a real project row.

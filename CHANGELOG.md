@@ -16,6 +16,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   even with nothing selected — usage isn't project-specific.
 - **`make run`**: build and run `petri` against your real `~/.petridish/projects.json`
   in one command.
+- **`petri`: `?` opens the help popup on the Dashboard too**, not just the Browser —
+  with its own Navigation list (the two screens' keys genuinely differ).
 
 ### Fixed
 

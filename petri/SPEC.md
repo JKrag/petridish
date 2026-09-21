@@ -707,7 +707,7 @@ user's terminal in raw mode is a v1 blocker, not a polish item.
 | `s` | Browser: rescan now (§5.1) |
 | `u` | Browser and Dashboard (even with nothing selected — `Target::Fleet`, §5.1): hand off to a dedicated token-usage TUI (`IDEAS.md` `SURF-4`) |
 | `y` | Browser: yank the project's path to the clipboard (§5.1) |
-| `?` | Browser: open the help popup; any key closes it |
+| `?` | both screens: open the help popup (content tailored per screen, §5.1); any key closes it |
 | `q` | quit |
 
 **`J`/`K`/`PageUp`/`PageDown`/`Home`/`End` are Browser-only, not Dashboard.**
@@ -798,19 +798,24 @@ doc comment for the full mechanism and why simply ignoring `SIGINT` in petri wou
 been wrong (POSIX `exec()` preserves a `SIG_IGN` disposition across the call, so the
 child would inherit the ignore too and never see Ctrl-C either).
 
-Two more Browser keys are bound but are deliberately **not** registry entries,
-because neither one is "run an external program with a choice of candidates"
-(`ACT-1`'s whole reason for existing): `y` yanks the selected project's path to the
-clipboard by spawning `pbcopy` directly with piped stdin — no terminal hand-off, so
-`MECH-2`/`MECH-3` don't apply — and degrades to a notice on a machine without
-`pbcopy` (the Linux leg of CI, not a real target machine, but the workspace still
-builds and tests there). `?` opens a help popup (`MECH-1`'s second customer,
-`petri/src/help.rs`) listing every bound key; unlike the tool picker it has no
-interaction beyond dismissal — any key closes it, including `q`, since accidentally
-quitting out of a help screen would be a bad surprise. Its action-key half is
-generated from `tools::registry()`, per this section's "actions are data" rule above;
-`y` and `?` themselves are the one deliberate hardcoded exception in that list, since
-neither is a registry entry to generate from.
+Two more keys are bound but are deliberately **not** registry entries, because neither
+one is "run an external program with a choice of candidates" (`ACT-1`'s whole reason
+for existing): `y` (Browser-only) yanks the selected project's path to the clipboard by
+spawning `pbcopy` directly with piped stdin — no terminal hand-off, so `MECH-2`/`MECH-3`
+don't apply — and degrades to a notice on a machine without `pbcopy` (the Linux leg of
+CI, not a real target machine, but the workspace still builds and tests there). `?`
+opens a help popup (`MECH-1`'s second customer, `petri/src/help.rs`), bound on **both**
+screens; unlike the tool picker it has no interaction beyond dismissal — any key closes
+it, including `q`, since accidentally quitting out of a help screen would be a bad
+surprise. Its action-key half is generated from `tools::registry()`, per this section's
+"actions are data" rule above and identical on both screens (every action already fires
+on both — issue #64); `y` and `?` themselves are the one deliberate hardcoded exception
+in that list, since neither is a registry entry to generate from. Its Navigation half is
+**not** identical: `J`/`K`/`PageUp`/`PageDown`/`Home`/`End`/`/` are Browser-only (no
+viewport to page or filter on the Dashboard's "truncate, never scroll" model), and `y`
+is Browser-only for the unrelated reason above — so the popup renders a different
+Navigation list per screen rather than advertising keys that do nothing on the one it's
+open on.
 
 **The shifted variant of any action key re-picks its tool** (`IDEAS.md` `ACT-11`),
 opening the picker for a *one-off* launch: `Enter` runs the highlighted tool once and

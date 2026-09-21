@@ -1037,6 +1037,13 @@ pub fn handle_key<B: ratatui::backend::Backend>(
                     }
                     true
                 }
+                // `?`: open the help popup, same binding as the Browser's — see
+                // `help.rs`'s module doc comment for why its content differs per screen
+                // even though the key itself does not.
+                crossterm::event::KeyCode::Char('?') => {
+                    help_open = true;
+                    true
+                }
                 // Action keys (issue #64). Last arm, same ordering
                 // rule as the Browser's identical arm below: every
                 // navigation binding above keeps priority, so an
@@ -1745,17 +1752,17 @@ pub fn render_current<B: ratatui::backend::Backend>(
                     }
                     // Same overlay ordering as the Browser, drawn on top of
                     // everything above including the focus popup: the picker
-                    // (ACT-8/ACT-11) and the one-line notice (issue #64's
-                    // "no error is shown" half — `begin_action`/`begin_repick`
-                    // could already set these on the Dashboard, but nothing
-                    // ever drew them). `render_notice` lives in `browser.rs`
-                    // but draws a plain `Frame` + `&str`, no `BrowserState`
-                    // involved, so it is exactly as reusable here.
-                    //
-                    // No `help_open` leg here: `?` isn't bound on the
-                    // Dashboard, so that branch would have no caller.
+                    // (ACT-8/ACT-11), the help popup (`?`, now bound here too),
+                    // and the one-line notice (issue #64's "no error is shown"
+                    // half — `begin_action`/`begin_repick` could already set
+                    // these on the Dashboard, but nothing ever drew them).
+                    // `render_notice` lives in `browser.rs` but draws a plain
+                    // `Frame` + `&str`, no `BrowserState` involved, so it is
+                    // exactly as reusable here.
                     if let Some(p) = picker {
                         crate::picker::render(frame, p);
+                    } else if help_open {
+                        crate::help::render(frame, Screen::Dashboard);
                     } else if let Some(text) = notice {
                         crate::browser::render_notice(frame, text);
                     }
@@ -1777,7 +1784,7 @@ pub fn render_current<B: ratatui::backend::Backend>(
                     if let Some(p) = picker {
                         crate::picker::render(frame, p);
                     } else if help_open {
-                        crate::help::render(frame);
+                        crate::help::render(frame, Screen::Browser);
                     } else if let Some(text) = notice {
                         crate::browser::render_notice(frame, text);
                     }
