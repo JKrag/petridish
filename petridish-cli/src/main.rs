@@ -73,9 +73,12 @@ fn home() -> PathBuf {
         .unwrap_or_default()
 }
 
-/// Build the `Layout` for `platform`. The menu bar has no Linux equivalent at
-/// all (issue #75), so `menubar_dir`/`no_menubar` are only consulted on macOS —
-/// `menubar_plugins_dir` is unconditionally `None` on every other platform.
+/// Build the `Layout` for `platform`. `menubar_dir`/`no_menubar` govern the xbar
+/// *plugin-file* install step only — that stays macOS-only, since `petridish
+/// install` doesn't manage anything for the Cinnamon applet (it's copied in by
+/// hand). This says nothing about `petridish menubar` itself, which renders on
+/// every platform. `menubar_plugins_dir` is unconditionally `None` on every
+/// other platform.
 fn layout(platform: Platform, menubar_dir: Option<PathBuf>, no_menubar: bool) -> Layout {
     let home = home();
     let backend = match platform {
