@@ -705,6 +705,7 @@ user's terminal in raw mode is a v1 blocker, not a polish item.
 | `O` / `G` / `E` | Browser: re-pick the tool for that action (§5.1) |
 | `f` | Browser: reveal the project in Finder (§5.1) |
 | `s` | Browser: rescan now (§5.1) |
+| `u` | Browser: hand off to a dedicated token-usage TUI (§5.1, `IDEAS.md` `SURF-4`) |
 | `y` | Browser: yank the project's path to the clipboard (§5.1) |
 | `?` | Browser: open the help popup; any key closes it |
 | `q` | quit |
@@ -760,11 +761,16 @@ installed on this machine, and whether this project has the target at all (a pro
 with no `github_url` leaves `o` nothing to open). Both degrade to a one-line notice,
 never a crash.
 
-Five actions are registry entries today: `o` (open remote), `g` (git history, which
+Six actions are registry entries today: `o` (open remote), `g` (git history, which
 always resolves thanks to a pinned `git log --graph` fallback), `e` (open in editor),
-`f` (reveal in Finder, via `open {path}`) and `s` (rescan now, via `swab scan` —
+`f` (reveal in Finder, via `open {path}`), `s` (rescan now, via `swab scan` —
 `petri` already polls `projects.json`'s mtime every second and reloads on change, so
-firing the scan is the whole job; no reload logic lives on `petri`'s side).
+firing the scan is the whole job; no reload logic lives on `petri`'s side) and `u`
+(token usage — `FRAME-2`'s "hand off to a dedicated tool" applied to `IDEAS.md`
+`SURF-4`/issue #29: `ccusage blocks --active`, then `claude-monitor`, then `openusage`,
+in that order. Unlike `o`/`g` it has no always-installed fallback, so a machine with
+none of the three resolves `NoTool` — a notice, not a crash — same as `o` on a
+project with no remote).
 
 Two more Browser keys are bound but are deliberately **not** registry entries,
 because neither one is "run an external program with a choice of candidates"
@@ -814,10 +820,10 @@ warning** — never a crash, and never a refusal to start. There is a test for t
 
 Cut from v1 by explicit decision:
 
-- ~~**Quota bars** (5h/7d percentage + reset countdown).~~ **Partly shipped:** the 5h/7d
-  percentages are in both headers (§3.2, §3.4). What is still deferred is the **reset
-  countdown** — `five_hour_resets_at`/`seven_day_resets_at` are in the schema and
-  unrendered — and the key binding to a dedicated token TUI (`IDEAS.md`'s `SURF-4`).
+- ~~**Quota bars** (5h/7d percentage + reset countdown).~~ **Shipped, as a header
+  segment rather than a pane or a bar**: `5h 16% (3m) · 7d 1% (6d)` in both headers
+  (§3.2, §3.4), plus `u` (§5.1) handing off to a dedicated token TUI (`IDEAS.md`'s
+  `SURF-4`, issue #29 — both halves now closed).
 - **COLD as a `·`-joined one-line name list.** A collapsed COLD section plus the
   Browser covers it; the joined line is a curses-era space-saving trick.
 - **Inline card expansion** on the Dashboard. Still deferred as *inline*: §3.2's `Space`

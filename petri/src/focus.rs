@@ -1414,8 +1414,8 @@ fn mini_header_line(ctx: &FocusCtx, width: usize) -> Line<'static> {
     let silence = project
         .map(|p| silence_group(p, ctx.now).1)
         .unwrap_or_default();
-    let quota_full = crate::dashboard::quota_segment(ctx.radar.quota.as_ref(), false);
-    let quota_short = crate::dashboard::quota_segment(ctx.radar.quota.as_ref(), true);
+    let quota_full = crate::dashboard::quota_segment(ctx.radar.quota.as_ref(), false, ctx.now);
+    let quota_short = crate::dashboard::quota_segment(ctx.radar.quota.as_ref(), true, ctx.now);
     let join = |a: Option<&str>, b: &str| -> String {
         match (a, b.is_empty()) {
             (Some(a), false) => format!("{a} · {b}"),

@@ -40,7 +40,6 @@ anything.
 | `SURF-1` | A timeline/history screen across the fleet |
 | `SURF-2` | Native notifications on state transitions — unblocked now that `MECH-5` exists, needs more discussion before it's issue-ready |
 | `SURF-3` | Session manager for tmux/zellij → issue [#28](https://github.com/JKrag/petridish/issues/28) (merged with `ACT-2`'s `t`) |
-| `SURF-4` | Quota/token pane, plus a key to a dedicated tool → issue [#29](https://github.com/JKrag/petridish/issues/29); the 5h/7d header segment shipped, the reset countdown and the tool hand-off did not |
 | `SURF-5` | `petri dash --once` |
 | `SURF-8` | **DONE** — the focus panel shipped; what stays open is its list of deferred rungs, below |
 | `SPACE-6` | An `icons` tier (unicode / Nerd Font) behind a `glyph::` indirection — buys horizontal room |
@@ -143,6 +142,7 @@ broader multiplexer discussion).
 | `y` | yank path to clipboard | for pasting into another terminal; the one row that is *not* a registry entry, no child process involved | **done** |
 | `c` | `cd` here on exit | print the path for a shell wrapper to consume; petri becomes a navigator | split off #27, not yet its own issue — needs a shell-wrapper story first |
 | `s` | rescan now | invoke `swab scan` and refresh — `swab scan` otherwise only runs on `com.petridish.daemon.plist`'s 60s `StartInterval`, and hooks never trigger a full scan themselves | **done** |
+| `u` | hand off to a dedicated token-usage TUI | `MECH-2` — `ccusage`/`claude-monitor`/`openusage`, `SURF-4`'s `FRAME-2` half | **done** (`U` re-picks) |
 | `?` | help popup | `MECH-1`'s second customer, pure content generated from `tools::registry()` | **done** |
 
 ### ACT-3 — Git history with a graceful fallback chain
@@ -266,16 +266,17 @@ daily-useful — but which multiplexers to support (tmux, zellij, herdr, …) an
 abstraction needs discussion before implementation.
 
 ### SURF-4 — Quota / token pane, plus a key to a dedicated tool
-**Half done** (slice 8) — the in-house half shipped, as a header segment rather than a pane
-or a bar: `5h 16% · 7d 1%` in both the Dashboard's and `--mini`'s header, with an elision
-ladder (`SPEC.md` §3.2/§3.4). A *pane* would have spent body rows on a fleet-wide fact, and a
-*rail* a column of width, on the one screen whose whole problem is running out of room.
+**DONE** — issue [#29](https://github.com/JKrag/petridish/issues/29) closed, both halves
+shipped. The in-house half is a header segment rather than a pane or a bar: `5h 16% (3m) ·
+7d 1% (6d)` in both the Dashboard's and `--mini`'s header, with an elision ladder (`SPEC.md`
+§3.2/§3.4) — the reset countdown omits itself the same way an absent percentage does, never
+a fabricated `0m`. A *pane* would have spent body rows on a fleet-wide fact, and a *rail* a
+column of width, on the one screen whose whole problem is running out of room.
 
-Still open on issue [#29](https://github.com/JKrag/petridish/issues/29): the **reset
-countdown** (`five_hour_resets_at`/`seven_day_resets_at` are in the schema and unrendered),
-and `FRAME-2`'s other half — a key bound to whichever token TUI the user prefers, via the
-same registry. `DATA-5` remains the honest per-project `ctx%`; `context_used_pct` is
-deliberately rendered nowhere.
+`FRAME-2`'s other half — a key bound to whichever token TUI the user prefers — is `u` in
+`tools::registry()` (`ACT-2`'s table below): `ccusage blocks --active`, then
+`claude-monitor`, then `openusage`. `DATA-5` remains the honest per-project `ctx%`;
+`context_used_pct` is deliberately rendered nowhere.
 
 ### SURF-5 — `petri dash --once`
 Also already deferred in `SPEC.md` §7: render one frame to an off-screen buffer, print,

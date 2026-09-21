@@ -388,6 +388,58 @@ pub fn registry() -> Vec<Action> {
             // the whole job here — no reload logic needed on petri's side.
             candidates: vec![Candidate::new("swab", &["scan"], ExecMode::Background)],
         },
+        Action {
+            id: "usage",
+            key: 'u',
+            label: "token usage",
+            // `FRAME-2`'s other half of #29/`SURF-4`: hand off to a dedicated token-usage
+            // TUI, the same way `gitlog` hands off to a dedicated git TUI. `Target::Path`
+            // is the closest fit even though this action is fleet-scoped, not
+            // project-scoped (`ACT-5` is the still-open design for a true fleet action) —
+            // `Path` never gates on anything (`Target::missing` returns `false`
+            // unconditionally), so the key resolves on every project, and the launcher's
+            // cwd lands in the selected project's directory, which none of these tools
+            // care about. Unlike `browse`/`gitlog`, there is no always-installed fallback:
+            // a machine with none of the three resolves `NoTool`, which the footer and `?`
+            // popup already render as "not advertised" rather than a lying key.
+            target: Target::Path,
+            candidates: vec![
+                // `blocks --active` is the one-shot report closest to "quota, right now" —
+                // current 5h block, burn rate, projection. No bare live-refresh mode in the
+                // installed version, and critically no pager of its own: `Command::status()`
+                // in `exec::run_in_terminal` returns the instant the child exits, so a plain
+                // `ccusage blocks --active` prints ~20 lines and returns immediately — petri
+                // resumes and repaints over it before it can be read. This is `gitlog`'s
+                // `-+F -+X` problem (`ACT-3`, #39/#62) in a new coat: the fix there was
+                // pinning a pager that waits for `q`; here there is no `core.pager` knob to
+                // pin, so the pipe is built explicitly via a shell instead. Verified on a
+                // real machine: without the pipe the report flashes and vanishes; with it,
+                // `less` holds the screen until dismissed.
+                //
+                // `program` is `sh`, not `ccusage`, since the pipe needs a shell to build —
+                // but `id`/`probe` are overridden back to `ccusage` so `resolve`'s
+                // installedness check (and the stored preference, and the re-pick picker)
+                // still key off the tool this candidate is actually offering, not the shell
+                // it happens to be spawned through. Without this override `sh` is on every
+                // machine's `PATH`, so the candidate would resolve "installed" even where
+                // `ccusage` itself is absent, and `sh -c '... ccusage ...'` would fail at
+                // launch with "command not found" instead of falling through to the next
+                // candidate.
+                Candidate {
+                    id: "ccusage".to_string(),
+                    probe: "ccusage".to_string(),
+                    ..Candidate::new(
+                        "sh",
+                        &["-c", "ccusage blocks --active | less -R"],
+                        ExecMode::Terminal,
+                    )
+                },
+                // Bare invocation launches its live curses monitor.
+                Candidate::new("claude-monitor", &[], ExecMode::Terminal),
+                // Bare invocation launches its terminal dashboard.
+                Candidate::new("openusage", &[], ExecMode::Terminal),
+            ],
+        },
     ]
 }
 
