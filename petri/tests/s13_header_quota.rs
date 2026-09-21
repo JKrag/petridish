@@ -250,6 +250,31 @@ fn the_compressed_rung_never_carries_a_countdown() {
     );
 }
 
+/// Regression: the compressed guard above only covered the both-halves-present arm. The
+/// lone-half arms (`(Some(five), None)` / `(None, Some(seven))`) called `countdown`
+/// unconditionally, so `quota_segment(..., compressed: true, ...)` on a single populated
+/// half could still render e.g. `5h 16% (3m)` — a labelled countdown on the rung whose whole
+/// job is shedding detail. Caught in PR review on #88.
+#[test]
+fn the_compressed_rung_never_carries_a_countdown_for_a_lone_half_either() {
+    let only_five = quota_with_resets(
+        Some(16),
+        Some(now() + chrono::Duration::minutes(3)),
+        None,
+        None,
+    );
+    assert_eq!(
+        dashboard::quota_segment(Some(&only_five), true, now()).as_deref(),
+        Some("5h 16%")
+    );
+    let only_seven =
+        quota_with_resets(None, None, Some(1), Some(now() + chrono::Duration::days(6)));
+    assert_eq!(
+        dashboard::quota_segment(Some(&only_seven), true, now()).as_deref(),
+        Some("7d 1%")
+    );
+}
+
 #[test]
 fn context_used_pct_is_never_rendered() {
     // `DATA-5`: it belongs to the most recent session on this machine, not to the fleet and

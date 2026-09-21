@@ -109,6 +109,7 @@ fn configured_and_installed_known_candidate_wins_outright() {
         got,
         Resolution::Ready(Launch {
             program: "lazygit".to_string(),
+            display: "lazygit".to_string(),
             args: vec!["-p".to_string(), "/Users/x/repos/thing".to_string()],
             mode: ExecMode::Terminal,
         }),
@@ -130,6 +131,7 @@ fn configured_program_the_registry_has_never_heard_of_still_runs() {
         got,
         Resolution::Ready(Launch {
             program: "my-weird-git-tui".to_string(),
+            display: "my-weird-git-tui".to_string(),
             args: vec!["/Users/x/repos/thing".to_string()],
             mode: ExecMode::Terminal,
         })
@@ -150,6 +152,7 @@ fn unknown_configured_program_for_a_url_action_gets_the_url_not_the_path() {
         got,
         Resolution::Ready(Launch {
             program: "firefox".to_string(),
+            display: "firefox".to_string(),
             args: vec!["https://github.com/x/thing".to_string()],
             mode: ExecMode::Terminal,
         })
@@ -191,6 +194,7 @@ fn xdg_open_wins_on_a_machine_with_no_open() {
         got,
         Resolution::Ready(Launch {
             program: "xdg-open".to_string(),
+            display: "xdg-open".to_string(),
             args: vec!["https://github.com/x/thing".to_string()],
             mode: ExecMode::Background,
         })
@@ -211,6 +215,7 @@ fn xdg_open_is_a_fallback_so_open_and_xdg_open_together_are_not_ambiguous() {
         got,
         Resolution::Ready(Launch {
             program: "open".to_string(),
+            display: "open".to_string(),
             args: vec!["https://github.com/x/thing".to_string()],
             mode: ExecMode::Background,
         })
@@ -251,6 +256,7 @@ fn stale_configured_program_falls_through_to_a_clean_single_winner() {
         got,
         Resolution::Ready(Launch {
             program: "serie".to_string(),
+            display: "serie".to_string(),
             args: vec![],
             mode: ExecMode::Terminal,
         }),
@@ -383,6 +389,7 @@ fn a_lone_fallback_never_opens_the_picker() {
         got,
         Resolution::Ready(Launch {
             program: "git".to_string(),
+            display: "git".to_string(),
             args: vec!["log".to_string(), "--graph".to_string()],
             mode: ExecMode::Terminal,
         }),
@@ -404,6 +411,7 @@ fn one_real_candidate_plus_a_fallback_runs_the_real_one_without_asking() {
         got,
         Resolution::Ready(Launch {
             program: "lazygit".to_string(),
+            display: "lazygit".to_string(),
             args: vec!["-p".to_string(), "/Users/x/repos/thing".to_string()],
             mode: ExecMode::Terminal,
         })
@@ -443,6 +451,7 @@ fn a_single_real_candidate_runs_without_asking() {
         got,
         Resolution::Ready(Launch {
             program: "open".to_string(),
+            display: "open".to_string(),
             args: vec!["https://github.com/x/thing".to_string()],
             mode: ExecMode::Background,
         }),
@@ -479,6 +488,7 @@ fn only_placeholder_arguments_are_substituted() {
         got,
         Resolution::Ready(Launch {
             program: "git".to_string(),
+            display: "git".to_string(),
             args: vec![
                 "-c".to_string(),
                 "core.pager=less -+F -+X -R".to_string(),
@@ -857,6 +867,7 @@ fn launch_for_uses_a_known_candidate_args_and_mode() {
         got,
         Launch {
             program: "serie".to_string(),
+            display: "serie".to_string(),
             args: vec![],
             mode: ExecMode::Terminal,
         },
@@ -871,6 +882,7 @@ fn launch_for_uses_a_known_candidate_args_and_mode() {
         got,
         Launch {
             program: "lazygit".to_string(),
+            display: "lazygit".to_string(),
             args: vec!["-p".to_string(), "/Users/x/repos/thing".to_string()],
             mode: ExecMode::Terminal,
         },
@@ -887,6 +899,7 @@ fn launch_for_runs_an_unknown_program_with_a_single_target_argument() {
         got,
         Launch {
             program: "my-weird-git-tui".to_string(),
+            display: "my-weird-git-tui".to_string(),
             args: vec!["/Users/x/repos/thing".to_string()],
             mode: ExecMode::Terminal,
         }
@@ -902,6 +915,7 @@ fn launch_for_passes_the_url_to_an_unknown_program_on_a_url_action() {
         got,
         Launch {
             program: "firefox".to_string(),
+            display: "firefox".to_string(),
             args: vec!["https://github.com/x/thing".to_string()],
             mode: ExecMode::Terminal,
         }
@@ -998,5 +1012,107 @@ fn repick_ignores_any_stored_choice_and_lists_every_installed_candidate() {
             Candidate::new("lazygit", &["-p", "{path}"], ExecMode::Terminal),
         ]),
         "the whole installed set, no ambiguity gate, no stored choice"
+    );
+}
+
+// ------------------------------------------------------ #29/SURF-4: the `usage` action
+
+fn usage_fixture() -> Action {
+    tools::registry()
+        .into_iter()
+        .find(|a| a.id == "usage")
+        .expect("registry must carry a usage action")
+}
+
+fn ccusage_candidate(action: &Action) -> &Candidate {
+    action
+        .candidates
+        .iter()
+        .find(|c| c.id == "ccusage")
+        .expect("usage action must carry a ccusage candidate")
+}
+
+#[test]
+fn usage_is_bound_to_u_and_has_no_always_installed_fallback() {
+    // Unlike gitlog/browse, there is no last-resort candidate here — a machine with none
+    // of ccusage/claude-monitor/openusage genuinely has nothing to hand off to.
+    let usage = usage_fixture();
+    assert_eq!(usage.key, 'u');
+    assert!(
+        usage.candidates.iter().all(|c| !c.fallback),
+        "usage has no always-installed fallback by design"
+    );
+    let got = tools::resolve(&usage, &PROJECT, None, &only(&[]));
+    assert_eq!(got, Resolution::NoTool);
+}
+
+#[test]
+fn ccusage_candidates_installedness_check_is_keyed_off_ccusage_not_the_shell_wrapper() {
+    // The candidate's `program` is `sh` (the pipe to `less` needs a shell to build), but
+    // `id`/`probe` are overridden back to `ccusage`. `sh` is on every machine's PATH, so
+    // without that override this candidate would resolve `Ready` even on a machine with no
+    // `ccusage` at all, and `sh -c '... ccusage ...'` would fail at launch instead of
+    // falling through to claude-monitor/openusage.
+    let usage = usage_fixture();
+    let candidate = ccusage_candidate(&usage);
+    assert_eq!(candidate.program, "sh");
+    assert_eq!(candidate.probe, "ccusage");
+
+    // A machine with `sh` (every machine) but not `ccusage` must fall through, not resolve
+    // this candidate.
+    let got = tools::resolve(&usage, &PROJECT, None, &only(&["claude-monitor"]));
+    match got {
+        Resolution::Ready(launch) => assert_eq!(launch.display, "claude-monitor"),
+        other => panic!("must fall through past the absent ccusage candidate, got {other:?}"),
+    }
+}
+
+#[test]
+fn ccusage_launch_displays_as_ccusage_not_sh() {
+    // Regression: `focus::tool_status` and `lib.rs`'s failure notice both read
+    // `Launch::display`. Before it existed they read `Launch::program`, which is `sh` for
+    // this candidate — so the ACTIONS rung would have advertised `u token usage sh`.
+    let usage = usage_fixture();
+    let got = tools::resolve(&usage, &PROJECT, None, &only(&["ccusage"]));
+    match got {
+        Resolution::Ready(launch) => {
+            assert_eq!(
+                launch.program, "sh",
+                "still actually spawns through a shell"
+            );
+            assert_eq!(
+                launch.display, "ccusage",
+                "but must display as the real tool"
+            );
+        }
+        other => panic!("expected Ready, got {other:?}"),
+    }
+}
+
+#[test]
+fn ccusage_pipes_through_a_pinned_pager_with_a_no_less_guard() {
+    // Same flags gitlog's own fallback pins, and for the same reason (#39/#62): a plain
+    // `less -R` still inherits git's `LESS=FRX` default from the environment, so `-F` would
+    // flash-and-exit a short report and `-X` would leave it in the shell's scrollback
+    // instead of the alternate screen. `command -v less` guards the pipe so a machine with
+    // `ccusage` but no `less` degrades to `cat` instead of a bare "command not found".
+    let usage = usage_fixture();
+    let candidate = ccusage_candidate(&usage);
+    let script = candidate
+        .args
+        .iter()
+        .find(|a| a.contains("ccusage"))
+        .expect("the shell script arg must be present");
+    assert!(
+        script.contains("-+F"),
+        "must cancel inherited LESS=F: {script:?}"
+    );
+    assert!(
+        script.contains("-+X"),
+        "must cancel inherited LESS=X: {script:?}"
+    );
+    assert!(
+        script.contains("command -v less"),
+        "must guard the pager for machines without less: {script:?}"
     );
 }

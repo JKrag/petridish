@@ -65,6 +65,7 @@ fn project() -> petridish_core::schema::Project {
 fn fixture_launch() -> Launch {
     Launch {
         program: "fixture-tool".to_string(),
+        display: "fixture-tool".to_string(),
         args: Vec::new(),
         mode: ExecMode::Terminal,
     }

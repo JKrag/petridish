@@ -193,6 +193,14 @@ pub struct Launch {
     pub program: String,
     pub args: Vec<String>,
     pub mode: ExecMode,
+    /// The name to show the user — `focus.rs`'s ACTIONS rung, and `lib.rs`'s
+    /// failure notice. Usually equal to `program`, but diverges whenever a
+    /// candidate's `id` does (`as_app`'s named browsers, and the `usage`
+    /// action's `ccusage` candidate, whose `program` is `sh` because the
+    /// pager pipe needs a shell to build). Carrying it here rather than
+    /// re-deriving it from `program` at each display site is what keeps
+    /// "which tool is this, really" answered in one place instead of two.
+    pub display: String,
 }
 
 /// The outcome of resolving one action against one machine and one project.
@@ -414,7 +422,23 @@ pub fn registry() -> Vec<Action> {
                 // pinning a pager that waits for `q`; here there is no `core.pager` knob to
                 // pin, so the pipe is built explicitly via a shell instead. Verified on a
                 // real machine: without the pipe the report flashes and vanishes; with it,
-                // `less` holds the screen until dismissed.
+                // `less` holds the screen until dismissed. `-+F -+X` are the exact same
+                // flags gitlog's fallback pins and for the same measured reason: git's own
+                // `LESS=FRX` default would otherwise make `-F` flash-and-exit a short report
+                // and `-X` leave it sitting in the shell's normal buffer instead of the
+                // alternate screen. `less`'s own default (unset `LESS`) needs no override,
+                // but `LESS` is a shell-inherited variable, not petri's to control, so the
+                // pin has to happen here regardless of what set it.
+                //
+                // `command -v less` guards the pipe so a machine with `ccusage` but no
+                // `less` (a minimal Linux install, say — `less` isn't part of POSIX base)
+                // still shows the report via `cat` instead of a bare `less: command not
+                // found` flashing past. `probe` below only verifies `ccusage`, matching
+                // `gitlog`'s own fallback (which never probes for `less` either, on the same
+                // "near-universal" assumption) — the guard exists so the one case where that
+                // assumption is wrong degrades to "no pager, same flash as before this
+                // candidate existed" rather than an error message, not so this candidate
+                // needs a second probe.
                 //
                 // `program` is `sh`, not `ccusage`, since the pipe needs a shell to build —
                 // but `id`/`probe` are overridden back to `ccusage` so `resolve`'s
@@ -430,7 +454,11 @@ pub fn registry() -> Vec<Action> {
                     probe: "ccusage".to_string(),
                     ..Candidate::new(
                         "sh",
-                        &["-c", "ccusage blocks --active | less -R"],
+                        &[
+                            "-c",
+                            "ccusage blocks --active | { command -v less >/dev/null && \
+                             less -+F -+X -R || cat; }",
+                        ],
                         ExecMode::Terminal,
                     )
                 },
@@ -560,6 +588,7 @@ fn build_launch(candidate: &Candidate, facts: &Facts) -> Launch {
             .map(|a| substitute(a, facts))
             .collect(),
         mode: candidate.mode,
+        display: candidate.id.clone(),
     }
 }
 
@@ -607,6 +636,7 @@ pub fn launch_for(action: &Action, facts: &Facts, id: &str) -> Launch {
             // of its own.
             args: vec![action_target(action.target, facts).to_string()],
             mode: ExecMode::Terminal,
+            display: id.to_string(),
         }
     }
 }

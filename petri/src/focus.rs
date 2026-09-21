@@ -1031,7 +1031,7 @@ fn tool_status(action: &crate::tools::Action, configured: Option<&str>) -> Optio
     let status = match crate::tools::resolve(action, &facts, configured, &|probe| {
         crate::exec::is_installed_probe(probe)
     }) {
-        crate::tools::Resolution::Ready(launch) => Some(ToolStatus::Ready(launch.program)),
+        crate::tools::Resolution::Ready(launch) => Some(ToolStatus::Ready(launch.display)),
         crate::tools::Resolution::Ambiguous(_) => Some(ToolStatus::Ambiguous),
         crate::tools::Resolution::NoTool => None,
         crate::tools::Resolution::NoTarget => {

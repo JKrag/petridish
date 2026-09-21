@@ -2079,7 +2079,7 @@ fn launch_now<B: ratatui::backend::Backend>(
     match crate::exec::run(terminal, launch, cwd) {
         Ok(crate::exec::Outcome::Finished(_)) | Ok(crate::exec::Outcome::Detached) => None,
         Ok(crate::exec::Outcome::Failed(e)) => {
-            Some(format!("could not run {}: {e}", launch.program))
+            Some(format!("could not run {}: {e}", launch.display))
         }
         Err(e) => Some(format!("terminal hand-off failed: {e}")),
     }
