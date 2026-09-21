@@ -27,6 +27,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `u`'s candidates) quits on Ctrl-C rather than `q`; that keystroke used to send
   `SIGINT` to petri as well as the child, taking the whole TUI down. Terminal
   hand-offs now give the child its own process group for the duration.
+- **`petri`: Ctrl-Z in a hand-off no longer hangs petri.** A stopped (not exited)
+  child left the wait loop blocked forever; it's now resumed immediately instead.
+- **`petri`: `u` no longer launches in the selected project's directory.** Token
+  usage isn't project-specific, so it now always runs from petri's own working
+  directory, whether or not a project happens to be selected.
 
 ## [1.0.0-beta.8] — 2026-09-14
 

@@ -147,9 +147,13 @@ pub fn render(frame: &mut ratatui::Frame, screen: crate::Screen) {
 
     let area = frame.area();
     let width = 62.min(area.width.saturating_sub(4)).max(20);
-    // +2 for the block border, +1 for the footer row — clamped to the terminal's own height
-    // so the popup itself never overflows the frame.
-    let height = (lines.len() as u16 + 3).min(area.height.saturating_sub(2));
+    // +2 for the block border, +1 for the footer row — clamped to the terminal's OWN
+    // height (not `height - 2`), so the popup can use every row available before it starts
+    // dropping content. The Global/Project split added enough rows that a `- 2` margin
+    // clipped `s`/`y` off the bottom at a perfectly ordinary 80x24 terminal — caught in
+    // review. A `Flex::Center`'d popup that fills the whole screen reads as "big help
+    // screen," not as a bug; a popup that silently hides two of its own keybindings does.
+    let height = (lines.len() as u16 + 3).min(area.height);
     let [popup] = Layout::horizontal([Constraint::Length(width)])
         .flex(Flex::Center)
         .areas(area);
