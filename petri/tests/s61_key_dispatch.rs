@@ -536,7 +536,25 @@ fn help_popup_opens_on_the_dashboard_with_dashboard_specific_content() {
     );
     assert!(
         text.contains("token usage"),
-        "the Actions half is identical on both screens, got:\n{text}"
+        "the Actions lists are identical on both screens (Browser-only `y` aside), got:\n{text}"
+    );
+    assert!(
+        text.contains("Global actions") && text.contains("Project actions"),
+        "the Actions section must split into Global (Target::Fleet, plus `?`) and \
+         Project, got:\n{text}"
+    );
+    // `u` (Target::Fleet) must appear in the Global section, i.e. before "Project
+    // actions" — the split is meaningless if a fleet-scoped action lands in the wrong
+    // half.
+    let global_idx = text.find("Global actions").expect("Global actions heading");
+    let project_idx = text
+        .find("Project actions")
+        .expect("Project actions heading");
+    let usage_idx = text.find("token usage").expect("token usage row");
+    assert!(
+        global_idx < usage_idx && usage_idx < project_idx,
+        "`u` (token usage, Target::Fleet) must be listed under Global actions, before \
+         the Project actions heading, got:\n{text}"
     );
     for browser_only in ["PageUp", "Home/End", "fast jump", "filter", "yank"] {
         assert!(
