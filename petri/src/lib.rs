@@ -450,7 +450,7 @@ pub fn mini_dispatch(
 ) -> Option<crate::tools::Launch> {
     let registry = crate::tools::registry();
     let action = registry.iter().find(|a| a.key == key)?;
-    let resolution = resolve_action(action, project, prefs);
+    let resolution = resolve_action(action, Some(project), prefs);
     mini_apply_resolution(resolution, action, project, notice, now)
 }
 
@@ -1839,13 +1839,24 @@ fn current_selected_project<'a>(
 /// exactly that unfalsifiable claim). See `s8_tools.rs`'s `resolve_action` tests.
 pub fn resolve_action(
     action: &crate::tools::Action,
-    project: &petridish_core::schema::Project,
+    project: Option<&petridish_core::schema::Project>,
     prefs: &Prefs,
 ) -> crate::tools::Resolution {
-    let facts = crate::tools::Facts {
-        path: &project.path,
-        url: project.git.github_url.as_deref(),
-        is_repo: project.git.is_repo,
+    let facts = match project {
+        Some(project) => crate::tools::Facts {
+            path: &project.path,
+            url: project.git.github_url.as_deref(),
+            is_repo: project.git.is_repo,
+        },
+        // Only reachable for `Target::Fleet` — the only target whose `missing()` is
+        // unconditionally `false` regardless of `Facts`, so an empty placeholder here can
+        // never wrongly unlock a project-scoped action. Every call site that can pass
+        // `None` (`begin_action`/`begin_repick`/`run_action`) guards on the target first.
+        None => crate::tools::Facts {
+            path: "",
+            url: None,
+            is_repo: false,
+        },
     };
     // `ACT-4`'s resolution order for the editor: the stored answer first, then
     // `$VISUAL`, then `$EDITOR`, then the registry probe. Reading the environment here
@@ -1881,6 +1892,16 @@ pub fn resolve_action(
     })
 }
 
+/// The launcher's working directory for a resolved action: the selected project's path, or
+/// petri's own cwd (`.`) when there is none (`Target::Fleet`, the only target that can
+/// resolve with no project selected). Shared by `begin_action`/`begin_repick`/`run_action`
+/// so the fallback can't drift between the three dispatch paths.
+fn action_cwd(project: Option<&petridish_core::schema::Project>) -> &std::path::Path {
+    project
+        .map(|p| std::path::Path::new(p.path.as_str()))
+        .unwrap_or_else(|| std::path::Path::new("."))
+}
+
 /// Press an action key: resolve it against this machine and this project, then
 /// either run it, open the picker, or explain why neither happened.
 ///
@@ -1895,12 +1916,16 @@ fn begin_action<B: ratatui::backend::Backend>(
     picker: &mut Option<crate::picker::PickerState>,
     picker_action: &mut Option<crate::tools::Action>,
 ) -> Option<String> {
-    let Some(project) = project else {
+    // Every target but `Fleet` needs a selected project just to have somewhere to point
+    // the launcher's `cwd` — `Fleet` (the `usage` action, #29) needs nothing from any
+    // project, so it alone is allowed to fire with nothing selected (`action_cwd` supplies
+    // petri's own working directory in that case).
+    if project.is_none() && action.target != crate::tools::Target::Fleet {
         return Some("nothing selected".to_string());
-    };
+    }
     match resolve_action(action, project, prefs) {
         crate::tools::Resolution::Ready(launch) => {
-            launch_now(terminal, &launch, std::path::Path::new(&project.path))
+            launch_now(terminal, &launch, action_cwd(project))
         }
         crate::tools::Resolution::Ambiguous(installed) => {
             *picker = Some(crate::picker::PickerState::new(action, installed));
@@ -1917,15 +1942,17 @@ fn begin_action<B: ratatui::backend::Backend>(
                 .collect::<Vec<_>>()
                 .join(", ")
         )),
-        // `ACT-9`'s per-project axis, phrased in terms of the project rather
-        // than the tooling: this is the half the user can see on the row in
-        // front of them.
-        // `ACT-9`'s per-project axis. The reason comes from the target rather
-        // than being spelled here, so `o` on a project with no remote and `g` on
-        // a directory that is not a repository each say their own true thing.
-        crate::tools::Resolution::NoTarget => {
-            Some(format!("{} {}", project.name, action.target.notice()))
-        }
+        // `ACT-9`'s per-project axis, phrased in terms of the project rather than the
+        // tooling: this is the half the user can see on the row in front of them.
+        // Unreachable for `Fleet` (`Target::missing` is unconditionally `false` for it,
+        // same as `Path`), so `project` is guaranteed `Some` here — guarded above.
+        crate::tools::Resolution::NoTarget => Some(format!(
+            "{} {}",
+            project
+                .expect("NoTarget is unreachable for Target::Fleet")
+                .name,
+            action.target.notice()
+        )),
     }
 }
 
@@ -1942,18 +1969,33 @@ fn begin_repick(
     picker: &mut Option<crate::picker::PickerState>,
     picker_action: &mut Option<crate::tools::Action>,
 ) -> Option<String> {
-    let Some(project) = project else {
+    // Same "Fleet doesn't need a selection at all" exception as `begin_action`.
+    if project.is_none() && action.target != crate::tools::Target::Fleet {
         return Some("nothing selected".to_string());
-    };
-    let facts = crate::tools::Facts {
-        path: &project.path,
-        url: project.git.github_url.as_deref(),
-        is_repo: project.git.is_repo,
+    }
+    let facts = match project {
+        Some(project) => crate::tools::Facts {
+            path: &project.path,
+            url: project.git.github_url.as_deref(),
+            is_repo: project.git.is_repo,
+        },
+        None => crate::tools::Facts {
+            path: "",
+            url: None,
+            is_repo: false,
+        },
     };
     match crate::tools::repick_candidates(action, &facts, &|p| crate::exec::is_installed_probe(p)) {
-        // `ACT-9`'s per-project axis, phrased the same way `begin_action`
-        // phrases it, so the two paths never disagree on screen.
-        None => Some(format!("{} {}", project.name, action.target.notice())),
+        // `ACT-9`'s per-project axis, phrased the same way `begin_action` phrases it, so
+        // the two paths never disagree on screen. Unreachable for `Fleet` (same reasoning
+        // as `begin_action`'s `NoTarget` arm), so `project` is guaranteed `Some` here.
+        None => Some(format!(
+            "{} {}",
+            project
+                .expect("repick's None arm is unreachable for Target::Fleet")
+                .name,
+            action.target.notice()
+        )),
         // An empty list still opens the popup: `Other — specify path…` is
         // always a row, so a machine with nothing installed is still usable.
         Some(installed) => {
@@ -2016,19 +2058,33 @@ fn run_action<B: ratatui::backend::Backend>(
     program: &str,
     project: Option<&petridish_core::schema::Project>,
 ) -> Option<String> {
-    let Some(project) = project else {
+    // Same "Fleet doesn't need a selection at all" exception as `begin_action`/
+    // `begin_repick`. `launch_blocked_notice` is skipped rather than fed a placeholder
+    // project when there is none: it exists to catch a project's target going missing
+    // *between* the picker opening and this closing it (#38's re-check), which has nothing
+    // to catch when there was never a project in the loop to begin with.
+    if project.is_none() && action.target != crate::tools::Target::Fleet {
         return Some("nothing selected".to_string());
-    };
-    let facts = crate::tools::Facts {
-        path: &project.path,
-        url: project.git.github_url.as_deref(),
-        is_repo: project.git.is_repo,
-    };
-    if let Some(notice) = launch_blocked_notice(action, project) {
+    }
+    if let Some(project) = project
+        && let Some(notice) = launch_blocked_notice(action, project)
+    {
         return Some(notice);
     }
+    let facts = match project {
+        Some(project) => crate::tools::Facts {
+            path: &project.path,
+            url: project.git.github_url.as_deref(),
+            is_repo: project.git.is_repo,
+        },
+        None => crate::tools::Facts {
+            path: "",
+            url: None,
+            is_repo: false,
+        },
+    };
     let launch = crate::tools::launch_for(action, &facts, program);
-    launch_now(terminal, &launch, std::path::Path::new(&project.path))
+    launch_now(terminal, &launch, action_cwd(project))
 }
 
 /// Copy the selected project's path to the system clipboard via a piped

@@ -47,6 +47,14 @@ serde_json.workspace = true
 # using it here means petri measures text the way its renderer will.
 unicode-width = "0.2"
 
+# Unix-only: terminal job control in `exec::run_in_terminal` (Ctrl-C hand-off, #88 review
+# follow-up). Already in `Cargo.lock` as a transitive dependency of crossterm/mio on every
+# platform this builds for, so pulling it in directly here costs nothing extra in the
+# dependency tree — it only makes an existing transitive dependency a declared one, gated
+# to the one platform family (`cfg(unix)`) that has `tcsetpgrp`/process groups at all.
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+
 # Test-only: PTY end-to-end harness (petri/SPEC.md §8 layer 3, ADR-0003). Not in
 # SPEC §10's runtime dependency list because it never ships in the binary.
 # (serde_json is already a real dependency above, also usable from tests/.)

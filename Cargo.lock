@@ -2480,6 +2480,7 @@ version = "1.0.0-beta.8"
 dependencies = [
  "chrono",
  "crossterm",
+ "libc",
  "petridish-core",
  "portable-pty",
  "ratatui",
