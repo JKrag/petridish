@@ -7,11 +7,25 @@
 //! (see lib.rs's action-key match arm comment). `y` and `?` themselves are
 //! NOT registry entries, so they are the one deliberate hardcoded exception
 //! below.
+//!
+//! **The Navigation half is screen-specific; the Actions half is not.** Every registry
+//! action already fires on both the Dashboard and the Browser (issue #64), but their
+//! navigation keys genuinely differ — `J`/`K`/`PageUp`/`PageDown`/`Home`/`End`/`/` are
+//! Browser-only (`SPEC.md` §5: the Dashboard's "truncate, never scroll" model has no
+//! viewport to page through), and `y` is Browser-only for an unrelated reason (it yanks
+//! the Browser's own row selection, never wired to the Dashboard's). Showing the
+//! Browser's list on the Dashboard would advertise half a dozen keys that do nothing
+//! there — exactly the "would a new user be misled?" failure `SPEC.md` §5.1's footer
+//! rule already forbids for the footer, applied here to the popup that exists to answer
+//! "what can I press."
 
 /// Draw the help popup as a centred overlay (`MECH-1`), same technique as
 /// `picker::render`: `Clear` the region, then draw a bordered `Paragraph`
 /// over it. Must be called last in the frame, same as the picker.
-pub fn render(frame: &mut ratatui::Frame) {
+///
+/// `screen` selects the Navigation half's content (see the module doc comment); the
+/// Actions half is identical either way.
+pub fn render(frame: &mut ratatui::Frame, screen: crate::Screen) {
     use ratatui::layout::{Constraint, Flex, Layout};
     use ratatui::style::{Modifier, Style};
     use ratatui::text::{Line, Span};
@@ -26,21 +40,38 @@ pub fn render(frame: &mut ratatui::Frame) {
             .fg(crate::theme::ACCENT)
             .add_modifier(Modifier::BOLD),
     )));
-    for (key, label) in [
-        ("j/k, ↑/↓", "move selection"),
-        // Placed right after the most-used binding, not at the list's tail:
-        // `render`'s height clamp (below) can clip this popup's own content
-        // on a short terminal, and a narrow-AND-short terminal — exactly the
-        // geometry where `Space` is the only route to the detail pane's
-        // fields (issue #35) — is also the geometry most likely to clip it.
-        ("Space", "toggle detail popup (narrow/short terminals)"),
-        ("J/K", "fast jump (~10 rows)"),
-        ("PageUp/PageDown", "jump one screenful"),
-        ("Home/End", "jump to first/last row"),
-        ("/", "filter"),
-        ("Tab", "switch to Dashboard"),
-        ("q", "quit"),
-    ] {
+    let nav: &[(&str, &str)] = match screen {
+        crate::Screen::Browser => &[
+            ("j/k, ↑/↓", "move selection"),
+            // Placed right after the most-used binding, not at the list's tail:
+            // `render`'s height clamp (below) can clip this popup's own content
+            // on a short terminal, and a narrow-AND-short terminal — exactly the
+            // geometry where `Space` is the only route to the detail pane's
+            // fields (issue #35) — is also the geometry most likely to clip it.
+            ("Space", "toggle detail popup (narrow/short terminals)"),
+            ("J/K", "fast jump (~10 rows)"),
+            ("PageUp/PageDown", "jump one screenful"),
+            ("Home/End", "jump to first/last row"),
+            ("/", "filter"),
+            ("Tab", "switch to Dashboard"),
+            ("q", "quit"),
+        ],
+        crate::Screen::Dashboard => &[
+            ("j/k, ↑/↓", "move selection"),
+            (
+                "Space",
+                "collapse/expand a section, or open a project's details",
+            ),
+            (
+                "Enter",
+                "toggle a section, or jump to the Browser with this project",
+            ),
+            ("Esc", "close the project popup"),
+            ("Tab", "switch to Browser"),
+            ("q", "quit"),
+        ],
+    };
+    for (key, label) in nav {
         lines.push(Line::from(format!("  {key:<16} {label}")));
     }
     lines.push(Line::from(""));
@@ -58,9 +89,11 @@ pub fn render(frame: &mut ratatui::Frame) {
             action.key.to_ascii_uppercase()
         )));
     }
-    // Not registry entries — the one deliberate hardcoded exception, see the
-    // module doc comment.
-    lines.push(Line::from("  y                yank path to clipboard"));
+    // Not a registry entry, and Browser-only (see the module doc comment) — the one
+    // deliberate hardcoded exception, and only on the screen where it actually fires.
+    if screen == crate::Screen::Browser {
+        lines.push(Line::from("  y                yank path to clipboard"));
+    }
     lines.push(Line::from("  ?                this help"));
 
     // The closing hint is drawn in its own fixed row rather than appended to `lines`, so it

@@ -83,6 +83,11 @@ const RENDER_MODULES: &[&str] = &[
     // Phase B round that renders one is gated, rather than the module joining the list after
     // somebody notices.
     "focus.rs",
+    // Missed when the module shipped — its own `↑`/`↓` nav-key labels went ungated until
+    // this was noticed while touching the file for an unrelated change (`?` on the
+    // Dashboard). Exactly the gap the note above warns about: "what draws", not "what drew
+    // when this gate was written."
+    "help.rs",
 ];
 
 /// Every non-ASCII character permitted in the modules above, with a reason.
@@ -99,6 +104,14 @@ const ALLOWED: &[(char, &str)] = &[
     (
         '\u{2192}',
         "bucket-transition arrow in a feed row (\"active → stale\")",
+    ),
+    (
+        '\u{2191}',
+        "up-arrow in the help popup's \"j/k, ↑/↓\" nav-key label",
+    ),
+    (
+        '\u{2193}',
+        "down-arrow in the help popup's \"j/k, ↑/↓\" nav-key label",
     ),
     ('\u{2500}', "light section rule"),
     ('\u{2502}', "browser pane divider / grid column gutter"),
