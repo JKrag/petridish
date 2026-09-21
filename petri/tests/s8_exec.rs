@@ -38,6 +38,7 @@ fn launch(program: &str, args: &[&str]) -> Launch {
         program: program.to_string(),
         args: args.iter().map(|a| (*a).to_string()).collect(),
         mode: ExecMode::Background,
+        display: program.to_string(),
     }
 }
 

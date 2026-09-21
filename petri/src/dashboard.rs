@@ -1621,7 +1621,13 @@ pub fn quota_segment(
     now: chrono::DateTime<chrono::Utc>,
 ) -> Option<String> {
     let q = quota?;
+    // `compressed` short-circuits to no countdown at all, even for a lone half: the
+    // compressed rung exists to shed detail, and a lone `5h 16% (3m)` would defeat that as
+    // surely as the labelled pair would.
     let countdown = |resets_at: Option<chrono::DateTime<chrono::Utc>>| -> Option<String> {
+        if compressed {
+            return None;
+        }
         let resets_at = resets_at?;
         let secs = resets_at.signed_duration_since(now).num_seconds();
         (secs > 0).then(|| format!(" ({})", humanize_secs(secs as u64)))
