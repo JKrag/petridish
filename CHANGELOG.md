@@ -18,6 +18,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   in one command.
 - **`petri`: `?` opens the help popup on the Dashboard too**, not just the Browser —
   with its own Navigation list (the two screens' keys genuinely differ).
+- **`petri`: the help popup's Actions split into "Global actions" and "Project
+  actions"** — `u`/`?` need no project selected; everything else does.
 
 ### Fixed
 

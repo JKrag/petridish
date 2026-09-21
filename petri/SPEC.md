@@ -809,11 +809,15 @@ screens; unlike the tool picker it has no interaction beyond dismissal — any k
 it, including `q`, since accidentally quitting out of a help screen would be a bad
 surprise. Its action-key half is generated from `tools::registry()`, per this section's
 "actions are data" rule above and identical on both screens (every action already fires
-on both — issue #64); `y` and `?` themselves are the one deliberate hardcoded exception
-in that list, since neither is a registry entry to generate from. Its Navigation half is
-**not** identical: `J`/`K`/`PageUp`/`PageDown`/`Home`/`End`/`/` are Browser-only (no
-viewport to page or filter on the Dashboard's "truncate, never scroll" model), and `y`
-is Browser-only for the unrelated reason above — so the popup renders a different
+on both — issue #64), split into **Global actions** (`Target::Fleet` — `u` today —
+plus `?` itself, which needs no selection either) and **Project actions** (everything
+else, `y` appended on the Browser); the split is a straight partition on `action.target`,
+not a hand-picked id list, so a later `Target::Fleet` action lands under Global
+automatically. `y` and `?` themselves are the one deliberate hardcoded exception in
+that generation, since neither is a registry entry to generate from. Its Navigation
+half is **not** identical: `J`/`K`/`PageUp`/`PageDown`/`Home`/`End`/`/` are Browser-only
+(no viewport to page or filter on the Dashboard's "truncate, never scroll" model), and
+`y` is Browser-only for the unrelated reason above — so the popup renders a different
 Navigation list per screen rather than advertising keys that do nothing on the one it's
 open on.
 
