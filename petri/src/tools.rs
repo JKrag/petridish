@@ -51,6 +51,15 @@ pub enum Target {
     /// `Ready`, launched, and git exited immediately: the screen flashed and
     /// came straight back, which is what #38 reported.
     GitRepo,
+    /// Needs nothing from any project at all — a fleet-scoped action (`ACT-5`), not a
+    /// project-scoped one wearing `Path` as an approximation. Unlike the other three
+    /// variants this also changes whether a project needs to be *selected* in the first
+    /// place: `lib.rs`'s dispatch (`begin_action`/`begin_repick`/`run_action`) skips its
+    /// "nothing selected" guard for `Fleet` and falls back to petri's own working
+    /// directory instead of a selected project's path. The `usage` action (#29's `u`) is
+    /// the first of these — token usage belongs to the machine's Claude Code install, not
+    /// to whichever project happens to be under the cursor.
+    Fleet,
 }
 
 impl Target {
@@ -62,7 +71,7 @@ impl Target {
     /// while caching the machine half.
     pub fn missing(self, facts: &Facts) -> bool {
         match self {
-            Target::Path => false,
+            Target::Path | Target::Fleet => false,
             Target::Url => facts.url.is_none(),
             Target::GitRepo => !facts.is_repo,
         }
@@ -70,12 +79,12 @@ impl Target {
 
     /// Two words for the panel's dimmed entry, e.g. `o remote ─ no url`.
     ///
-    /// `Path` can never be missing, so its text is unreachable rather than
+    /// `Path`/`Fleet` can never be missing, so their text is unreachable rather than
     /// meaningful; it is spelled as a neutral fallback instead of a panic
     /// because this is called from a render path.
     pub fn short_reason(self) -> &'static str {
         match self {
-            Target::Path => "unavailable",
+            Target::Path | Target::Fleet => "unavailable",
             Target::Url => "no url",
             Target::GitRepo => "not a repo",
         }
@@ -85,7 +94,7 @@ impl Target {
     /// notice, e.g. `thing has no remote`.
     pub fn notice(self) -> &'static str {
         match self {
-            Target::Path => "has nothing to act on",
+            Target::Path | Target::Fleet => "has nothing to act on",
             Target::Url => "has no remote",
             Target::GitRepo => "is not a git repository",
         }
@@ -401,16 +410,16 @@ pub fn registry() -> Vec<Action> {
             key: 'u',
             label: "token usage",
             // `FRAME-2`'s other half of #29/`SURF-4`: hand off to a dedicated token-usage
-            // TUI, the same way `gitlog` hands off to a dedicated git TUI. `Target::Path`
-            // is the closest fit even though this action is fleet-scoped, not
-            // project-scoped (`ACT-5` is the still-open design for a true fleet action) —
-            // `Path` never gates on anything (`Target::missing` returns `false`
-            // unconditionally), so the key resolves on every project, and the launcher's
-            // cwd lands in the selected project's directory, which none of these tools
-            // care about. Unlike `browse`/`gitlog`, there is no always-installed fallback:
-            // a machine with none of the three resolves `NoTool`, which the footer and `?`
-            // popup already render as "not advertised" rather than a lying key.
-            target: Target::Path,
+            // TUI, the same way `gitlog` hands off to a dedicated git TUI. `Target::Fleet`
+            // (not `Path`, as an earlier version of this comment had it): usage belongs to
+            // the machine's Claude Code install, not to whichever project is selected, so
+            // it fires with no project selected at all — on the Dashboard resting on a
+            // section header, say — falling back to petri's own working directory rather
+            // than requiring a project just to have somewhere to put a `cwd`. Unlike
+            // `browse`/`gitlog`, there is no always-installed fallback: a machine with none
+            // of the three resolves `NoTool`, which the footer and `?` popup already render
+            // as "not advertised" rather than a lying key.
+            target: Target::Fleet,
             candidates: vec![
                 // `blocks --active` is the one-shot report closest to "quota, right now" —
                 // current 5h block, burn rate, projection. No bare live-refresh mode in the
@@ -603,7 +612,7 @@ fn build_launch(candidate: &Candidate, facts: &Facts) -> Launch {
 fn action_target<'a>(target: Target, facts: &'a Facts<'a>) -> &'a str {
     match target {
         Target::Url => facts.url.unwrap_or(""),
-        Target::Path | Target::GitRepo => facts.path,
+        Target::Path | Target::GitRepo | Target::Fleet => facts.path,
     }
 }
 

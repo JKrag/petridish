@@ -705,7 +705,7 @@ user's terminal in raw mode is a v1 blocker, not a polish item.
 | `O` / `G` / `E` | Browser: re-pick the tool for that action (§5.1) |
 | `f` | Browser: reveal the project in Finder (§5.1) |
 | `s` | Browser: rescan now (§5.1) |
-| `u` | Browser: hand off to a dedicated token-usage TUI (§5.1, `IDEAS.md` `SURF-4`) |
+| `u` | Browser and Dashboard (even with nothing selected — `Target::Fleet`, §5.1): hand off to a dedicated token-usage TUI (`IDEAS.md` `SURF-4`) |
 | `y` | Browser: yank the project's path to the clipboard (§5.1) |
 | `?` | Browser: open the help popup; any key closes it |
 | `q` | quit |
@@ -756,10 +756,11 @@ terminal to `serie` is not the same thing as becoming a writer.
 Actions are data, not hardcoded keys — `petri/src/tools.rs`'s registry. Each carries an
 id, a key, candidate programs in preference order, an exec mode (`Terminal` suspends
 `petri` and waits; `Background` spawns detached), and what the action needs *from the
-project*. Availability therefore has two independent axes: whether any candidate is
-installed on this machine, and whether this project has the target at all (a project
-with no `github_url` leaves `o` nothing to open). Both degrade to a one-line notice,
-never a crash.
+project* — one of four `Target`s: `Path` (every project has one), `Url`, `GitRepo`, or
+`Fleet` (nothing at all; see `u` below). Availability therefore has two independent
+axes: whether any candidate is installed on this machine, and whether this project has
+the target at all (a project with no `github_url` leaves `o` nothing to open). Both
+degrade to a one-line notice, never a crash.
 
 Six actions are registry entries today: `o` (open remote), `g` (git history, which
 always resolves thanks to a pinned `git log --graph` fallback), `e` (open in editor),
@@ -771,6 +772,31 @@ firing the scan is the whole job; no reload logic lives on `petri`'s side) and `
 in that order. Unlike `o`/`g` it has no always-installed fallback, so a machine with
 none of the three resolves `NoTool` — a notice, not a crash — same as `o` on a
 project with no remote).
+
+**`u` is `Target::Fleet`, the one target that needs no project at all** — usage belongs
+to the machine's Claude Code install, not to whichever project happens to be selected.
+Every other target requires a project to be selected before its action can even be
+attempted (`lib.rs`'s "nothing selected" guard); `Fleet` is exempt from that guard too,
+so `u`/`U` fire on the Dashboard even with the cursor resting on a section header, not
+just on a project row, and fall back to petri's own working directory rather than a
+selected project's path. `Target::Path`'s `missing()` already never gates on anything;
+`Fleet` is the same `false` answer, made explicit as its own variant instead of `Path`
+wearing an approximation, and it is the one target that also relaxes *selection*, not
+only *target-missing*, as a precondition.
+
+**`u`'s hand-off needed a job-control fix `g`/`e`'s pre-existing candidates never
+exposed.** `claude-monitor` quits on Ctrl-C rather than `q` — and `run_in_terminal`'s
+`suspend()` re-enables the terminal's `ISIG` flag before the child runs, which turns
+Ctrl-C from a byte the child reads off stdin into a real `SIGINT` signal, delivered by
+the kernel to every process in the terminal's foreground process group. Before this was
+fixed the child shared petri's own group, so the signal took petri down too — one
+keystroke meant for a stuck child killed the whole TUI. `exec.rs`'s `spawn_in_foreground`
+(Unix only) now puts the child in its own process group and hands it the terminal's
+foreground group for the duration, exactly the job-control dance a shell does for its
+own children, restoring petri's foreground status before resuming. See that function's
+doc comment for the full mechanism and why simply ignoring `SIGINT` in petri would have
+been wrong (POSIX `exec()` preserves a `SIG_IGN` disposition across the call, so the
+child would inherit the ignore too and never see Ctrl-C either).
 
 Two more Browser keys are bound but are deliberately **not** registry entries,
 because neither one is "run an external program with a choice of candidates"

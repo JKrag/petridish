@@ -690,6 +690,7 @@ fn each_action_declares_the_target_it_needs() {
         let expected = match action.id {
             "browse" => Target::Url,
             "gitlog" => Target::GitRepo,
+            "usage" => Target::Fleet,
             _ => Target::Path,
         };
         assert_eq!(
@@ -819,7 +820,7 @@ fn resolve_action_only_launches_on_ready_the_seam_a_pty_frame_cannot_prove() {
     // comment on rule 1) — deterministic on every machine, CI included.
     let no_remote = project_with("notes", true, None);
     assert_eq!(
-        petri::resolve_action(browse, &no_remote, &petri::prefs::Prefs::default()),
+        petri::resolve_action(browse, Some(&no_remote), &petri::prefs::Prefs::default()),
         Resolution::NoTarget,
         "a project with no remote must resolve NoTarget, not silently do nothing"
     );
@@ -831,7 +832,45 @@ fn resolve_action_only_launches_on_ready_the_seam_a_pty_frame_cannot_prove() {
     let repo = project_with("thing", true, None);
     let mut prefs = petri::prefs::Prefs::default();
     prefs.tools.insert("gitlog".to_string(), "true".to_string());
-    match petri::resolve_action(gitlog, &repo, &prefs) {
+    match petri::resolve_action(gitlog, Some(&repo), &prefs) {
+        Resolution::Ready(launch) => assert_eq!(launch.program, "true"),
+        other => panic!("a stored, installed answer must resolve Ready, got {other:?}"),
+    }
+}
+
+#[test]
+fn resolve_action_with_no_project_works_for_a_fleet_scoped_action() {
+    // `Target::Fleet` (the `usage` action, #29) is the one target `resolve_action` can be
+    // asked to resolve with `project: None` — a local fixture rather than the real `usage`
+    // action, since ccusage/claude-monitor/openusage may or may not be on the machine
+    // running this suite and the point here is the `None`-project plumbing, not the real
+    // registry's candidate list.
+    let fleet_fixture = Action {
+        id: "fleet-fixture",
+        key: 'z',
+        label: "fleet fixture",
+        target: Target::Fleet,
+        candidates: vec![Candidate::new(
+            "definitely-not-a-real-binary-xyz",
+            &[],
+            ExecMode::Terminal,
+        )],
+    };
+
+    // Nothing installed, deterministically — no crash on the placeholder `Facts`, no
+    // spurious `NoTarget` (only `Ready`/`Ambiguous`/`NoTool` are reachable for `Fleet`).
+    assert_eq!(
+        petri::resolve_action(&fleet_fixture, None, &petri::prefs::Prefs::default()),
+        Resolution::NoTool
+    );
+
+    // A stored, installed answer resolves Ready with no project at all — the same "true is
+    // always on PATH" trick as the gitlog case above.
+    let mut prefs = petri::prefs::Prefs::default();
+    prefs
+        .tools
+        .insert("fleet-fixture".to_string(), "true".to_string());
+    match petri::resolve_action(&fleet_fixture, None, &prefs) {
         Resolution::Ready(launch) => assert_eq!(launch.program, "true"),
         other => panic!("a stored, installed answer must resolve Ready, got {other:?}"),
     }
@@ -854,6 +893,23 @@ fn each_target_states_its_own_reason() {
         !Target::Path.missing(&NOT_A_REPO),
         "every project has a path"
     );
+}
+
+#[test]
+fn fleet_target_is_never_missing_regardless_of_facts() {
+    // `Target::Fleet` (the `usage` action, #29): unlike `Path`, this isn't merely a
+    // per-project fact every project happens to satisfy — it needs nothing from any
+    // project at all, so `missing` is unconditionally false even against facts that would
+    // fail every other target (no url, not a repo).
+    let hostile = Facts {
+        path: "",
+        url: None,
+        is_repo: false,
+    };
+    assert!(!Target::Fleet.missing(&hostile));
+    assert!(!Target::Fleet.missing(&PROJECT));
+    assert!(!Target::Fleet.missing(&NOT_A_REPO));
+    assert!(!Target::Fleet.missing(&NO_REMOTE));
 }
 
 // ------------------------------------------------------- launch_for ----------

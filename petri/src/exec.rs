@@ -90,12 +90,17 @@ pub fn run_in_terminal<B: Backend>(
 ) -> io::Result<Outcome> {
     suspend()?;
 
-    // Deliberately `.status()`: the child inherits our stdin/stdout/stderr, so
-    // it draws on the real terminal and reads real keystrokes.
-    let result = Command::new(&launch.program)
-        .args(&launch.args)
-        .current_dir(cwd)
-        .status();
+    // Deliberately spawn-and-wait rather than the child inheriting our stdin/stdout/stderr
+    // wholesale via `.status()` alone — `spawn_in_foreground` (Unix) additionally puts the
+    // child in its own terminal foreground process group first, so it draws on the real
+    // terminal and reads real keystrokes exactly as `.status()` gave it, but ALSO receives
+    // terminal-generated signals (Ctrl-C/Ctrl-Z) on its own rather than sharing them with
+    // petri. See that function's doc comment for why plain `.status()` handed both
+    // processes the same SIGINT and could take petri down with the child (#88 review
+    // follow-up, reported against `claude-monitor`, which exits on Ctrl-C rather than `q`).
+    let mut cmd = Command::new(&launch.program);
+    cmd.args(&launch.args).current_dir(cwd);
+    let result = spawn_in_foreground(cmd);
 
     // Restore BEFORE inspecting the result — a failed spawn must not skip it.
     resume(terminal)?;
@@ -104,6 +109,91 @@ pub fn run_in_terminal<B: Backend>(
         Ok(status) => Outcome::Finished(status),
         Err(e) => Outcome::Failed(e),
     })
+}
+
+/// Spawn `cmd` and wait for it, handing it the terminal's foreground process group for the
+/// duration — the standard shell job-control dance, applied here because `petri` is, in
+/// this moment, acting as one: a program that hands a real terminal to a child and takes it
+/// back.
+///
+/// **The bug this fixes.** Before this existed, `run_in_terminal` used `Command::status()`
+/// with no process-group handling at all. That works for a child that only ever quits via
+/// its own keybinding (`q`, most of this registry) — but `claude-monitor` quits on Ctrl-C,
+/// and Ctrl-C is not a keystroke the child reads from stdin the way `q` is: `suspend()`
+/// re-enables the terminal's `ISIG` flag (canonical mode), so the terminal driver turns
+/// Ctrl-C into an actual `SIGINT` *signal*, delivered to every process in the terminal's
+/// foreground process group. Without a process-group change, the child shares petri's own
+/// group — so the same `SIGINT` meant for `claude-monitor` also reached petri, whose
+/// default disposition for `SIGINT` is termination. One keystroke intended for the child
+/// took the whole TUI down with it. Confirmed by reproducing against the real binary
+/// before this fix landed.
+///
+/// **Why not just ignore `SIGINT` in petri instead.** That was the first fix considered and
+/// it is wrong: POSIX `exec()` preserves a `SIG_IGN` disposition across the call (only a
+/// *handled* signal resets to default), so if petri ignored `SIGINT` before forking, the
+/// child would inherit that ignore too — and `claude-monitor` would then never see Ctrl-C
+/// either. The signal has to be re-routed, not silenced.
+///
+/// **The mechanism**, in order:
+/// 1. `cmd.process_group(0)` — `setpgid(0, 0)` in the child before it execs, making it the
+///    leader of its own new process group instead of joining petri's.
+/// 2. `tcsetpgrp` hands the terminal's foreground group to that new group. From here, a
+///    terminal-generated signal (`SIGINT`, `SIGTSTP`) reaches only the child.
+/// 3. Wait for the child.
+/// 4. `tcsetpgrp` back to petri's own group (captured via `getpgrp()` before step 1,
+///    since petri never changes its own group and was already the foreground group when
+///    this function was entered).
+///
+/// **Why `SIGTTOU` is ignored around step 4, specifically.** Once the child holds the
+/// foreground group, petri is — by the kernel's accounting — now a *background* process
+/// relative to the controlling terminal. A background process that calls `tcsetpgrp` under
+/// `SIGTTOU`'s default disposition (`Stop`) is stopped, not merely refused: petri would
+/// suspend itself attempting to reclaim the very terminal it needs to keep running. This is
+/// the same footgun every job-control shell works around, and the fix is the same: ignore
+/// `SIGTTOU` for the one call that triggers it, then restore whatever petri's disposition
+/// was before (`SIG_DFL`, in practice, since petri never touches it elsewhere).
+///
+/// **Best-effort, not required to succeed.** `tcsetpgrp` can fail (`ENOTTY` when `stdin`
+/// is not a real controlling terminal — some test harnesses, `petri` piped rather than run
+/// interactively). Its return value is deliberately discarded: a failure here means the
+/// child runs exactly as it did before this fix (sharing petri's foreground group), not
+/// that the child fails to run at all.
+#[cfg(unix)]
+fn spawn_in_foreground(mut cmd: Command) -> io::Result<std::process::ExitStatus> {
+    use std::os::unix::process::CommandExt;
+
+    // Always succeeds per POSIX; captured before anything below can change it.
+    let own_pgrp = unsafe { libc::getpgrp() };
+
+    cmd.process_group(0);
+    let mut child = cmd.spawn()?;
+    let child_pgrp = child.id() as libc::pid_t;
+
+    // SAFETY: `libc::tcsetpgrp` is a plain syscall wrapper — no aliasing, no invariants
+    // beyond a valid fd (stdin, always open here) and a real pid (just spawned above).
+    unsafe {
+        libc::tcsetpgrp(libc::STDIN_FILENO, child_pgrp);
+    }
+
+    let status = child.wait();
+
+    // SAFETY: `libc::signal`/`libc::tcsetpgrp` again — no aliasing, no invariants beyond
+    // valid arguments, all of which are constants or values already proven valid above.
+    unsafe {
+        let old = libc::signal(libc::SIGTTOU, libc::SIG_IGN);
+        libc::tcsetpgrp(libc::STDIN_FILENO, own_pgrp);
+        libc::signal(libc::SIGTTOU, old);
+    }
+
+    status
+}
+
+/// Every non-Unix target: the pre-fix behaviour. No process groups, no controlling
+/// terminal to hand off — `petri` is not shipped for one today, so this exists only so the
+/// crate still compiles there rather than as a maintained second code path.
+#[cfg(not(unix))]
+fn spawn_in_foreground(mut cmd: Command) -> io::Result<std::process::ExitStatus> {
+    cmd.status()
 }
 
 /// `MECH-3`: start the child and forget it. The terminal is never touched, so

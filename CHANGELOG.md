@@ -12,7 +12,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **`petri`: quota reset countdown.** The header's `5h`/`7d` usage segment now
   shows time-to-reset, e.g. `5h 16% (3m) · 7d 1% (6d)`.
 - **`petri`: `u` hands off to a token-usage TUI.** Tries `ccusage`, then
-  `claude-monitor`, then `openusage`; `Shift+U` re-picks.
+  `claude-monitor`, then `openusage`; `Shift+U` re-picks. Works on the Dashboard too,
+  even with nothing selected — usage isn't project-specific.
+- **`make run`**: build and run `petri` against your real `~/.petridish/projects.json`
+  in one command.
+
+### Fixed
+
+- **`petri`: Ctrl-C in a hand-off no longer kills petri.** `claude-monitor` (one of
+  `u`'s candidates) quits on Ctrl-C rather than `q`; that keystroke used to send
+  `SIGINT` to petri as well as the child, taking the whole TUI down. Terminal
+  hand-offs now give the child its own process group for the duration.
 
 ## [1.0.0-beta.8] — 2026-09-14
 
