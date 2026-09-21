@@ -446,6 +446,17 @@ fn help_popup_opens_and_closes_on_any_key() {
         opened_text.contains("any key closes"),
         "the help popup's own footer must be drawn while open, got:\n{opened_text}"
     );
+    // Regression caught in review: at an ordinary 80x24 terminal, the Global/Project
+    // split's extra rows pushed `s`/`y` off the bottom under the old `height - 2` clamp —
+    // a Paragraph clips silently rather than scrolling, so the popup was quietly hiding
+    // two of the very keybindings it exists to document. Every row must be on screen at
+    // this exact, common size, not just the closing hint.
+    for row in ["rescan now", "yank path to clipboard", "any key closes"] {
+        assert!(
+            opened_text.contains(row),
+            "at 80x24 the help popup must show {row:?} in full, not clip it, got:\n{opened_text}"
+        );
+    }
 
     // `j` has its own normal-mode binding (move selection) — closing on it
     // rather than falling through is the whole point of a modal popup.

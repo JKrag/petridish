@@ -912,6 +912,51 @@ fn fleet_target_is_never_missing_regardless_of_facts() {
     assert!(!Target::Fleet.missing(&NO_REMOTE));
 }
 
+#[test]
+fn action_cwd_uses_petris_own_directory_for_fleet_even_with_a_project_selected() {
+    // Regression caught in review: keying the cwd decision on `project.is_some()` instead
+    // of `action.target` meant `u` launched with whichever project's directory happened to
+    // be selected on the Browser/Dashboard — silently contradicting `Target::Fleet`'s whole
+    // point, that usage belongs to the machine, not any one project. `--mini` always has
+    // `Some(project)` by construction, so this was reachable there too.
+    let fleet_fixture = Action {
+        id: "fleet-fixture",
+        key: 'z',
+        label: "fleet fixture",
+        target: Target::Fleet,
+        candidates: vec![],
+    };
+    let project = project_with("thing", true, None);
+    assert_eq!(
+        petri::action_cwd(&fleet_fixture, Some(&project)),
+        std::path::Path::new("."),
+        "a Fleet action must get petri's own cwd even when a project is selected"
+    );
+    assert_eq!(
+        petri::action_cwd(&fleet_fixture, None),
+        std::path::Path::new("."),
+        "and the same with nothing selected"
+    );
+}
+
+#[test]
+fn action_cwd_still_uses_the_selected_projects_path_for_every_other_target() {
+    // The pre-existing, correct behaviour for every non-Fleet target — pinned so a future
+    // change to the Fleet branch above can't accidentally widen the "." fallback to
+    // targets that still need the selected project's own directory.
+    let gitlog = gitlog_fixture();
+    let project = project_with("thing", true, None);
+    assert_eq!(
+        petri::action_cwd(&gitlog, Some(&project)),
+        std::path::Path::new("/repos/thing")
+    );
+    assert_eq!(
+        petri::action_cwd(&gitlog, None),
+        std::path::Path::new("."),
+        "no project selected still falls back to petri's own cwd, just not because of Fleet"
+    );
+}
+
 // ------------------------------------------------------- launch_for ----------
 
 #[test]
@@ -975,6 +1020,32 @@ fn launch_for_passes_the_url_to_an_unknown_program_on_a_url_action() {
             args: vec!["https://github.com/x/thing".to_string()],
             mode: ExecMode::Terminal,
         }
+    );
+}
+
+#[test]
+fn launch_for_passes_no_argument_to_an_unknown_program_on_a_fleet_action() {
+    // Regression caught in review: `Target::Fleet` has nothing to pass — no path, no URL —
+    // so the picker's "Other — specify path…" answer for `u` used to get `facts.path`
+    // regardless (the selected project's path, or an empty string with none selected),
+    // an argument a custom token-usage TUI never asked for and could reject outright.
+    let fleet_fixture = Action {
+        id: "fleet-fixture",
+        key: 'z',
+        label: "fleet fixture",
+        target: Target::Fleet,
+        candidates: vec![],
+    };
+    let got = tools::launch_for(&fleet_fixture, &PROJECT, "my-weird-usage-tui");
+    assert_eq!(
+        got,
+        Launch {
+            program: "my-weird-usage-tui".to_string(),
+            display: "my-weird-usage-tui".to_string(),
+            args: vec![],
+            mode: ExecMode::Terminal,
+        },
+        "a Fleet action's unknown-program launch must carry no target argument at all"
     );
 }
 

@@ -160,13 +160,13 @@ pub fn run_in_terminal<B: Backend>(
 /// that the child fails to run at all.
 #[cfg(unix)]
 fn spawn_in_foreground(mut cmd: Command) -> io::Result<std::process::ExitStatus> {
-    use std::os::unix::process::CommandExt;
+    use std::os::unix::process::{CommandExt, ExitStatusExt};
 
     // Always succeeds per POSIX; captured before anything below can change it.
     let own_pgrp = unsafe { libc::getpgrp() };
 
     cmd.process_group(0);
-    let mut child = cmd.spawn()?;
+    let child = cmd.spawn()?;
     let child_pgrp = child.id() as libc::pid_t;
 
     // SAFETY: `libc::tcsetpgrp` is a plain syscall wrapper — no aliasing, no invariants
@@ -175,17 +175,61 @@ fn spawn_in_foreground(mut cmd: Command) -> io::Result<std::process::ExitStatus>
         libc::tcsetpgrp(libc::STDIN_FILENO, child_pgrp);
     }
 
-    let status = child.wait();
+    // Raw `waitpid` with `WUNTRACED`, not `Child::wait()` — deliberately, and load-bearing.
+    // `Child::wait()` only ever returns on termination, so Ctrl-Z's `SIGTSTP` (delivered to
+    // the child's group now that it holds the foreground, same as `SIGINT`/`SIGTTOU` above)
+    // would leave the child merely *stopped*, not exited, and `wait()` would block here
+    // forever: the terminal's foreground group stays pointed at a child that will never
+    // continue on its own, and petri never reaches the `tcsetpgrp` reclaim below — a hang
+    // with no way out short of a second terminal and `kill`. Caught in review on #88.
+    //
+    // The policy: resume a stopped child immediately rather than truly suspending it.
+    // petri is not a shell — it has no `jobs`/`fg` to bring a suspended child back with
+    // later, so leaving it stopped in the background would orphan it with no path back.
+    // `SIGCONT` to `-child_pgrp` (the negative pid targets the whole process group, not
+    // just its leader) undoes the stop and the wait loops back — from the user's side,
+    // Ctrl-Z inside a hand-off is swallowed rather than doing nothing-visible-but-hung.
+    let raw_status = loop {
+        let mut status: libc::c_int = 0;
+        // SAFETY: `child_pgrp` is a real pid this process just spawned and has not yet
+        // reaped; `waitpid` on it is exactly what `Child::wait()` does internally, plus
+        // the `WUNTRACED` flag `std` does not expose.
+        let waited = unsafe { libc::waitpid(child_pgrp, &mut status, libc::WUNTRACED) };
+        if waited < 0 {
+            let err = io::Error::last_os_error();
+            reclaim_foreground(own_pgrp);
+            return Err(err);
+        }
+        if libc::WIFSTOPPED(status) {
+            // SAFETY: `libc::kill` is a plain syscall wrapper; `-child_pgrp` and
+            // `SIGCONT` are both valid arguments.
+            unsafe {
+                libc::kill(-child_pgrp, libc::SIGCONT);
+            }
+            continue;
+        }
+        break status;
+    };
 
-    // SAFETY: `libc::signal`/`libc::tcsetpgrp` again — no aliasing, no invariants beyond
-    // valid arguments, all of which are constants or values already proven valid above.
+    reclaim_foreground(own_pgrp);
+    Ok(std::process::ExitStatus::from_raw(raw_status))
+}
+
+/// The second half of `spawn_in_foreground`'s job-control dance: give the terminal's
+/// foreground status back to petri's own process group, with `SIGTTOU` ignored around the
+/// one call that would otherwise stop petri itself for attempting it from a background
+/// group — see `spawn_in_foreground`'s doc comment for the full reasoning. Extracted so
+/// every exit from that function's wait loop (clean exit, a `waitpid` error) reclaims the
+/// same way, once.
+#[cfg(unix)]
+fn reclaim_foreground(own_pgrp: libc::pid_t) {
+    // SAFETY: `libc::signal`/`libc::tcsetpgrp` — no aliasing, no invariants beyond valid
+    // arguments, all of which are constants or a value already proven valid by the caller.
     unsafe {
         let old = libc::signal(libc::SIGTTOU, libc::SIG_IGN);
         libc::tcsetpgrp(libc::STDIN_FILENO, own_pgrp);
         libc::signal(libc::SIGTTOU, old);
     }
-
-    status
 }
 
 /// Every non-Unix target: the pre-fix behaviour. No process groups, no controlling

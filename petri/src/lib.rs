@@ -565,9 +565,21 @@ fn mini_poll_loop<B: ratatui::backend::Backend>(
                         // A launch that fails to even start (Copilot review on #77:
                         // `launch_now`'s `Some` return was previously discarded here)
                         // gets the same notice treatment as `NoTool`/`NoTarget`.
-                        if let Some(failure) =
-                            launch_now(terminal, &launch, std::path::Path::new(&project.path))
-                        {
+                        //
+                        // `--mini` always has `Some(project)` by construction (it pins
+                        // exactly one), so `action_cwd`'s `Target::Fleet` check is the
+                        // only thing standing between `u` here and the same bug review
+                        // caught on the Browser/Dashboard paths: launching with the
+                        // pinned project's directory even though usage belongs to the
+                        // machine, not any one project. The action is re-looked-up by
+                        // key rather than threaded out of `mini_dispatch`, which already
+                        // did the same lookup internally to build `launch`.
+                        let cwd = crate::tools::registry()
+                            .into_iter()
+                            .find(|a| a.key == c)
+                            .map(|action| action_cwd(&action, Some(project)).to_path_buf())
+                            .unwrap_or_else(|| std::path::PathBuf::from(&project.path));
+                        if let Some(failure) = launch_now(terminal, &launch, &cwd) {
                             notice = Some((failure, std::time::Instant::now()));
                         }
                     }
@@ -1899,11 +1911,28 @@ pub fn resolve_action(
     })
 }
 
-/// The launcher's working directory for a resolved action: the selected project's path, or
-/// petri's own cwd (`.`) when there is none (`Target::Fleet`, the only target that can
-/// resolve with no project selected). Shared by `begin_action`/`begin_repick`/`run_action`
-/// so the fallback can't drift between the three dispatch paths.
-fn action_cwd(project: Option<&petridish_core::schema::Project>) -> &std::path::Path {
+/// The launcher's working directory for a resolved action.
+///
+/// **`Target::Fleet` always gets petri's own cwd (`.`), never a project's path — even when
+/// one happens to be selected.** Keying this on `project.is_some()` instead of
+/// `action.target` was a real bug caught in review: the Browser and a Dashboard row both
+/// pass `Some(project)` for every action including `u`, and `--mini` always has
+/// `Some(project)` by construction (it pins exactly one), so `u` was launching with
+/// whichever project's directory happened to be selected — silently contradicting
+/// `Target::Fleet`'s whole point, that usage belongs to the machine, not any one project.
+/// Every other target still gets the selected project's path (`begin_action`'s guard
+/// already refuses to call this with `project: None` for them).
+///
+/// Public for the same reason `resolve_action`/`launch_blocked_notice` are: `lib.rs` has
+/// no unit-test module, and this bug was specifically a private function nobody could
+/// reach directly to pin.
+pub fn action_cwd<'a>(
+    action: &crate::tools::Action,
+    project: Option<&'a petridish_core::schema::Project>,
+) -> &'a std::path::Path {
+    if action.target == crate::tools::Target::Fleet {
+        return std::path::Path::new(".");
+    }
     project
         .map(|p| std::path::Path::new(p.path.as_str()))
         .unwrap_or_else(|| std::path::Path::new("."))
@@ -1932,7 +1961,7 @@ fn begin_action<B: ratatui::backend::Backend>(
     }
     match resolve_action(action, project, prefs) {
         crate::tools::Resolution::Ready(launch) => {
-            launch_now(terminal, &launch, action_cwd(project))
+            launch_now(terminal, &launch, action_cwd(action, project))
         }
         crate::tools::Resolution::Ambiguous(installed) => {
             *picker = Some(crate::picker::PickerState::new(action, installed));
@@ -2091,7 +2120,7 @@ fn run_action<B: ratatui::backend::Backend>(
         },
     };
     let launch = crate::tools::launch_for(action, &facts, program);
-    launch_now(terminal, &launch, action_cwd(project))
+    launch_now(terminal, &launch, action_cwd(action, project))
 }
 
 /// Copy the selected project's path to the system clipboard via a piped

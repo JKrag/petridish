@@ -609,10 +609,21 @@ fn build_launch(candidate: &Candidate, facts: &Facts) -> Launch {
 /// `GitRepo` hands over the path, not something git-shaped: what distinguishes
 /// it from `Path` is the *precondition* (rule 1 rejects a non-repo), not the
 /// argument. Every git TUI in the registry takes a directory.
+/// Only ever called for a target that actually has one — `launch_for`'s `Fleet` branch
+/// skips this and passes no argument at all. Same "assert in debug, degrade in release"
+/// shape as `focus.rs`'s `tool_status`: a wrong call here is a caller bug worth catching
+/// in tests, not a reason to crash a real dispatch — `facts.path` is a harmless fallback.
 fn action_target<'a>(target: Target, facts: &'a Facts<'a>) -> &'a str {
     match target {
         Target::Url => facts.url.unwrap_or(""),
-        Target::Path | Target::GitRepo | Target::Fleet => facts.path,
+        Target::Path | Target::GitRepo => facts.path,
+        Target::Fleet => {
+            debug_assert!(
+                false,
+                "launch_for must never call action_target for Target::Fleet"
+            );
+            facts.path
+        }
     }
 }
 
@@ -633,6 +644,13 @@ fn action_target<'a>(target: Target, facts: &'a Facts<'a>) -> &'a str {
 /// corrupts the display, assuming `Terminal` for a GUI program merely blocks
 /// `petri` until that window is closed. One is a bug, the other an
 /// inconvenience.
+///
+/// `Target::Fleet` (`u`, #29) is the one target with no argument to pass at all: it needs
+/// nothing from any project, so there is no path or URL to hand an unknown program.
+/// Passing `facts.path` regardless — the pinned project's directory if one happens to be
+/// selected, or an empty string if not — was a real bug caught in review: a custom
+/// token-usage TUI typed into the picker's "Other" row would get an argument it never
+/// asked for and could reject outright.
 pub fn launch_for(action: &Action, facts: &Facts, id: &str) -> Launch {
     if let Some(candidate) = action.candidates.iter().find(|c| c.id == id) {
         build_launch(candidate, facts)
@@ -643,7 +661,11 @@ pub fn launch_for(action: &Action, facts: &Facts, id: &str) -> Launch {
             // run through `substitute`, which would be a no-op here and would
             // wrongly suggest a user-typed program name can carry placeholders
             // of its own.
-            args: vec![action_target(action.target, facts).to_string()],
+            args: if action.target == Target::Fleet {
+                Vec::new()
+            } else {
+                vec![action_target(action.target, facts).to_string()]
+            },
             mode: ExecMode::Terminal,
             display: id.to_string(),
         }

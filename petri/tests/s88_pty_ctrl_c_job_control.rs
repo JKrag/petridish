@@ -163,3 +163,80 @@ fn ctrl_c_kills_the_stuck_child_alone_and_petri_survives() {
          got exit status {status:?}"
     );
 }
+
+/// Ctrl-Z regression, caught in review on top of the Ctrl-C fix above: `Child::wait()`
+/// only ever returns on termination, never on a *stopped* child. `SIGTSTP` (Ctrl-Z) now
+/// reaches only the child, same as `SIGINT` — but a stopped child is not a dead one, so
+/// `spawn_in_foreground`'s wait would block on it forever, leaving petri hung with no way
+/// out short of a second terminal and `kill`. The fix resumes a stopped child immediately
+/// (petri has no `jobs`/`fg` of its own to bring one back with later) rather than truly
+/// suspending it. Proven the same way as the Ctrl-C test: if this hangs, `q` below never
+/// gets read and `wait_with_timeout` panics on a real timeout rather than a clean exit.
+#[test]
+fn ctrl_z_does_not_hang_petri_behind_a_stopped_child() {
+    let home = std::env::temp_dir().join(format!("petri_s88_ctrlz_{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&home);
+    std::fs::create_dir_all(home.join(".petridish")).expect("scratch home must be creatable");
+
+    let hang_script = write_hang_script(&home);
+    std::fs::write(
+        home.join(".petridish").join("petri.toml"),
+        format!(
+            "last_screen = \"browser\"\ncollapsed = [false, false, true, true]\n\n[tools]\nusage = \"{}\"\n",
+            hang_script.display()
+        ),
+    )
+    .expect("seed prefs must be writable");
+
+    let state_path = state_file_pointing_at(&home);
+    let mut session = Session::spawn_with_home(&state_path, 90, 40, &home);
+
+    session.screen_until(
+        90,
+        40,
+        Duration::from_secs(5),
+        Duration::from_millis(300),
+        5,
+        |grid| grid.iter().any(|r| r.contains("ctrlc-project")),
+    );
+
+    session.writer.write_all(b"u").expect("write u");
+    session.writer.flush().expect("flush");
+    let running = session.settle_until_raw(
+        Duration::from_secs(5),
+        Duration::from_millis(300),
+        10,
+        |stream| stream.contains("HANG_RUNNING"),
+    );
+    assert!(running, "the stuck child never printed its own marker");
+
+    // Ctrl-Z (0x1A, SIGTSTP) — before the fix, this is where petri would hang forever.
+    session.writer.write_all(b"\x1a").expect("write ctrl-z");
+    session.writer.flush().expect("flush");
+
+    // Give the (fixed) resume-and-continue loop a moment to run its course, then prove
+    // petri is still alive and responsive by actually finishing the job: Ctrl-C to end the
+    // (still-running, never-stopped-for-good) child, then a clean `q`. Either step timing
+    // out is the hang this test exists to catch.
+    session.writer.write_all(b"\x03").expect("write ctrl-c");
+    session.writer.flush().expect("flush");
+    let restored = session.settle_until_raw(
+        Duration::from_secs(5),
+        Duration::from_millis(400),
+        8,
+        |stream| Session::alt_screen_entries(stream) >= 2,
+    );
+    assert!(
+        restored,
+        "petri never re-entered the alternate screen after Ctrl-Z then Ctrl-C — Ctrl-Z left \
+         it hung behind a stopped child (the bug this test guards)"
+    );
+
+    session.writer.write_all(b"q").expect("write q");
+    session.writer.flush().expect("flush");
+    let status = session.wait_with_timeout(Duration::from_secs(10));
+    assert!(
+        status.success(),
+        "petri must still be alive and exit cleanly after Ctrl-Z, got exit status {status:?}"
+    );
+}
