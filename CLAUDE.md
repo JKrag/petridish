@@ -9,9 +9,11 @@ cron-based `install` path — only systemd — since systemd-user support is eff
 universal on mainstream Linux; a non-systemd distro still has the manual cron recipe in
 README.md's "Linux: no systemd?" section. `doctor` runs full, real checks on both
 platforms — the daemon-registration check branches on which backend `install` used, not on
-OS name. `menubar` renders on every platform: xbar/SwiftBar consume it on macOS, the
-Cinnamon applet (`integrations/cinnamon/`) on Linux. Only the xbar *plugin file* install
-step stays macOS-only.
+OS name. `menubar` itself is a plain xbar-format text renderer with no OS gate (issue
+#25's macOS-only refusal predated any Linux consumer). Today its only Linux consumer is
+the Cinnamon panel applet (`integrations/cinnamon/`) — a manually-installed applet for the
+Cinnamon desktop, not general Linux menu-bar support. The xbar *plugin file* install step
+(`petridish install`) stays macOS-only.
 
 **One toolchain, four crates, split by role:**
 
@@ -35,10 +37,11 @@ step stays macOS-only.
   `uninstall` support macOS (launchd, `~/Library`) and Linux (`systemd --user`, issue #75)
   and exit with an error on anything else (ARCHITECTURE.md §8.3 D5). `doctor` runs full,
   real checks on both platforms — it branches on which backend `install` used
-  (`install::Backend`), not on OS name. `menubar` renders xbar-format text on every
-  platform (issue #25's refusal predated a Linux consumer; the Cinnamon applet in
-  `integrations/cinnamon/` is one now) and always exits 0. `swab` and `petri` are not
-  macOS-bound at all.
+  (`install::Backend`), not on OS name. `menubar` is a plain xbar-format text renderer with
+  no OS gate (issue #25's macOS-only refusal predated any Linux consumer) and always exits
+  0. Today its only Linux consumer is the Cinnamon panel applet in `integrations/cinnamon/`
+  — one manually-installed applet for the Cinnamon desktop, not general Linux menu-bar
+  support. `swab` and `petri` are not macOS-bound at all.
 
 **The Python read-side is gone** (ADR-0004). `petripy`, `schema.py`, `menubar.py` and
 `installer.py` were deleted once `petri` had earned trust and the installer had been

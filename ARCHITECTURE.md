@@ -338,9 +338,13 @@ Rejected alternatives:
    support two backends — launchd/`~/Library` on macOS, a `systemd --user` timer on Linux
    (issue #75) — and actively refuse anything else via `paths::detect_platform` (D5 below).
    `doctor` runs full, real checks on both platforms now (the daemon-registration check
-   branches on `Layout::Backend` rather than being gated by OS); only `menubar` stays
-   macOS-only, since xbar/SwiftBar are macOS/Windows tools with no Linux equivalent (issue
-   #25) — it prints an explicit macOS-only message and still exits 0 rather than refusing.
+   branches on `Layout::Backend` rather than being gated by OS). `menubar` itself is a plain
+   xbar-format text renderer with no OS gate — issue #25's original macOS-only refusal
+   predated any Linux consumer, and xbar/SwiftBar themselves remain macOS/Windows-only tools
+   with no Linux equivalent. Today `menubar` has exactly one Linux consumer, a
+   manually-installed Cinnamon panel applet (`integrations/cinnamon/`) for the Cinnamon
+   desktop — that is not general Linux menu-bar support. `petridish install`'s xbar *plugin
+   file* step stays macOS-only.
    A personal tap (`brew install jkrag/tap/petridish`) rather than `homebrew-core`, which
    imposes notability requirements and ongoing maintenance obligations.
    `x86_64-unknown-linux-gnu` binaries joined the tap once Linux `install` itself landed —

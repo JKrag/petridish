@@ -111,10 +111,18 @@ Four binaries, each with one job:
 
 | Binary | Role | Platform |
 | --- | --- | --- |
-| `petridish` | Install, uninstall, health-check, and render the menu-bar text | macOS + Linux |
+| `petridish` | Install, uninstall, health-check, and render the menu-bar text | macOS + Linux — coverage differs per subcommand, see below |
 | `swab` | The scanner. The **only** thing that writes `projects.json` | Cross-platform |
 | `swab-hook` | The Claude Code hook. Appends one line to `events.ndjson`, nothing else | Cross-platform |
 | `petri` | The terminal dashboard | Cross-platform |
+
+`petridish`'s four subcommands don't all reach the same platforms:
+
+| Subcommand | macOS | Linux |
+| --- | --- | --- |
+| `install` / `uninstall` | launchd job + `~/Library` xbar plugin file | `systemd --user` timer only (issue #75) — no plugin file, since there's nothing built-in to install |
+| `doctor` | full, real checks | full, real checks |
+| `menubar` | text consumed automatically by the xbar plugin `install` puts in place | prints the same xbar-format text; nothing consumes it automatically — wire it up yourself, e.g. via the [Cinnamon panel applet](integrations/cinnamon/) |
 
 ```sh
 petridish install       # wire up the daemon + the Claude Code hook (+ menu bar on macOS)
