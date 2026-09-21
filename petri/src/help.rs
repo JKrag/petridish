@@ -62,15 +62,24 @@ pub fn render(frame: &mut ratatui::Frame) {
     // module doc comment.
     lines.push(Line::from("  y                yank path to clipboard"));
     lines.push(Line::from("  ?                this help"));
-    lines.push(Line::from(""));
-    lines.push(Line::from(Span::styled(
+
+    // The closing hint is drawn in its own fixed row rather than appended to `lines`, so it
+    // stays visible even when the registry has grown too tall for a short terminal to show
+    // the whole list. `registry()` gained a seventh entry (`u`, #29) without this repo's
+    // help popup gaining a row to spend on it, which used to push this hint off the bottom
+    // of an 80x24 terminal along with the last entry or two of `Actions` — a Paragraph
+    // clips, it does not scroll. Pinning the hint keeps that failure mode to "an action or
+    // two got clipped" instead of "the popup forgot to say how to close itself".
+    let footer = Line::from(Span::styled(
         "any key closes this popup",
         Style::default().fg(crate::theme::DIM),
-    )));
+    ));
 
     let area = frame.area();
     let width = 62.min(area.width.saturating_sub(4)).max(20);
-    let height = (lines.len() as u16 + 2).min(area.height.saturating_sub(2));
+    // +2 for the block border, +1 for the footer row — clamped to the terminal's own height
+    // so the popup itself never overflows the frame.
+    let height = (lines.len() as u16 + 3).min(area.height.saturating_sub(2));
     let [popup] = Layout::horizontal([Constraint::Length(width)])
         .flex(Flex::Center)
         .areas(area);
@@ -90,5 +99,9 @@ pub fn render(frame: &mut ratatui::Frame) {
         ));
     let inner = block.inner(popup);
     frame.render_widget(block, popup);
-    frame.render_widget(Paragraph::new(lines), inner);
+
+    let [body, footer_area] =
+        Layout::vertical([Constraint::Min(0), Constraint::Length(1)]).areas(inner);
+    frame.render_widget(Paragraph::new(lines), body);
+    frame.render_widget(Paragraph::new(footer), footer_area);
 }

@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **`petri`: quota reset countdown.** The header's `5h`/`7d` usage segment now
+  shows time-to-reset, e.g. `5h 16% (3m) · 7d 1% (6d)`.
+- **`petri`: `u` hands off to a token-usage TUI.** Tries `ccusage`, then
+  `claude-monitor`, then `openusage`; `Shift+U` re-picks.
+
 ## [1.0.0-beta.8] — 2026-09-14
 
 ### Added

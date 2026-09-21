@@ -105,7 +105,7 @@ fn radar(n: usize, q: Option<QuotaState>) -> Radar {
 #[test]
 fn both_percentages_render_with_the_headers_own_separator_vocabulary() {
     assert_eq!(
-        dashboard::quota_segment(Some(&quota(Some(16), Some(1))), false).as_deref(),
+        dashboard::quota_segment(Some(&quota(Some(16), Some(1))), false, now()).as_deref(),
         Some("5h 16% · 7d 1%"),
         "PROPOSAL §6 pins `5h 16% · 7d 1%` — spaces and `·`, matching the separators the \
          header already uses, not `5h:16% 7d:1%`"
@@ -115,26 +115,26 @@ fn both_percentages_render_with_the_headers_own_separator_vocabulary() {
 #[test]
 fn the_compressed_form_drops_the_labels_not_the_numbers() {
     assert_eq!(
-        dashboard::quota_segment(Some(&quota(Some(16), Some(1))), true).as_deref(),
+        dashboard::quota_segment(Some(&quota(Some(16), Some(1))), true, now()).as_deref(),
         Some("16%/1%")
     );
 }
 
 #[test]
 fn absent_quota_is_no_segment_at_all() {
-    assert_eq!(dashboard::quota_segment(None, false), None);
-    assert_eq!(dashboard::quota_segment(None, true), None);
+    assert_eq!(dashboard::quota_segment(None, false, now()), None);
+    assert_eq!(dashboard::quota_segment(None, true, now()), None);
 }
 
 #[test]
 fn a_quota_state_whose_every_percentage_is_none_is_also_no_segment() {
     // Field-by-field degradation is real: `swab`'s sensor populates what it can parse.
     assert_eq!(
-        dashboard::quota_segment(Some(&quota(None, None)), false),
+        dashboard::quota_segment(Some(&quota(None, None)), false, now()),
         None
     );
     assert_eq!(
-        dashboard::quota_segment(Some(&quota(None, None)), true),
+        dashboard::quota_segment(Some(&quota(None, None)), true, now()),
         None
     );
 }
@@ -143,18 +143,18 @@ fn a_quota_state_whose_every_percentage_is_none_is_also_no_segment() {
 fn a_missing_half_is_omitted_never_rendered_as_zero() {
     let only_five = quota(Some(16), None);
     assert_eq!(
-        dashboard::quota_segment(Some(&only_five), false).as_deref(),
+        dashboard::quota_segment(Some(&only_five), false, now()).as_deref(),
         Some("5h 16%"),
         "an absent 7d must vanish; `7d 0%` would claim we measured zero usage"
     );
     let only_seven = quota(None, Some(1));
     assert_eq!(
-        dashboard::quota_segment(Some(&only_seven), false).as_deref(),
+        dashboard::quota_segment(Some(&only_seven), false, now()).as_deref(),
         Some("7d 1%")
     );
     for text in [
-        dashboard::quota_segment(Some(&only_five), true),
-        dashboard::quota_segment(Some(&only_seven), true),
+        dashboard::quota_segment(Some(&only_five), true, now()),
+        dashboard::quota_segment(Some(&only_seven), true, now()),
     ]
     .into_iter()
     .flatten()
@@ -169,12 +169,84 @@ fn a_lone_half_keeps_its_label_even_compressed() {
     // number on its own must say which window it belongs to, and at six columns the
     // labelled form is no wider than the compressed pair anyway.
     assert_eq!(
-        dashboard::quota_segment(Some(&quota(Some(16), None)), true).as_deref(),
+        dashboard::quota_segment(Some(&quota(Some(16), None)), true, now()).as_deref(),
         Some("5h 16%")
     );
     assert_eq!(
-        dashboard::quota_segment(Some(&quota(None, Some(1))), true).as_deref(),
+        dashboard::quota_segment(Some(&quota(None, Some(1))), true, now()).as_deref(),
         Some("7d 1%")
+    );
+}
+
+/// `quota()`'s fixture leaves both `*_resets_at` at `None`; this pins the reset countdown
+/// itself, issue #29's second still-open item.
+fn quota_with_resets(
+    five: Option<u8>,
+    five_resets_at: Option<chrono::DateTime<chrono::Utc>>,
+    seven: Option<u8>,
+    seven_resets_at: Option<chrono::DateTime<chrono::Utc>>,
+) -> QuotaState {
+    QuotaState {
+        five_hour_resets_at: five_resets_at,
+        seven_day_resets_at: seven_resets_at,
+        ..quota(five, seven)
+    }
+}
+
+#[test]
+fn the_countdown_renders_next_to_its_own_percentage() {
+    let q = quota_with_resets(
+        Some(16),
+        Some(now() + chrono::Duration::minutes(3)),
+        Some(1),
+        Some(now() + chrono::Duration::days(6)),
+    );
+    assert_eq!(
+        dashboard::quota_segment(Some(&q), false, now()).as_deref(),
+        Some("5h 16% (3m) · 7d 1% (6d)")
+    );
+}
+
+#[test]
+fn a_missing_reset_time_omits_the_countdown_not_a_placeholder() {
+    let q = quota_with_resets(Some(16), None, Some(1), None);
+    assert_eq!(
+        dashboard::quota_segment(Some(&q), false, now()).as_deref(),
+        Some("5h 16% · 7d 1%"),
+        "no resets_at means no countdown, same rule as an absent percentage"
+    );
+}
+
+#[test]
+fn an_expired_reset_time_is_staleness_not_a_negative_countdown() {
+    // The daemon has been dead, or the scan that wrote this is stale — `resets_at` in the
+    // past is not "reset happened 4m ago" worth telling the user, it's untrustworthy.
+    let q = quota_with_resets(
+        Some(16),
+        Some(now() - chrono::Duration::minutes(4)),
+        Some(1),
+        Some(now()),
+    );
+    assert_eq!(
+        dashboard::quota_segment(Some(&q), false, now()).as_deref(),
+        Some("5h 16% · 7d 1%"),
+        "an expired or exactly-now resets_at must render as bare 5h/7d, not a negative or \
+         zero countdown"
+    );
+}
+
+#[test]
+fn the_compressed_rung_never_carries_a_countdown() {
+    // The compressed rung exists to shed detail; a countdown re-adds exactly what it dropped.
+    let q = quota_with_resets(
+        Some(16),
+        Some(now() + chrono::Duration::minutes(3)),
+        Some(1),
+        Some(now() + chrono::Duration::days(6)),
+    );
+    assert_eq!(
+        dashboard::quota_segment(Some(&q), true, now()).as_deref(),
+        Some("16%/1%")
     );
 }
 

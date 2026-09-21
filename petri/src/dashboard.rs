@@ -1591,29 +1591,56 @@ pub(crate) fn zone_row(spec: ZoneRowSpec, width: usize) -> Line<'static> {
 /// exactly how many columns it is not allowed to use.
 const HEADER_TITLE: &str = " petri · dashboard ";
 
-/// `5h 16% · 7d 1%` — the #29 MVP, display-only (`PROPOSAL-focus-panel.md` §6). `swab`'s
-/// quota sensor already populates `Radar.quota` on every scan; nothing here reads a file.
+/// `5h 16% (3m) · 7d 1% (6d)` — the #29 MVP plus the reset countdown (issue #29's second
+/// item; `PROPOSAL-focus-panel.md` §6). `swab`'s quota sensor already populates
+/// `Radar.quota` on every scan; nothing here reads a file.
 ///
 /// `compressed` is the ladder's second-to-last rung: `16%/1%`, the same two numbers without
-/// their labels. A **lone** half keeps its label even when compressed — `16%/1%` is only
-/// unambiguous because both halves are present in a fixed order, and at six columns the
-/// labelled single form costs nothing extra anyway.
+/// their labels *or* countdowns — the rung exists precisely to shed detail, so it stays
+/// exactly as terse as before this landed. A **lone** half keeps its label even when
+/// compressed — `16%/1%` is only unambiguous because both halves are present in a fixed
+/// order, and at six columns the labelled single form costs nothing extra anyway.
 ///
 /// `None` (no `QuotaState` at all, or one whose every percentage degraded to `None`) means
 /// **omit the segment**, never render `0%`. A zero reads as "you have used nothing", which
 /// is the opposite of "we do not know" — and field-by-field degradation is the sensor's
 /// documented behaviour, so the half-populated case is real rather than defensive.
 ///
+/// The countdown is the same rule applied to `*_resets_at`: a percentage with no reset
+/// time, or one that has already passed (the daemon has been dead, or the scan that wrote
+/// it is stale), renders the bare `5h 16%` rather than a zero or negative countdown that
+/// would read as fact when it is actually staleness. `now` is threaded in rather than read
+/// from the clock so a test can pin it, same as `header_right_group`.
+///
 /// `context_used_pct` is deliberately not rendered anywhere: it is parsed from a single
 /// `~/.claude/last-status.json` owned by whichever session wrote it last, so it is
 /// attributable neither to the fleet nor to any project (`DATA-5`).
-pub fn quota_segment(quota: Option<&QuotaState>, compressed: bool) -> Option<String> {
+pub fn quota_segment(
+    quota: Option<&QuotaState>,
+    compressed: bool,
+    now: chrono::DateTime<chrono::Utc>,
+) -> Option<String> {
     let q = quota?;
+    let countdown = |resets_at: Option<chrono::DateTime<chrono::Utc>>| -> Option<String> {
+        let resets_at = resets_at?;
+        let secs = resets_at.signed_duration_since(now).num_seconds();
+        (secs > 0).then(|| format!(" ({})", humanize_secs(secs as u64)))
+    };
     match (q.five_hour_used_pct, q.seven_day_used_pct) {
         (Some(five), Some(seven)) if compressed => Some(format!("{five}%/{seven}%")),
-        (Some(five), Some(seven)) => Some(format!("5h {five}% · 7d {seven}%")),
-        (Some(five), None) => Some(format!("5h {five}%")),
-        (None, Some(seven)) => Some(format!("7d {seven}%")),
+        (Some(five), Some(seven)) => Some(format!(
+            "5h {five}%{} · 7d {seven}%{}",
+            countdown(q.five_hour_resets_at).unwrap_or_default(),
+            countdown(q.seven_day_resets_at).unwrap_or_default(),
+        )),
+        (Some(five), None) => Some(format!(
+            "5h {five}%{}",
+            countdown(q.five_hour_resets_at).unwrap_or_default()
+        )),
+        (None, Some(seven)) => Some(format!(
+            "7d {seven}%{}",
+            countdown(q.seven_day_resets_at).unwrap_or_default()
+        )),
         (None, None) => None,
     }
 }
@@ -1670,8 +1697,8 @@ pub fn header_right_group(
     // non-UTC offset and actually exercise the conversion (see `local_offset`).
     let clock = now.with_timezone(&offset).format("%H:%M").to_string();
     let scan = format!("scan {scan_secs:.1}s");
-    let quota_full = quota_segment(radar.quota.as_ref(), false);
-    let quota_short = quota_segment(radar.quota.as_ref(), true);
+    let quota_full = quota_segment(radar.quota.as_ref(), false, *now);
+    let quota_short = quota_segment(radar.quota.as_ref(), true, *now);
 
     let join = |parts: &[Option<&str>]| -> String {
         parts
