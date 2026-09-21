@@ -66,7 +66,7 @@ raycast:        ## Check the Raycast extension (needs node; run `npm ci` there f
 # node's built-in test runner, deliberately: the parser under test is plain JS
 # with no dependencies, so unlike raycast there is no `npm ci` step to forget.
 cinnamon:       ## Check the Cinnamon applet's parser (needs node, nothing else).
-	node --test integrations/cinnamon/tests/
+	node --test integrations/cinnamon/tests/*.test.js
 
 # The everyday gate: everything that needs nothing but a Rust toolchain.
 check: fmt-check clippy test   ## Fast gate: formatting + lints + tests.
