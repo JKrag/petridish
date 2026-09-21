@@ -1618,6 +1618,16 @@ pub fn quota_segment(quota: Option<&QuotaState>, compressed: bool) -> Option<Str
     }
 }
 
+/// The machine's current local UTC offset, computed once at render time.
+///
+/// Threaded into `header_right_group`/`feed_block_lines` as a parameter rather than having
+/// each formatter call `chrono::Local` directly, so a test can pin a fixed non-UTC offset
+/// and actually exercise the local-time conversion regardless of the timezone the test
+/// process itself happens to run in (commonly UTC in CI).
+pub fn local_offset() -> chrono::FixedOffset {
+    *chrono::Local::now().offset()
+}
+
 /// The header's right-hand group, already elided to fit beside `HEADER_TITLE` in `width`
 /// columns.
 ///
@@ -1646,16 +1656,6 @@ pub fn quota_segment(quota: Option<&QuotaState>, compressed: bool) -> Option<Str
 ///
 /// Returns `""` when not even the compressed quota fits; the caller then draws the title
 /// alone rather than a stray trailing space.
-/// The machine's current local UTC offset, computed once at render time.
-///
-/// Threaded into `header_right_group`/`feed_block_lines` as a parameter rather than having
-/// each formatter call `chrono::Local` directly, so a test can pin a fixed non-UTC offset
-/// and actually exercise the local-time conversion regardless of the timezone the test
-/// process itself happens to run in (commonly UTC in CI).
-pub fn local_offset() -> chrono::FixedOffset {
-    *chrono::Local::now().offset()
-}
-
 pub fn header_right_group(
     radar: &Radar,
     now: &chrono::DateTime<chrono::Utc>,
