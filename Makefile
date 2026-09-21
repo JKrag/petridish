@@ -11,7 +11,7 @@
 # report success. Verified empirically — keep them as prerequisites.
 
 .PHONY: help fmt fmt-check clippy test deny msrv raycast check check-all clean flake-hunt \
-	lima-install lima-uninstall lima-verify lima-smoke lima-shell
+	run lima-install lima-uninstall lima-verify lima-smoke lima-shell
 
 .DEFAULT_GOAL := help
 
@@ -75,6 +75,15 @@ check-all: check deny msrv raycast   ## Everything CI runs.
 
 clean:          ## Remove build output.
 	cargo clean
+
+# Builds the local checkout and runs it against your REAL `~/.petridish/projects.json` —
+# not a fixture, not a Lima VM. That's the point: this is "does the version I just wrote
+# actually work" (Dashboard renders, a keybinding does the right thing), not a hermetic
+# test. `swab`'s daemon keeps writing `projects.json` in the background regardless, same as
+# always — this only ever reads it. `cargo run` (not a pre-built binary path) so a stale
+# build can never be what you're looking at.
+run:            ## Build + run `petri` against your real ~/.petridish/projects.json.
+	cargo run -p petri
 
 # `cargo test`'s systemd coverage all goes through the RecordingSystemctl seam
 # (real for argv/ordering/error-mapping, but never the real `systemctl`
