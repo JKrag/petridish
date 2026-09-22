@@ -7,31 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.0.0-beta.9] — 2026-09-22
+
 ### Added
 
 - **`petri`: quota reset countdown.** The header's `5h`/`7d` usage segment now
   shows time-to-reset, e.g. `5h 16% (3m) · 7d 1% (6d)`.
-- **`petri`: `u` hands off to a token-usage TUI.** Tries `ccusage`, then
-  `claude-monitor`, then `openusage`; `Shift+U` re-picks. Works on the Dashboard too,
-  even with nothing selected — usage isn't project-specific.
-- **`make run`**: build and run `petri` against your real `~/.petridish/projects.json`
-  in one command.
-- **`petri`: `?` opens the help popup on the Dashboard too**, not just the Browser —
-  with its own Navigation list (the two screens' keys genuinely differ).
-- **`petri`: the help popup's Actions split into "Global actions" and "Project
-  actions"** — `u`/`?` need no project selected; everything else does.
-
-### Fixed
-
-- **`petri`: Ctrl-C in a hand-off no longer kills petri.** `claude-monitor` (one of
-  `u`'s candidates) quits on Ctrl-C rather than `q`; that keystroke used to send
-  `SIGINT` to petri as well as the child, taking the whole TUI down. Terminal
-  hand-offs now give the child its own process group for the duration.
-- **`petri`: Ctrl-Z in a hand-off no longer hangs petri.** A stopped (not exited)
-  child left the wait loop blocked forever; it's now resumed immediately instead.
-- **`petri`: `u` no longer launches in the selected project's directory.** Token
-  usage isn't project-specific, so it now always runs from petri's own working
-  directory, whether or not a project happens to be selected.
+- **`petri`: `u` hands off to a dedicated token-usage TUI** (`ccusage`,
+  `claude-monitor`, or `openusage`; `Shift+U` re-picks). Works on both screens,
+  even with nothing selected, always from petri's own working directory. Ctrl-C
+  and Ctrl-Z inside the hand-off now behave normally instead of taking petri
+  down or hanging it.
+- **`petri`: `?` (help) now works on the Dashboard too**, with a keybinding list
+  and an Actions section (split into Global vs. per-project actions) tailored to
+  that screen instead of reusing the Browser's.
 
 ## [1.0.0-beta.8] — 2026-09-14
 
@@ -192,7 +181,8 @@ First public release. Everything before this lived only in git history.
   licence requirement doesn't match this project's GPL-3.0-or-later. See
   `integrations/raycast/README.md`.
 
-[Unreleased]: https://github.com/JKrag/petridish/compare/v1.0.0-beta.3...HEAD
+[Unreleased]: https://github.com/JKrag/petridish/compare/v1.0.0-beta.9...HEAD
+[1.0.0-beta.9]: https://github.com/JKrag/petridish/compare/v1.0.0-beta.8...v1.0.0-beta.9
 [1.0.0-beta.3]: https://github.com/JKrag/petridish/compare/v1.0.0-beta.2...v1.0.0-beta.3
 [1.0.0-beta.2]: https://github.com/JKrag/petridish/compare/v1.0.0-beta.1...v1.0.0-beta.2
 [1.0.0-beta.1]: https://github.com/JKrag/petridish/releases/tag/v1.0.0-beta.1

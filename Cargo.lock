@@ -2476,7 +2476,7 @@ dependencies = [
 
 [[package]]
 name = "petri"
-version = "1.0.0-beta.8"
+version = "1.0.0-beta.9"
 dependencies = [
  "chrono",
  "crossterm",
@@ -2493,7 +2493,7 @@ dependencies = [
 
 [[package]]
 name = "petri-dish"
-version = "1.0.0-beta.8"
+version = "1.0.0-beta.9"
 dependencies = [
  "chrono",
  "clap",
@@ -2504,7 +2504,7 @@ dependencies = [
 
 [[package]]
 name = "petridish-core"
-version = "1.0.0-beta.8"
+version = "1.0.0-beta.9"
 dependencies = [
  "chrono",
  "serde",
@@ -3099,7 +3099,7 @@ dependencies = [
 
 [[package]]
 name = "swab"
-version = "1.0.0-beta.8"
+version = "1.0.0-beta.9"
 dependencies = [
  "chrono",
  "clap",
