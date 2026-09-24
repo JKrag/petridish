@@ -1,0 +1,227 @@
+#!/usr/bin/env python3
+"""petridish panel indicator: a StatusNotifierItem for any SNI tray host
+(COSMIC Status Area, KDE Plasma system tray, Waybar's tray module, ...).
+
+The desktop-agnostic counterpart of petridish's xbar plugin and Cinnamon
+applet: a petri-dish icon in the tray, working/total in the tooltip (SNI has
+no text label next to the icon), and the full dropdown — live sessions,
+buckets, click-to-open — as a dbusmenu. Like the other frontends it is a
+thin presenter over one command, `petridish menubar`, re-run whenever
+~/.petridish/projects.json changes (plus a periodic fallback and on
+menu-open via AboutToShow).
+
+Only dependency beyond Python 3 is PyGObject (gi: GLib/Gio), preinstalled
+on effectively every GTK-shipping distro and packaged everywhere else.
+
+Two SNI-host behaviours learned on COSMIC that shape this code: an item
+that exports no com.canonical.dbusmenu is not drawn at all, and
+unregistering an item leaves a ghost icon — so this stays registered for
+its lifetime and degrades the menu contents on errors instead.
+"""
+import os
+import subprocess
+from gi.repository import Gio, GLib
+
+HOME = os.path.expanduser("~")
+STATE = os.path.join(HOME, ".petridish", "projects.json")
+PATH = "/StatusNotifierItem"
+MENU_PATH = "/MenuBar"
+BUS_NAME = f"org.kde.StatusNotifierItem-{os.getpid()}-1"
+ICON = os.path.join(HOME, ".local", "share", "icons", "hicolor", "64x64", "apps", "petridish.png")
+REFRESH_ID = -1  # sentinel for the synthetic Refresh menu item
+
+
+def find_binary():
+    for c in (os.path.join(HOME, ".cargo", "bin", "petridish"),
+              os.path.join(HOME, ".local", "bin", "petridish")):
+        if os.access(c, os.X_OK):
+            return c
+    return "petridish"  # PATH fallback
+
+
+def parse_params(tail):
+    """xbar ` | key=value` tail -> dict; only href is quoted (paths with spaces)."""
+    params, i = {}, 0
+    while i < len(tail):
+        while i < len(tail) and tail[i] == " ":
+            i += 1
+        eq = tail.find("=", i)
+        if eq == -1:
+            break
+        key = tail[i:eq]
+        if tail[eq + 1:eq + 2] == '"':
+            close = tail.find('"', eq + 2)
+            value = tail[eq + 2:close] if close != -1 else tail[eq + 2:]
+            i = close + 1 if close != -1 else len(tail)
+        else:
+            end = tail.find(" ", eq + 1)
+            end = end if end != -1 else len(tail)
+            value, i = tail[eq + 1:end], end
+        params[key] = value
+    return params
+
+
+def parse_line(line):
+    if line == "---":
+        return {"kind": "separator"}
+    indent = line.startswith("--")
+    rest = line[2:] if indent else line
+    text, sep, tail = rest.partition(" | ")
+    return {"kind": "item", "text": text, "indent": indent,
+            "params": parse_params(tail) if sep else {}}
+
+
+def parse_menubar_text(text):
+    lines = (text or "").rstrip("\n").split("\n")
+    if not lines or not lines[0]:
+        return "🧫 ?", []
+    body = lines.index("---") + 1 if "---" in lines else len(lines)
+    return lines[0], [parse_line(l) for l in lines[body:]]
+
+
+class Tray:
+    def __init__(self):
+        self.bus = Gio.bus_get_sync(Gio.BusType.SESSION)
+        node = Gio.DBusNodeInfo.new_for_xml(XML)
+        self.iface, self.menu_iface = node.interfaces
+        self.reg_id = self.own_id = 0
+        self.revision = 1
+        self.tooltip = "petridish"
+        self.menu_items = []   # [(id, label, enabled, href-or-None, is_sep)]
+
+    def props(self):
+        icon = ICON if os.path.exists(ICON) else "application-x-executable"
+        return {
+            "Category": GLib.Variant("s", "ApplicationStatus"),
+            "Id": GLib.Variant("s", "petridish"),
+            "Title": GLib.Variant("s", f"petridish — {self.tooltip}"),
+            "Status": GLib.Variant("s", "Active"),
+            "IconName": GLib.Variant("s", icon),
+            "ToolTip": GLib.Variant("(sa(iiay)ss)", (icon, [], "petridish", self.tooltip)),
+            "ItemIsMenu": GLib.Variant("b", True),
+            "Menu": GLib.Variant("o", MENU_PATH),
+        }
+
+    def on_call(self, conn, sender, path, iface, method, params, inv):
+        # Icon click: the dropdown is the whole point, and COSMIC opens the
+        # dbusmenu itself for ItemIsMenu items — nothing to do here.
+        inv.return_value(None)
+
+    def on_get(self, conn, sender, path, iface, prop):
+        return self.props()[prop]
+
+    def on_menu_call(self, conn, sender, path, iface, method, params, inv):
+        if method == "GetLayout":
+            children = []
+            for mid, label, enabled, href, is_sep in self.menu_items:
+                p = ({"type": GLib.Variant("s", "separator")} if is_sep else
+                     {"label": GLib.Variant("s", label),
+                      "enabled": GLib.Variant("b", enabled)})
+                children.append(GLib.Variant("(ia{sv}av)", (mid, p, [])))
+            root = (0, {"children-display": GLib.Variant("s", "submenu")}, children)
+            inv.return_value(GLib.Variant("(u(ia{sv}av))", (self.revision, root)))
+        elif method == "GetGroupProperties":
+            inv.return_value(GLib.Variant("(a(ia{sv}))", ([],)))
+        elif method == "AboutToShow":
+            self.refresh()  # menu is about to open: make it current
+            inv.return_value(GLib.Variant("(b)", (False,)))
+        else:  # Event
+            item_id, event = params.unpack()[:2]
+            if event == "clicked":
+                if item_id == REFRESH_ID:
+                    swab = os.path.join(os.path.dirname(find_binary()), "swab")
+                    subprocess.Popen([swab if os.access(swab, os.X_OK) else "swab", "scan"])
+                else:
+                    href = next((h for mid, _, _, h, _ in self.menu_items
+                                 if mid == item_id and h), None)
+                    if href:
+                        subprocess.Popen(["xdg-open", href])
+            inv.return_value(None)
+
+    def on_menu_get(self, conn, sender, path, iface, prop):
+        return {"Version": GLib.Variant("u", 3), "Status": GLib.Variant("s", "normal")}[prop]
+
+    def show(self):
+        if self.reg_id:
+            for sig in ("NewIcon", "NewTitle", "NewToolTip"):
+                self.bus.emit_signal(None, PATH, "org.kde.StatusNotifierItem", sig, None)
+            self.revision += 1
+            self.bus.emit_signal(None, MENU_PATH, "com.canonical.dbusmenu", "LayoutUpdated",
+                                 GLib.Variant("(ui)", (self.revision, 0)))
+            return
+        self.reg_id = self.bus.register_object(PATH, self.iface, self.on_call, self.on_get, None)
+        self.bus.register_object(MENU_PATH, self.menu_iface, self.on_menu_call,
+                                 self.on_menu_get, None)
+        self.own_id = Gio.bus_own_name_on_connection(
+            self.bus, BUS_NAME, Gio.BusNameOwnerFlags.NONE, self.on_name, None)
+
+    def on_name(self, conn, name):
+        conn.call("org.kde.StatusNotifierWatcher", "/StatusNotifierWatcher",
+                  "org.kde.StatusNotifierWatcher", "RegisterStatusNotifierItem",
+                  GLib.Variant("(s)", (name,)), None, Gio.DBusCallFlags.NONE, -1, None, None)
+
+    def refresh(self, *_):
+        try:
+            out = subprocess.run([find_binary(), "menubar"], capture_output=True,
+                                 text=True, timeout=10).stdout
+        except (OSError, subprocess.TimeoutExpired) as e:
+            out = f"🧫 ?\n---\npetridish menubar failed: {e}\n---\nRefresh | refresh=true"
+        title, lines = parse_menubar_text(out)
+        count = title.replace("🧫", "").strip()
+        working = count.split("/")[0] if "/" in count else "?"
+        self.tooltip = (f"{count} — {working} agent(s) working"
+                        if "/" in count else f"projects: {count}")
+
+        items, mid = [], 1
+        for line in lines:
+            if line["kind"] == "separator":
+                items.append((mid, "", False, None, True))
+            elif line["params"].get("refresh") == "true":
+                items.append((REFRESH_ID, "Rescan now", True, None, False))
+            else:
+                href = line["params"].get("href")
+                is_header = not line["indent"] and not line["params"]
+                label = ("    " + line["text"]) if line["indent"] else line["text"]
+                items.append((mid, label, bool(href), href, False))
+                if is_header:
+                    items[-1] = (mid, label, False, None, False)
+            mid += 1
+        self.menu_items = items
+        self.show()
+        return True
+
+
+XML = """<node><interface name="org.kde.StatusNotifierItem">
+  <property name="Category" type="s" access="read"/>
+  <property name="Id" type="s" access="read"/>
+  <property name="Title" type="s" access="read"/>
+  <property name="Status" type="s" access="read"/>
+  <property name="IconName" type="s" access="read"/>
+  <property name="ToolTip" type="(sa(iiay)ss)" access="read"/>
+  <property name="ItemIsMenu" type="b" access="read"/>
+  <property name="Menu" type="o" access="read"/>
+  <method name="Activate"><arg name="x" type="i" direction="in"/><arg name="y" type="i" direction="in"/></method>
+  <method name="SecondaryActivate"><arg name="x" type="i" direction="in"/><arg name="y" type="i" direction="in"/></method>
+  <method name="ContextMenu"><arg name="x" type="i" direction="in"/><arg name="y" type="i" direction="in"/></method>
+  <method name="Scroll"><arg name="delta" type="i" direction="in"/><arg name="orientation" type="s" direction="in"/></method>
+  <signal name="NewIcon"/><signal name="NewTitle"/><signal name="NewToolTip"/>
+  <signal name="NewStatus"><arg name="status" type="s"/></signal>
+</interface>
+<interface name="com.canonical.dbusmenu">
+  <property name="Version" type="u" access="read"/>
+  <property name="Status" type="s" access="read"/>
+  <method name="GetLayout"><arg type="i" direction="in"/><arg type="i" direction="in"/><arg type="as" direction="in"/>
+    <arg type="u" direction="out"/><arg type="(ia{sv}av)" direction="out"/></method>
+  <method name="GetGroupProperties"><arg type="ai" direction="in"/><arg type="as" direction="in"/><arg type="a(ia{sv})" direction="out"/></method>
+  <method name="Event"><arg type="i" direction="in"/><arg type="s" direction="in"/><arg type="v" direction="in"/><arg type="u" direction="in"/></method>
+  <method name="AboutToShow"><arg type="i" direction="in"/><arg type="b" direction="out"/></method>
+  <signal name="LayoutUpdated"><arg type="u"/><arg type="i"/></signal>
+</interface></node>"""
+
+
+tray = Tray()
+monitor = Gio.File.new_for_path(STATE).monitor_file(Gio.FileMonitorFlags.NONE, None)
+monitor.connect("changed", tray.refresh)
+GLib.timeout_add_seconds(60, tray.refresh)  # fallback; the file monitor is primary
+tray.refresh()
+GLib.MainLoop().run()

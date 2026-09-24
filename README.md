@@ -58,9 +58,9 @@ with `petridish install`.
   marker `# petridish`, **without disturbing any other hook consumer** already configured
   there
 - macOS only: installs the xbar/SwiftBar menu-bar plugin (skip it with
-  `--no-menubar-plugin`). On Linux this step is a no-op — the panel equivalent is the
-  Cinnamon applet, installed separately (see
-  [integrations/cinnamon](integrations/cinnamon/README.md))
+  `--no-menubar-plugin`). On Linux this step is a no-op — the panel equivalents are
+  installed separately: the [Cinnamon applet](integrations/cinnamon/README.md), or the
+  [SNI tray indicator](integrations/sni-tray/README.md) for COSMIC/KDE/Waybar
 
 It backs up `~/.claude/settings.json` once, to `~/.petridish/settings.json.backup`, before
 touching it. That backup is a safety artifact for you — uninstall never reads it back
@@ -122,7 +122,7 @@ Four binaries, each with one job:
 | --- | --- | --- |
 | `install` / `uninstall` | launchd job + `~/Library` xbar plugin file | `systemd --user` timer only (issue #75) — no plugin file, since there's nothing built-in to install |
 | `doctor` | full, real checks | full, real checks |
-| `menubar` | text consumed automatically by the xbar plugin `install` puts in place | prints the same xbar-format text; nothing consumes it automatically — wire it up yourself, e.g. via the [Cinnamon panel applet](integrations/cinnamon/) |
+| `menubar` | text consumed automatically by the xbar plugin `install` puts in place | prints the same xbar-format text; nothing consumes it automatically — wire it up yourself, e.g. via the [Cinnamon panel applet](integrations/cinnamon/) or the [SNI tray indicator](integrations/sni-tray/) |
 
 ```sh
 petridish install       # wire up the daemon + the Claude Code hook (+ menu bar on macOS)
