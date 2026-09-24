@@ -10,7 +10,7 @@
 # returns only the LAST command's exit status, so a formatting failure would
 # report success. Verified empirically — keep them as prerequisites.
 
-.PHONY: help fmt fmt-check clippy test deny msrv raycast cinnamon check check-all clean flake-hunt \
+.PHONY: help fmt fmt-check clippy test deny msrv raycast cinnamon sni-tray check check-all clean flake-hunt \
 	run lima-install lima-uninstall lima-verify lima-smoke lima-shell
 
 .DEFAULT_GOAL := help
@@ -68,6 +68,9 @@ raycast:        ## Check the Raycast extension (needs node; run `npm ci` there f
 cinnamon:       ## Check the Cinnamon applet's parser (needs node, nothing else).
 	node --test integrations/cinnamon/tests/*.test.js
 
+sni-tray:       ## Check the SNI tray's parser (needs python3, nothing else).
+	python3 integrations/sni-tray/tests/test_parser.py
+
 # The everyday gate: everything that needs nothing but a Rust toolchain.
 check: fmt-check clippy test   ## Fast gate: formatting + lints + tests.
 
@@ -76,7 +79,7 @@ check: fmt-check clippy test   ## Fast gate: formatting + lints + tests.
 # toolchain, and node respectively — and a gate that fails on a missing tool
 # trains people to ignore it. Run this before opening a PR; run `check` while
 # iterating.
-check-all: check deny msrv raycast cinnamon   ## Everything CI runs.
+check-all: check deny msrv raycast cinnamon sni-tray   ## Everything CI runs.
 
 clean:          ## Remove build output.
 	cargo clean
