@@ -61,7 +61,8 @@ remove and re-add the applet, or reload it from Looking Glass's Extensions tab.
 
 ## Other desktops
 
-The applet is Cinnamon-specific, but `petridish menubar` now renders on any
-platform, so a GNOME [Argos](https://github.com/p-e-w/argos) user gets the same
-dropdown for free (Argos speaks the xbar format natively), and a KDE/Waybar/
-polybar user has a stable one-command text source to build on.
+The applet is Cinnamon-specific. COSMIC, KDE and Waybar users get the same
+dropdown from the [SNI tray indicator](../sni-tray/README.md); a GNOME
+[Argos](https://github.com/p-e-w/argos) user gets it for free (Argos speaks the
+xbar format natively); anything else has `petridish menubar` as a stable
+one-command text source to build on.
