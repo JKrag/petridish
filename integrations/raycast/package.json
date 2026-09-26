@@ -41,7 +41,7 @@
     "@types/node": "^26.6.1",
     "@types/react": "^19.3.0",
     "eslint": "^10.10.0",
-    "prettier": "^3.3.3",
+    "prettier": "^3.9.9",
     "typescript": "^5.4.5"
   },
   "scripts": {
